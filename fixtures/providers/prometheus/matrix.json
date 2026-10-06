@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "matrix",
+    "result": [
+      {
+        "metric": {
+          "service_name": "checkout",
+          "deployment_environment": "production"
+        },
+        "values": [
+          [1791273540, "10"],
+          [1791273570, "11"],
+          [1791273600, "12"]
+        ]
+      }
+    ]
+  }
+}

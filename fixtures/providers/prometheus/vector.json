@@ -1,0 +1,18 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "service_name": "checkout",
+          "service_namespace": "shop",
+          "service_version": "2026.10.6",
+          "deployment_environment": "production"
+        },
+        "value": [1791273600, "12.5"]
+      }
+    ]
+  },
+  "warnings": ["results are partial"]
+}
