@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "configuration": { "activeRevisionsMode": "Multiple", "ingress": { "transport": "auto" } },
+    "template": {
+      "containers": [
+        {
+          "name": "app",
+          "image": "ghcr.io/shipsolid/checkout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "env": [{ "name": "OTEL_SERVICE_NAME", "value": "checkout" }],
+          "probes": [{ "type": "Readiness", "httpGet": { "path": "/ready", "port": 8080 } }]
+        }
+      ],
+      "scale": { "minReplicas": 2, "maxReplicas": 10 }
+    },
+    "managedEnvironmentId": "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/managedEnvironments/prod"
+  },
+  "identity": { "type": "SystemAssigned" }
+}

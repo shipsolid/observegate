@@ -1,0 +1,7 @@
+{
+  "statuses": [
+    { "code": "ProvisioningState/succeeded", "displayStatus": "Provisioning succeeded" },
+    { "code": "PowerState/running", "displayStatus": "VM running" },
+    { "code": "MaintenanceState/notRequired", "displayStatus": "No maintenance" }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "checkout",
+  "provisioningState": "Succeeded",
+  "latestRevisionName": "checkout--20261006",
+  "configuration": {
+    "activeRevisionsMode": "Multiple",
+    "ingress": {
+      "transport": "auto",
+      "traffic": [
+        { "revisionName": "checkout--20261006", "weight": 90 },
+        { "revisionName": "checkout--unknown", "weight": 10 }
+      ]
+    }
+  }
+}

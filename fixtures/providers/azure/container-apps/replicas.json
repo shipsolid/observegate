@@ -1,0 +1,12 @@
+[
+  {
+    "name": "replica-1",
+    "runningState": "Running",
+    "containers": [{ "name": "app", "ready": true, "restartCount": 0 }]
+  },
+  {
+    "name": "replica-2",
+    "runningState": "Failed",
+    "containers": [{ "name": "app", "ready": false, "restartCount": 2 }]
+  }
+]

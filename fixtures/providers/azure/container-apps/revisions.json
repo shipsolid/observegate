@@ -1,0 +1,16 @@
+[
+  {
+    "name": "checkout--20261006",
+    "active": true,
+    "provisioningState": "Provisioned",
+    "runningState": "Running",
+    "template": {
+      "containers": [
+        {
+          "name": "app",
+          "image": "ghcr.io/shipsolid/checkout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  }
+]

@@ -14,6 +14,9 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@azure/arm-appcontainers": "4.0.0",
+    "@azure/arm-compute": "25.1.1",
+    "@azure/identity": "4.13.3",
     "@kubernetes/client-node": "2.0.0",
     "@observability-gate/core": "0.0.0",
     "yaml": "2.9.1"
