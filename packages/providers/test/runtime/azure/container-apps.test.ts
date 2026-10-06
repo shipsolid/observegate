@@ -101,11 +101,15 @@ describe("AzureContainerAppsAdapter", () => {
       image: expect.stringContaining("@sha256:"),
       revisionMode: "Multiple",
       ingressTransport: "auto",
+      ingressPort: 8080,
       minimumReplicas: 2,
       maximumReplicas: 10,
-      probes: [{ type: "Readiness" }],
+      probes: [{ type: "Startup" }, { type: "Readiness" }, { type: "Liveness" }],
       managedIdentity: "SystemAssigned",
-      otelEnvironment: { OTEL_SERVICE_NAME: "checkout" }
+      otelEnvironment: {
+        OTEL_SERVICE_NAME: "checkout",
+        OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example.test"
+      }
     });
   });
 });

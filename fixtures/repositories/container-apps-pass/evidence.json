@@ -1,0 +1,49 @@
+{
+  "pre": {
+    "image": "ghcr.io/shipsolid/checkout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revisionMode": "Multiple",
+    "ingressTransport": "auto",
+    "ingressPort": 8080,
+    "minimumReplicas": 2,
+    "maximumReplicas": 10,
+    "otelEnvironment": {
+      "OTEL_SERVICE_NAME": "checkout",
+      "OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.example.test"
+    },
+    "managedIdentity": "SystemAssigned",
+    "probes": [
+      { "type": "Startup", "httpGet": { "path": "/health", "port": 8080 } },
+      { "type": "Readiness", "httpGet": { "path": "/ready", "port": 8080 } },
+      { "type": "Liveness", "httpGet": { "path": "/health", "port": 8080 } }
+    ]
+  },
+  "post": {
+    "provisioningState": "Succeeded",
+    "revision": {
+      "suffix": "20261006",
+      "expectedSuffix": "20261006",
+      "provisioningState": "Provisioned",
+      "runningState": "Running",
+      "active": true,
+      "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedImageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "replicas": {
+      "total": 2,
+      "healthy": 2,
+      "minimumHealthy": 2,
+      "failed": 0,
+      "restartIncrease": 0,
+      "unhealthy": 0,
+      "activationFailures": 0,
+      "deactivationFailures": 0
+    },
+    "traffic": {
+      "totalWeight": 100,
+      "candidateWeight": 10,
+      "minimumCandidateWeight": 1,
+      "unknownRevisionWeight": 0,
+      "maximumUnknownRevisionWeight": 0
+    }
+  }
+}

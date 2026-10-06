@@ -229,6 +229,7 @@ export interface ContainerAppManifestEvidence {
   readonly image: string;
   readonly revisionMode: string;
   readonly ingressTransport: string;
+  readonly ingressPort: number;
   readonly minimumReplicas: number;
   readonly maximumReplicas: number;
   readonly probes: readonly Readonly<Record<string, unknown>>[];
@@ -256,6 +257,7 @@ export function parseContainerAppManifest(content: string): ContainerAppManifest
     typeof container?.image !== "string" ||
     typeof configuration?.activeRevisionsMode !== "string" ||
     typeof ingress?.transport !== "string" ||
+    typeof ingress.targetPort !== "number" ||
     typeof scale?.minReplicas !== "number" ||
     typeof scale.maxReplicas !== "number" ||
     typeof identity?.type !== "string" ||
@@ -282,6 +284,7 @@ export function parseContainerAppManifest(content: string): ContainerAppManifest
     image: container.image,
     revisionMode: configuration.activeRevisionsMode,
     ingressTransport: ingress.transport,
+    ingressPort: ingress.targetPort,
     minimumReplicas: scale.minReplicas,
     maximumReplicas: scale.maxReplicas,
     probes: Object.freeze(probes.map((probe) => Object.freeze({ ...probe }))),

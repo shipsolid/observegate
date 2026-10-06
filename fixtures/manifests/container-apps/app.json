@@ -1,13 +1,26 @@
 {
   "properties": {
-    "configuration": { "activeRevisionsMode": "Multiple", "ingress": { "transport": "auto" } },
+    "configuration": {
+      "activeRevisionsMode": "Multiple",
+      "ingress": { "transport": "auto", "targetPort": 8080 }
+    },
     "template": {
       "containers": [
         {
           "name": "app",
           "image": "ghcr.io/shipsolid/checkout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "env": [{ "name": "OTEL_SERVICE_NAME", "value": "checkout" }],
-          "probes": [{ "type": "Readiness", "httpGet": { "path": "/ready", "port": 8080 } }]
+          "env": [
+            { "name": "OTEL_SERVICE_NAME", "value": "checkout" },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "https://collector.example.test"
+            }
+          ],
+          "probes": [
+            { "type": "Startup", "httpGet": { "path": "/health", "port": 8080 } },
+            { "type": "Readiness", "httpGet": { "path": "/ready", "port": 8080 } },
+            { "type": "Liveness", "httpGet": { "path": "/health", "port": 8080 } }
+          ]
         }
       ],
       "scale": { "minReplicas": 2, "maxReplicas": 10 }
