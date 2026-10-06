@@ -44,10 +44,14 @@ export class GateCatalog {
 
     const metadata: GateTypeMetadata = Object.freeze({
       type: definition.type,
+      description: definition.description,
       supportedPhases: Object.freeze([...definition.supportedPhases]),
       providerRequirements: Object.freeze(
         definition.providerRequirements.map((requirement) => Object.freeze({ ...requirement }))
-      )
+      ),
+      conditionKeys: Object.freeze(["runtime_type", "operating_system", "provider_available"]),
+      assertionSchema: "normalized-evidence/v1",
+      supportsRemediation: true
     });
     const registered: RegisteredGateType = Object.freeze({
       metadata,

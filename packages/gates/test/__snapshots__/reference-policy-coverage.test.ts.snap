@@ -1,0 +1,1099 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`reference policy gate coverage > publishes a stable, complete catalogue metadata snapshot 1`] = `
+{
+  "artifact.instrumentation_configuration": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate rendered telemetry instrumentation.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "artifact.instrumentation_configuration",
+  },
+  "asset.metadata": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate service ownership metadata.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "asset.metadata",
+  },
+  "asset.url": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate a constrained HTTPS asset URL.",
+    "providerRequirements": [
+      {
+        "capability": "probe",
+        "provider": "http",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "asset.url",
+  },
+  "azure_container_apps.configuration": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate release-safe Azure Container Apps configuration.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "azure_container_apps.configuration",
+  },
+  "azure_container_apps.image_identity": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Compare Container Apps image digest and revision suffix with release expectations.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "azure_container_apps.image_identity",
+  },
+  "azure_container_apps.probes": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate Container Apps startup, readiness, and liveness probes.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "azure_container_apps.probes",
+  },
+  "azure_container_apps.replica_health": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate Container Apps replica stability and lifecycle failures.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "azure_container_apps.replica_health",
+  },
+  "azure_container_apps.revision_status": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate Container Apps application, revision, and replica readiness.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "azure_container_apps.revision_status",
+  },
+  "azure_container_apps.traffic": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Observe workflow-owned Container Apps traffic weights without mutating them.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "azure_container_apps.traffic",
+  },
+  "azure_vm.instance_view": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate Azure VM provisioning, power, and maintenance state.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "azure_vm.instance_view",
+  },
+  "comparison.metric": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Compare a candidate metric with a safe baseline.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "comparison.metric",
+  },
+  "comparison.multi_metric": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Compare candidate CPU and memory demand with per-request baseline values.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "comparison.multi_metric",
+  },
+  "comparison.telemetry_volume": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Compare per-request metric series, log bytes, and spans with a safe baseline.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "comparison.telemetry_volume",
+  },
+  "comparison.trace_metrics": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Compare expected dependency latency from trace metrics.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "comparison.trace_metrics",
+  },
+  "dependency.health": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Require every configured dependency to be healthy.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "dependency.health",
+  },
+  "deployment.concurrency": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Reject another active deployment for the target.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "deployment.concurrency",
+  },
+  "evidence.incident_state": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Reject major active incidents for the service.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "evidence.incident_state",
+  },
+  "evidence.otlp_contract": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate captured OTLP telemetry contract evidence.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "evidence.otlp_contract",
+  },
+  "evidence.sarif": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate static instrumentation findings.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "evidence.sarif",
+  },
+  "grafana.alert_rules": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate actionable alert rules.",
+    "providerRequirements": [
+      {
+        "capability": "read",
+        "provider": "grafana",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "grafana.alert_rules",
+  },
+  "grafana.alert_state": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Reject active service alerts.",
+    "providerRequirements": [
+      {
+        "capability": "alerting",
+        "provider": "grafana",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "grafana.alert_state",
+  },
+  "grafana.burn_rate": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate paired short and long burn windows atomically.",
+    "providerRequirements": [
+      {
+        "capability": "read",
+        "provider": "grafana",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "grafana.burn_rate",
+  },
+  "grafana.dashboard": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate service dashboard metadata.",
+    "providerRequirements": [
+      {
+        "capability": "read",
+        "provider": "grafana",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "grafana.dashboard",
+  },
+  "grafana.error_budget": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Require sufficient remaining error budget.",
+    "providerRequirements": [
+      {
+        "capability": "read",
+        "provider": "grafana",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "grafana.error_budget",
+  },
+  "grafana.notification_policy": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate critical notification routing.",
+    "providerRequirements": [
+      {
+        "capability": "read",
+        "provider": "grafana",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "grafana.notification_policy",
+  },
+  "grafana.slo_definition": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate the service SLO definition.",
+    "providerRequirements": [
+      {
+        "capability": "read",
+        "provider": "grafana",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "grafana.slo_definition",
+  },
+  "grafana.slo_status": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Require a fresh met SLO evaluation.",
+    "providerRequirements": [
+      {
+        "capability": "read",
+        "provider": "grafana",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "grafana.slo_status",
+  },
+  "http.assertion": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate status, latency, headers, and JSON from guarded HTTP probe evidence.",
+    "providerRequirements": [
+      {
+        "capability": "probe",
+        "provider": "http",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "http.assertion",
+  },
+  "identity.contract": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate canonical service and immutable release identity.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "identity.contract",
+  },
+  "kubernetes.events": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Detect release-window Kubernetes warning events.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "kubernetes.events",
+  },
+  "kubernetes.image_identity": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Compare ready pod imageID digests with the expected release digest.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "kubernetes.image_identity",
+  },
+  "kubernetes.manifest": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate immutable, explicit, least-privileged Kubernetes workload manifests.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "kubernetes.manifest",
+  },
+  "kubernetes.pod_health": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate Kubernetes pod readiness, restart deltas, states, and probes.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "kubernetes.pod_health",
+  },
+  "kubernetes.probes": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate bounded Kubernetes startup, readiness, and liveness probes.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "kubernetes.probes",
+  },
+  "kubernetes.resources": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate Kubernetes resources, replicas, and disruption protection.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "kubernetes.resources",
+  },
+  "kubernetes.rollout_status": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate Kubernetes observed generation, conditions, replicas, and rollout duration.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "kubernetes.rollout_status",
+  },
+  "kubernetes.rollout_strategy": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate an availability-preserving Kubernetes rollout strategy.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "kubernetes.rollout_strategy",
+  },
+  "metric.multi_threshold": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate multiple candidate resource metrics atomically.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "metric.multi_threshold",
+  },
+  "metric.threshold": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate a bounded metric threshold from valid samples.",
+    "providerRequirements": [
+      {
+        "capability": "query",
+        "provider": "metrics",
+        "required": true,
+      },
+    ],
+    "supportedPhases": [
+      "pre_deployment",
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "metric.threshold",
+  },
+  "policy.change_window": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate deployment freezes and explicit exceptions.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "policy.change_window",
+  },
+  "policy.coverage": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate post-deployment failure-mode coverage.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "policy.coverage",
+  },
+  "policy.self_check": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate policy completeness and secret-safe references.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "policy.self_check",
+  },
+  "providers.health": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate required provider reachability, latency, authentication, and query access.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "providers.health",
+  },
+  "runtime.capacity": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate runtime capacity and rollout surge schedulability.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "runtime.capacity",
+  },
+  "runtime.provisioned": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Verify that the intended runtime resource was provisioned after deployment.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "runtime.provisioned",
+  },
+  "runtime.ready": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Verify normalized workload readiness over consecutive samples.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "runtime.ready",
+  },
+  "runtime.release_identity": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Compare runtime release identity with signed deployment evidence and expectations.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "runtime.release_identity",
+  },
+  "runtime.stability": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Reject restarts, crash loops, out-of-memory terminations, and unhealthy instances.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "runtime.stability",
+  },
+  "synthetic.plan": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate bounded release verification checks.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "synthetic.plan",
+  },
+  "synthetic.result": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Require named release synthetic tests to pass within duration and identity bounds.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "synthetic.result",
+  },
+  "telemetry.cardinality_estimate": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate a pre-deployment telemetry FinOps estimate.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.cardinality_estimate",
+  },
+  "telemetry.collector_health": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate collector failures, refusals, queues, and freshness.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.collector_health",
+  },
+  "telemetry.contract": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate the live metric, log, trace, resource, and sensitive-field contract.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.contract",
+  },
+  "telemetry.correlation": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Measure structured log correlation for sampled error traces.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.correlation",
+  },
+  "telemetry.freshness": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate freshness and future skew independently for every telemetry signal.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.freshness",
+  },
+  "telemetry.identity_consistency": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Compare canonical identity across runtime, telemetry signals, and attestation.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.identity_consistency",
+  },
+  "telemetry.pipeline_configuration": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate collector routing and resilience.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.pipeline_configuration",
+  },
+  "telemetry.presence": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Require telemetry records matching canonical candidate identity.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.presence",
+  },
+  "telemetry.query_validation": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate bounded and scoped telemetry queries.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.query_validation",
+  },
+  "telemetry.service_graph": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Verify expected caller and dependency relationships in traces.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.service_graph",
+  },
+  "telemetry.volume_estimate": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Evaluate a pre-deployment telemetry FinOps estimate.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "telemetry.volume_estimate",
+  },
+  "vm.agent_health": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Require healthy, current telemetry export from every VM agent.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "vm.agent_health",
+  },
+  "vm.capacity": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate VM fleet deployment headroom.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "vm.capacity",
+  },
+  "vm.host_health": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate CPU, memory, disk, load, and availability for every VM host.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "vm.host_health",
+  },
+  "vm.release_identity": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Require immutable VM release and rollback identity.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "vm.release_identity",
+  },
+  "vm.release_marker": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Require one intended release marker across every VM host.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "vm.release_marker",
+  },
+  "vm.service_definition": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Validate bounded Windows or systemd service-manager policy.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "pre_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "vm.service_definition",
+  },
+  "vm.service_health": {
+    "assertionSchema": "normalized-evidence/v1",
+    "conditionKeys": [
+      "runtime_type",
+      "operating_system",
+      "provider_available",
+    ],
+    "description": "Require service health on every expected VM host.",
+    "providerRequirements": [],
+    "supportedPhases": [
+      "post_deployment",
+    ],
+    "supportsRemediation": true,
+    "type": "vm.service_health",
+  },
+}
+`;

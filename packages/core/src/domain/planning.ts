@@ -8,8 +8,12 @@ export interface ProviderRequirement {
 
 export interface GateTypeMetadata {
   readonly type: string;
+  readonly description: string;
   readonly supportedPhases: readonly Phase[];
   readonly providerRequirements: readonly ProviderRequirement[];
+  readonly conditionKeys: readonly string[];
+  readonly assertionSchema: string;
+  readonly supportsRemediation: boolean;
 }
 
 export type GateCatalogMetadata = Readonly<Record<string, GateTypeMetadata>>;
