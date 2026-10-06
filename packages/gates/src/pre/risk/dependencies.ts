@@ -8,17 +8,21 @@ export const dependencyHealthGate = createEvidenceGate({
     const dependencies = Array.isArray(value.dependencies)
       ? (value.dependencies as EvidenceRecord[])
       : [];
-    const unhealthy = dependencies.filter(
-      (dependency) => dependency.required !== false && dependency.healthy !== true
-    );
-    return [
-      assertion(
-        "required dependencies",
-        dependencies.length > 0 && unhealthy.length === 0,
-        "Every required dependency is healthy",
-        unhealthy.length,
-        0
-      )
-    ];
+    if (dependencies.length === 0) {
+      return [
+        assertion("required dependencies", false, "Dependency health evidence is present", 0)
+      ];
+    }
+    return dependencies
+      .filter((dependency) => dependency.required !== false)
+      .map((dependency) =>
+        assertion(
+          String(dependency.name ?? "dependency"),
+          dependency.healthy === true,
+          "Required dependency is healthy",
+          dependency.healthy,
+          true
+        )
+      );
   }
 });

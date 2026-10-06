@@ -7,7 +7,11 @@ export const alertStateGate = createEvidenceGate({
   providerRequirements: [{ provider: "grafana", capability: "alerting", required: true }],
   evaluate(_definition, value) {
     const alerts = Array.isArray(value.alerts) ? (value.alerts as EvidenceRecord[]) : [];
-    const active = alerts.filter((alert) =>
+    const scopedAlerts =
+      value.candidatePeriodOnly === true
+        ? alerts.filter((alert) => alert.startedAfterDeployment === true)
+        : alerts;
+    const active = scopedAlerts.filter((alert) =>
       ["firing", "pending", "error"].includes(String(alert.state))
     );
     return [

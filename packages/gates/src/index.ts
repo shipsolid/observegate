@@ -5,4 +5,5 @@ export * from "./execution/execute-gate.js";
 export * from "./evaluation.js";
 export * from "./register-readiness.js";
 export * from "./register-post-common.js";
+export * from "./register-post-reliability.js";
 export * from "./register-risk.js";

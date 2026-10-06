@@ -41,7 +41,7 @@ export const errorBudgetGate = createEvidenceGate({
       typeof value.remainingPercent === "number" ? value.remainingPercent : Number.NaN;
     const minimum =
       typeof value.minimumRemainingPercent === "number" ? value.minimumRemainingPercent : 0;
-    return [
+    const results = [
       fresh(value),
       assertion(
         "remaining budget",
@@ -51,6 +51,22 @@ export const errorBudgetGate = createEvidenceGate({
         minimum
       )
     ];
+    if (typeof value.maximumConsumedDuringReleasePercent === "number") {
+      const consumed =
+        typeof value.consumedDuringReleasePercent === "number"
+          ? value.consumedDuringReleasePercent
+          : Number.POSITIVE_INFINITY;
+      results.push(
+        assertion(
+          "release budget consumption",
+          consumed <= value.maximumConsumedDuringReleasePercent,
+          "Release-period budget consumption is within policy",
+          consumed,
+          value.maximumConsumedDuringReleasePercent
+        )
+      );
+    }
+    return results;
   }
 });
 
