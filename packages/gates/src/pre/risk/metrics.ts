@@ -1,11 +1,11 @@
 import { assertion, createEvidenceGate } from "../../evaluation.js";
 
-function comparison(observed: number, operator: unknown, threshold: number): boolean {
-  if (operator === "lt") return observed < threshold;
-  if (operator === "lte") return observed <= threshold;
-  if (operator === "gt") return observed > threshold;
-  if (operator === "gte") return observed >= threshold;
-  if (operator === "eq") return observed === threshold;
+export function compareThreshold(observed: number, operator: unknown, threshold: number): boolean {
+  if (operator === "lt" || operator === "less_than") return observed < threshold;
+  if (operator === "lte" || operator === "less_than_or_equal") return observed <= threshold;
+  if (operator === "gt" || operator === "greater_than") return observed > threshold;
+  if (operator === "gte" || operator === "greater_than_or_equal") return observed >= threshold;
+  if (operator === "eq" || operator === "equal") return observed === threshold;
   return false;
 }
 
@@ -19,7 +19,7 @@ export const metricThresholdGate = createEvidenceGate({
     const threshold = typeof value.threshold === "number" ? value.threshold : Number.NaN;
     const samples = typeof value.sampleCount === "number" ? value.sampleCount : 0;
     const minimum = typeof value.minimumSamples === "number" ? value.minimumSamples : 1;
-    return [
+    const assertions = [
       assertion(
         "minimum samples",
         samples >= minimum,
@@ -31,11 +31,30 @@ export const metricThresholdGate = createEvidenceGate({
         "threshold",
         Number.isFinite(observed) &&
           Number.isFinite(threshold) &&
-          comparison(observed, value.operator, threshold),
+          compareThreshold(observed, value.operator, threshold),
         "Metric satisfies its threshold",
         observed,
         threshold
       )
     ];
+    const minimumRequests =
+      typeof value.minimumRequests === "number"
+        ? value.minimumRequests
+        : typeof value.minimumTotalRequests === "number"
+          ? value.minimumTotalRequests
+          : undefined;
+    if (minimumRequests !== undefined) {
+      const requestCount = typeof value.requestCount === "number" ? value.requestCount : 0;
+      assertions.unshift(
+        assertion(
+          "minimum requests",
+          requestCount >= minimumRequests,
+          "Metric has enough candidate traffic",
+          requestCount,
+          minimumRequests
+        )
+      );
+    }
+    return assertions;
   }
 });

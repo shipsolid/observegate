@@ -27,6 +27,10 @@ interface RegisteredGateType {
 export class GateCatalog {
   private readonly definitions = new Map<string, RegisteredGateType>();
 
+  public has(type: string): boolean {
+    return this.definitions.has(type);
+  }
+
   public register<TDefinition, TEvidence>(
     definition: GateTypeDefinition<TDefinition, TEvidence>
   ): this {

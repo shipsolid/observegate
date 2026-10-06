@@ -1,0 +1,127 @@
+{
+  "runtime.provisioned": {
+    "resourceExists": true,
+    "provisioningState": "ready",
+    "observedAt": "2026-10-06T08:05:00.000Z",
+    "deployedAt": "2026-10-06T08:00:00.000Z"
+  },
+  "runtime.ready": {
+    "ready": true,
+    "availableInstances": 3,
+    "minimumAvailableInstances": 2,
+    "unavailableInstances": 0,
+    "consecutiveSuccessfulSamples": 3,
+    "requiredConsecutiveSamples": 3
+  },
+  "runtime.release_identity": {
+    "runtime": {
+      "releaseId": "abc1234",
+      "imageDigest": "sha256:image",
+      "artifactDigest": "sha256:artifact",
+      "deploymentId": "deploy-42"
+    },
+    "attestation": {
+      "releaseId": "abc1234",
+      "imageDigest": "sha256:image",
+      "artifactDigest": "sha256:artifact",
+      "deploymentId": "deploy-42"
+    },
+    "expected": {
+      "releaseId": "abc1234",
+      "imageDigest": "sha256:image",
+      "artifactDigest": "sha256:artifact",
+      "deploymentId": "deploy-42"
+    }
+  },
+  "metric.threshold": {
+    "value": 99.9,
+    "threshold": 99.5,
+    "operator": "gte",
+    "sampleCount": 12,
+    "minimumSamples": 5,
+    "requestCount": 500,
+    "minimumRequests": 200
+  },
+  "telemetry.presence": {
+    "records": 5,
+    "minimumRecords": 1,
+    "identityMatches": true
+  },
+  "telemetry.freshness": {
+    "signals": [
+      {
+        "name": "metrics",
+        "ageMs": 30000,
+        "maximumAgeMs": 120000,
+        "futureSkewMs": 0,
+        "maximumFutureSkewMs": 30000
+      },
+      {
+        "name": "logs",
+        "ageMs": 45000,
+        "maximumAgeMs": 120000,
+        "futureSkewMs": 0,
+        "maximumFutureSkewMs": 30000
+      },
+      {
+        "name": "traces",
+        "ageMs": 60000,
+        "maximumAgeMs": 180000,
+        "futureSkewMs": 0,
+        "maximumFutureSkewMs": 30000
+      }
+    ]
+  },
+  "telemetry.contract": {
+    "signals": ["metrics", "logs", "traces"],
+    "requiredSignals": ["metrics", "logs", "traces"],
+    "resourceAttributesValid": true,
+    "httpServerDurationMetricPresent": true,
+    "errorLogsPresent": true,
+    "serverSpansPresent": true,
+    "forbiddenFieldsFound": []
+  },
+  "telemetry.identity_consistency": {
+    "expectedReleaseId": "abc1234",
+    "identities": [
+      { "source": "runtime", "releaseId": "abc1234", "consistent": true },
+      { "source": "metrics", "releaseId": "abc1234", "consistent": true },
+      { "source": "logs", "releaseId": "abc1234", "consistent": true },
+      { "source": "traces", "releaseId": "abc1234", "consistent": true },
+      { "source": "attestation", "releaseId": "abc1234", "consistent": true }
+    ]
+  },
+  "telemetry.correlation": {
+    "sampledCount": 20,
+    "correlatedCount": 20,
+    "minimumCorrelatedPercent": 95
+  },
+  "telemetry.service_graph": {
+    "callerPresent": true,
+    "observedDependencies": ["payments", "inventory"],
+    "requiredDependencies": ["payments", "inventory"],
+    "unknownPeerPercent": 1,
+    "maximumUnknownPeerPercent": 5
+  },
+  "telemetry.collector_health": {
+    "exportFailures": 0,
+    "refusedRecords": 0,
+    "maximumQueueUtilizationPercent": 20,
+    "allowedQueueUtilizationPercent": 80
+  },
+  "metric.multi_threshold": {
+    "requestCount": 500,
+    "minimumRequests": 200,
+    "metrics": [
+      { "name": "cpu_utilization", "value": 0.5, "operator": "lte", "threshold": 0.85 },
+      { "name": "memory_utilization", "value": 0.6, "operator": "lte", "threshold": 0.85 },
+      { "name": "queue_utilization", "value": 0.2, "operator": "lte", "threshold": 0.8 }
+    ]
+  },
+  "runtime.stability": {
+    "unexpectedRestarts": 0,
+    "crashLoops": 0,
+    "outOfMemoryTerminations": 0,
+    "unhealthyInstances": 0
+  }
+}
