@@ -1,0 +1,2363 @@
+# observability-gate.yml
+#
+# Exhaustive reference policy for an observability deployment gate.
+#
+# The same policy is evaluated twice:
+#   1. pre_deployment: prove the service is observable by design and that it is
+#      safe to start a change now.
+#   2. post_deployment: prove that the intended release is running, observable,
+#      healthy, and not materially worse than its baseline.
+#
+# The gate is read-only. It must not deploy workloads, change traffic, perform a
+# rollback, modify alerts or dashboards, or connect to hosts through SSH/WinRM.
+#
+# GitHub Actions workflow sketch:
+#
+# jobs:
+#   pre-deployment-gate:
+#     permissions:
+#       contents: read
+#       id-token: write
+#     steps:
+#       - uses: actions/checkout@<FULL_COMMIT_SHA>
+#       - uses: shipsolid/observability-gate@<FULL_COMMIT_SHA>
+#         with:
+#           config: observability-gate.yml
+#           phase: pre_deployment
+#         env:
+#           TARGET_ID: aks-checkout
+#           SERVICE_NAME: checkout
+#           SERVICE_NAMESPACE: commerce
+#           ENVIRONMENT: production
+#           RELEASE_ID: $${{ github.sha }}
+#           DEPLOYMENT_ID: $${{ github.run_id }}-$${{ github.run_attempt }}
+#           PROMETHEUS_URL: $${{ vars.PROMETHEUS_URL }}
+#           LOKI_URL: $${{ vars.LOKI_URL }}
+#           TEMPO_URL: $${{ vars.TEMPO_URL }}
+#           GRAFANA_URL: $${{ vars.GRAFANA_URL }}
+#           GRAFANA_TOKEN: $${{ secrets.GRAFANA_TOKEN }}
+#
+#   deploy:
+#     needs: pre-deployment-gate
+#     # The deployment remains owned by the user's workflow.
+#
+#   post-deployment-gate:
+#     needs: deploy
+#     permissions:
+#       contents: read
+#       id-token: write
+#     steps:
+#       - uses: actions/checkout@<FULL_COMMIT_SHA>
+#       - uses: shipsolid/observability-gate@<FULL_COMMIT_SHA>
+#         with:
+#           config: observability-gate.yml
+#           phase: post_deployment
+#         env:
+#           TARGET_ID: aks-checkout
+#           SERVICE_NAME: checkout
+#           SERVICE_NAMESPACE: commerce
+#           ENVIRONMENT: production
+#           RELEASE_ID: $${{ github.sha }}
+#           DEPLOYMENT_ID: $${{ github.run_id }}-$${{ github.run_attempt }}
+#           DEPLOYED_AT: $${{ needs.deploy.outputs.deployed_at }}
+#           BASELINE_RELEASE_ID: $${{ needs.deploy.outputs.previous_release }}
+#           PROMETHEUS_URL: $${{ vars.PROMETHEUS_URL }}
+#           LOKI_URL: $${{ vars.LOKI_URL }}
+#           TEMPO_URL: $${{ vars.TEMPO_URL }}
+#           GRAFANA_URL: $${{ vars.GRAFANA_URL }}
+#           GRAFANA_TOKEN: $${{ secrets.GRAFANA_TOKEN }}
+
+metadata:
+  name: checkout-production-observability-gate
+  description: >
+    Release policy that combines observability readiness, change-risk checks,
+    normalized runtime evidence, telemetry contracts, release health, regression
+    analysis, SLOs, alerts, dependencies, and synthetic evidence.
+  owner: commerce-platform
+  service_tier: critical
+  tags:
+    system: storefront
+    repository: shipsolid/checkout
+    cost_center: commerce
+
+execution:
+  active_target: "${TARGET_ID}"
+
+  environment_substitution:
+    syntax: "${VARIABLE_NAME}"
+    # Unused target examples do not require their environment variables.
+    scope: active_target_and_selected_phase
+    missing_required_variable: error
+    allow_default_values: false
+
+  phases:
+    pre_deployment:
+      timeout: 12m
+      concurrency: 8
+    post_deployment:
+      timeout: 35m
+      concurrency: 8
+
+  retries:
+    attempts: 3
+    initial_backoff: 2s
+    maximum_backoff: 15s
+    retry_on:
+      - timeout
+      - connection_reset
+      - http_429
+      - http_502
+      - http_503
+      - http_504
+
+  enforcement:
+    # blocking failures contribute to the deployment decision.
+    # advisory failures are reported but do not block.
+    default: blocking
+    fail_fast: false
+    minimum_evidence_coverage_percent: 90
+    missing_blocking_evidence: fail
+    provider_unavailable: fail
+    unsupported_gate: fail
+
+  clock:
+    maximum_clock_skew: 30s
+
+identity:
+  canonical:
+    service_name: "${SERVICE_NAME}"
+    service_namespace: "${SERVICE_NAMESPACE}"
+    environment: "${ENVIRONMENT}"
+    release_id: "${RELEASE_ID}"
+    deployment_id: "${DEPLOYMENT_ID}"
+
+  required_resource_attributes:
+    - service.name
+    - service.namespace
+    - service.version
+    - deployment.environment.name
+
+  recommended_resource_attributes:
+    - service.instance.id
+    - cloud.provider
+    - cloud.region
+    - cloud.resource_id
+    - k8s.cluster.name
+    - k8s.namespace.name
+    - k8s.deployment.name
+    - container.image.name
+    - container.image.tag
+
+  provider_mappings:
+    metrics:
+      service.name: service_name
+      service.namespace: service_namespace
+      service.version: service_version
+      deployment.environment.name: deployment_environment
+      service.instance.id: service_instance_id
+    logs:
+      service.name: resource_service_name
+      service.namespace: resource_service_namespace
+      service.version: resource_service_version
+      deployment.environment.name: resource_deployment_environment_name
+      trace_id: trace_id
+      span_id: span_id
+    traces:
+      service.name: resource.service.name
+      service.namespace: resource.service.namespace
+      service.version: resource.service.version
+      deployment.environment.name: resource.deployment.environment.name
+
+release:
+  candidate:
+    id: "${RELEASE_ID}"
+    deployed_at: "${DEPLOYED_AT}"
+    minimum_age_before_evaluation: 2m
+    maximum_age_before_evaluation: 45m
+
+  baseline:
+    strategy: explicit_or_previous_healthy_release
+    explicit_release_id: "${BASELINE_RELEASE_ID}"
+    lookback: 24h
+    minimum_samples: 500
+    exclude_incident_windows: true
+    exclude_deployment_windows: true
+
+  comparison:
+    method: relative_and_absolute
+    minimum_candidate_samples: 200
+    low_traffic_behavior: extend_then_inconclusive
+    maximum_extension: 15m
+
+observation:
+  pre_deployment:
+    current_health_window: 15m
+    current_health_offset: 0m
+    evidence_max_age: 10m
+
+  post_deployment:
+    warmup: 2m
+    evaluation_window: 10m
+    step: 30s
+    settle_between_samples: 15s
+    minimum_successful_samples: 8
+    maximum_evidence_age: 2m
+
+  no_data:
+    blocking_gate: fail
+    advisory_gate: warn
+    comparison_gate: inconclusive
+    synthetic_gate: fail
+
+decision:
+  outcomes:
+    pass:
+      exit_code: 0
+      conclusion: success
+    warn:
+      exit_code: 0
+      conclusion: neutral
+    fail:
+      exit_code: 1
+      conclusion: failure
+    inconclusive:
+      exit_code: 2
+      conclusion: failure
+    error:
+      exit_code: 3
+      conclusion: failure
+
+  aggregate:
+    fail_when:
+      - any_blocking_gate_is_fail
+      - any_blocking_gate_is_error
+      - any_blocking_gate_is_inconclusive
+      - evidence_coverage_below_minimum
+    warn_when:
+      - one_or_more_advisory_gates_fail
+      - one_or_more_gates_are_skipped
+    pass_when:
+      - all_blocking_gates_pass
+
+targets:
+  # Keep only the definitions relevant to the repository, or select one at run
+  # time with TARGET_ID. Runtime adapters emit the same normalized evidence.
+  definitions:
+    aks-checkout:
+      runtime:
+        type: kubernetes
+        provider: kubernetes-runtime
+        distribution: aks
+        context_env: KUBE_CONTEXT
+        namespace_env: K8S_NAMESPACE
+        workload:
+          kind: Deployment
+          name_env: K8S_WORKLOAD
+          container_env: K8S_CONTAINER
+        expected:
+          image_digest_env: IMAGE_DIGEST
+          minimum_available_replicas: 2
+        artifacts:
+          rendered_manifests:
+            - deploy/rendered/kubernetes.yaml
+
+    aca-order:
+      runtime:
+        type: azure_container_apps
+        provider: azure-runtime
+        subscription_id_env: AZURE_SUBSCRIPTION_ID
+        resource_group_env: AZURE_RESOURCE_GROUP
+        application_name_env: CONTAINER_APP_NAME
+        revision_name_env: CONTAINER_APP_REVISION
+        expected:
+          image_digest_env: IMAGE_DIGEST
+          revision_suffix_env: REVISION_SUFFIX
+        artifacts:
+          rendered_configuration:
+            - deploy/rendered/container-app.json
+
+    azure-windows-vm:
+      runtime:
+        type: azure_vm
+        operating_system: windows
+        provider: azure-runtime
+        subscription_id_env: AZURE_SUBSCRIPTION_ID
+        resource_group_env: AZURE_RESOURCE_GROUP
+        virtual_machine_name_env: AZURE_VM_NAME
+        service_name_env: WINDOWS_SERVICE_NAME
+        expected:
+          artifact_digest_env: ARTIFACT_DIGEST
+          release_marker_env: RELEASE_MARKER
+        artifacts:
+          service_definition:
+            - deploy/windows/service.json
+
+    onprem-linux-vm:
+      runtime:
+        type: linux_vm
+        provider: generic-runtime
+        host_group_env: HOST_GROUP
+        service_name_env: SYSTEMD_SERVICE_NAME
+        expected:
+          artifact_digest_env: ARTIFACT_DIGEST
+          release_marker_env: RELEASE_MARKER
+        artifacts:
+          service_definition:
+            - deploy/systemd/checkout.service
+
+providers:
+  runtime:
+    kubernetes-runtime:
+      type: kubernetes
+      authentication:
+        strategy: ambient_or_kubeconfig
+        kubeconfig_env: KUBECONFIG
+      permissions:
+        mode: read_only
+        required_verbs:
+          - get
+          - list
+          - watch
+        required_resources:
+          - deployments
+          - replicasets
+          - statefulsets
+          - daemonsets
+          - pods
+          - events
+
+    azure-runtime:
+      type: azure_resource_manager
+      authentication:
+        strategy: workload_identity
+        tenant_id_env: AZURE_TENANT_ID
+        client_id_env: AZURE_CLIENT_ID
+        subscription_id_env: AZURE_SUBSCRIPTION_ID
+      permissions:
+        mode: read_only
+        minimum_role: Reader
+      endpoints:
+        resource_manager: https://management.azure.com
+
+    generic-runtime:
+      type: evidence_only
+      # VM validation comes from telemetry and signed deployment evidence.
+      direct_host_access: forbidden
+      accepted_evidence:
+        - metrics
+        - logs
+        - traces
+        - deployment_manifest
+        - signed_attestation
+
+  telemetry:
+    metrics:
+      type: prometheus
+      endpoint_env: PROMETHEUS_URL
+      authentication:
+        bearer_token_env: PROMETHEUS_TOKEN
+      request_timeout: 15s
+      tls:
+        verify: true
+
+    logs:
+      type: loki
+      endpoint_env: LOKI_URL
+      authentication:
+        bearer_token_env: LOKI_TOKEN
+      request_timeout: 20s
+      tls:
+        verify: true
+
+    traces:
+      type: tempo
+      endpoint_env: TEMPO_URL
+      authentication:
+        bearer_token_env: TEMPO_TOKEN
+      request_timeout: 20s
+      tls:
+        verify: true
+
+    grafana:
+      type: grafana
+      endpoint_env: GRAFANA_URL
+      authentication:
+        bearer_token_env: GRAFANA_TOKEN
+      request_timeout: 20s
+      tls:
+        verify: true
+
+  evidence:
+    static-analysis:
+      type: sarif
+      files:
+        - artifacts/observability-analysis.sarif
+      required: false
+      maximum_age: 24h
+
+    telemetry-contract:
+      type: otlp_capture
+      files:
+        - artifacts/telemetry-contract.json
+      required: true
+      maximum_age: 30m
+      provenance:
+        require_commit_sha: true
+        require_workflow_run: true
+
+    deployment:
+      type: signed_json
+      files:
+        - artifacts/deployment-evidence.json
+      required_in:
+        - post_deployment
+      signature:
+        required: true
+        trusted_issuer_env: EVIDENCE_ISSUER
+        audience: observability-gate
+
+    synthetic:
+      type: junit_or_json
+      files:
+        - artifacts/synthetic-results.xml
+        - artifacts/synthetic-results.json
+      required: false
+      maximum_age: 30m
+
+    incidents:
+      type: json
+      files:
+        - artifacts/active-incidents.json
+      required: false
+      maximum_age: 5m
+
+  http:
+    public-probe:
+      type: http
+      timeout: 10s
+      tls:
+        verify: true
+      redirect_policy: same_origin
+      allowed_hosts:
+        - "${SERVICE_HOST}"
+
+gate_defaults:
+  enabled: true
+  enforcement: blocking
+  timeout: 60s
+  retries: inherit
+  target: active
+  emit:
+    - result
+    - evidence_summary
+    - remediation
+  redact:
+    - authorization
+    - cookie
+    - set-cookie
+    - query_string
+    - request_body
+    - response_body
+
+gates:
+  pre_deployment:
+    # -----------------------------------------------------------------------
+    # Observable-by-design readiness
+    # -----------------------------------------------------------------------
+
+    - id: readiness.policy
+      name: Repository declares a complete observability policy
+      type: policy.self_check
+      description: >
+        Validates configuration structure, unique gate identifiers, supported
+        adapters, required phase sections, and references to providers/targets.
+      assertions:
+        require_sections:
+          - identity
+          - targets
+          - providers
+          - gates.pre_deployment
+          - gates.post_deployment
+          - reporting
+          - security
+        unique_gate_ids: true
+        reject_unknown_fields: true
+        reject_inline_secrets: true
+        require_at_least_one_blocking_post_gate: true
+      remediation: Fix the configuration errors printed in the gate annotation.
+
+    - id: readiness.identity
+      name: Canonical telemetry identity is declared
+      type: identity.contract
+      assertions:
+        required_values:
+          service_name: "${SERVICE_NAME}"
+          service_namespace: "${SERVICE_NAMESPACE}"
+          environment: "${ENVIRONMENT}"
+          release_id: "${RELEASE_ID}"
+        release_id:
+          minimum_length: 7
+          maximum_length: 128
+          forbidden_values:
+            - latest
+            - main
+            - master
+            - unknown
+            - unset
+        environment:
+          allowed_pattern: '^[a-z0-9][a-z0-9._-]*$'
+      remediation: >
+        Supply stable service identity and an immutable release identifier such
+        as the Git commit SHA or image digest.
+
+    - id: readiness.owner
+      name: Service ownership is resolvable
+      type: asset.metadata
+      source:
+        files:
+          - catalog-info.yaml
+          - .github/CODEOWNERS
+      assertions:
+        owner_present: true
+        owner_is_not_placeholder: true
+        escalation_contact_present: true
+      remediation: Declare an owning team and escalation contact.
+
+    - id: readiness.runbook
+      name: Runbook exists and is reachable
+      type: asset.url
+      source:
+        url_env: RUNBOOK_URL
+      assertions:
+        schemes:
+          - https
+        expected_status:
+          - 200
+          - 204
+        maximum_redirects: 3
+        require_nonempty_document: true
+      remediation: Publish a production runbook and set RUNBOOK_URL.
+
+    - id: readiness.dashboard
+      name: Service dashboard exists
+      type: grafana.dashboard
+      source:
+        provider: grafana
+        uid_env: GRAFANA_DASHBOARD_UID
+      assertions:
+        exists: true
+        title_contains: "${SERVICE_NAME}"
+        minimum_panels: 4
+        required_panel_signals:
+          - traffic
+          - errors
+          - latency
+          - saturation
+        required_template_variables:
+          - environment
+          - service
+      remediation: >
+        Add a service dashboard with traffic, error, latency, and saturation
+        views filtered by canonical service identity.
+
+    - id: readiness.alert-rules
+      name: Actionable alert rules exist
+      type: grafana.alert_rules
+      source:
+        provider: grafana
+        labels:
+          service: "${SERVICE_NAME}"
+          environment: "${ENVIRONMENT}"
+      assertions:
+        minimum_enabled_rules: 2
+        require_severity_label: true
+        require_owner_label: true
+        require_runbook_annotation: true
+        forbid_no_data_ok_on_critical_rules: true
+      remediation: >
+        Create enabled, owned alert rules with severity and runbook metadata.
+
+    - id: readiness.alert-routing
+      name: Critical alerts have a notification route
+      type: grafana.notification_policy
+      source:
+        provider: grafana
+        match:
+          service: "${SERVICE_NAME}"
+          environment: "${ENVIRONMENT}"
+          severity: critical
+      assertions:
+        route_exists: true
+        receiver_is_configured: true
+        mute_timing_does_not_cover_deployment_window: true
+      remediation: Route critical service alerts to an active receiver.
+
+    - id: readiness.slo
+      name: Service-level objective is defined
+      type: grafana.slo_definition
+      source:
+        provider: grafana
+        uid_env: GRAFANA_SLO_UID
+      assertions:
+        exists: true
+        objective_percent:
+          minimum: 99
+          maximum: 100
+        window:
+          minimum: 7d
+        indicator_query_is_valid: true
+        labels_match_identity: true
+      remediation: Define a queryable SLO whose labels match the service identity.
+
+    - id: readiness.gate-queries
+      name: Gate queries compile and return the expected shape
+      type: telemetry.query_validation
+      sources:
+        metrics: metrics
+        logs: logs
+        traces: traces
+      assertions:
+        validate_queries_from:
+          - gates.pre_deployment
+          - gates.post_deployment
+        require_scalar_for_threshold_gates: true
+        reject_unbounded_log_queries: true
+        reject_high_cardinality_grouping:
+          - user_id
+          - session_id
+          - request_id
+          - trace_id
+        maximum_query_range: 24h
+      remediation: Fix invalid or unbounded telemetry queries before deployment.
+
+    - id: readiness.instrumentation-configuration
+      name: Rendered deployment enables telemetry export
+      type: artifact.instrumentation_configuration
+      source:
+        artifacts: target.runtime.artifacts
+      assertions:
+        require_service_name: true
+        require_service_version: true
+        require_environment: true
+        require_otlp_endpoint_or_agent: true
+        require_metrics_enabled: true
+        require_logs_enabled: true
+        require_traces_enabled: true
+        forbid_debug_exporter_in_production: true
+        forbid_plaintext_otlp_outside_localhost: true
+        forbid_hardcoded_credentials: true
+      remediation: >
+        Configure the deployed workload to emit metrics, logs, and traces with
+        canonical resource attributes through a production exporter.
+
+    - id: readiness.static-instrumentation-analysis
+      name: Static instrumentation findings are acceptable
+      type: evidence.sarif
+      enforcement: advisory
+      source:
+        provider: static-analysis
+      when:
+        provider_available: static-analysis
+      otherwise: skipped
+      assertions:
+        fail_on_levels:
+          - error
+        warn_on_levels:
+          - warning
+        accepted_rule_families:
+          - missing-span-error-recording
+          - missing-metric-unit
+          - high-cardinality-label
+          - unbounded-log-field
+          - sensitive-telemetry-field
+          - manual-context-propagation
+      remediation: >
+        Review the SARIF findings. Static analysis is supporting evidence, not
+        proof that telemetry works at runtime.
+
+    - id: readiness.telemetry-contract-test
+      name: Instrumented service passes a runtime telemetry contract
+      type: evidence.otlp_contract
+      source:
+        provider: telemetry-contract
+      assertions:
+        require_signals:
+          - metrics
+          - logs
+          - traces
+        require_resource_attributes:
+          - service.name
+          - service.namespace
+          - service.version
+          - deployment.environment.name
+        attribute_values:
+          service.name: "${SERVICE_NAME}"
+          service.namespace: "${SERVICE_NAMESPACE}"
+          service.version: "${RELEASE_ID}"
+          deployment.environment.name: "${ENVIRONMENT}"
+        require_trace_log_correlation: true
+        require_span_status_on_errors: true
+        require_http_route_normalization: true
+        forbid_metric_labels:
+          - user_id
+          - email
+          - session_id
+          - request_id
+          - trace_id
+          - raw_url
+        forbid_sensitive_fields:
+          - password
+          - authorization
+          - access_token
+          - refresh_token
+          - credit_card
+      remediation: >
+        Run the service in an integration test, capture OTLP output, and fix
+        missing signals, identity, correlation, cardinality, or sensitive data.
+
+    - id: readiness.telemetry-routing
+      name: Collector pipeline has a route for the service
+      type: telemetry.pipeline_configuration
+      source:
+        files:
+          - deploy/otel/collector.yaml
+          - deploy/otel/collector-values.yaml
+      assertions:
+        receiver_exists: true
+        processors_include:
+          - memory_limiter
+          - batch
+        exporters_exist_for:
+          - metrics
+          - logs
+          - traces
+        service_pipeline_references_exporters: true
+        retry_enabled: true
+        sending_queue_enabled: true
+        tls_verification_enabled: true
+      remediation: Add a production collector route with batching, retry, and TLS.
+
+    - id: readiness.synthetic-plan
+      name: A release verification probe is defined
+      type: synthetic.plan
+      source:
+        files:
+          - tests/synthetic/release-check.yaml
+          - tests/smoke/release-check.yaml
+      assertions:
+        at_least_one_file_exists: true
+        has_timeout: true
+        has_success_assertion: true
+        has_release_identity_assertion: true
+        does_not_log_secrets: true
+      remediation: Add a bounded smoke or synthetic check for the deployed release.
+
+    - id: readiness.post-gate-coverage
+      name: Post-deployment policy covers critical failure modes
+      type: policy.coverage
+      source:
+        phase: post_deployment
+      assertions:
+        require_blocking_categories:
+          - workload_identity
+          - workload_readiness
+          - telemetry_presence
+          - telemetry_freshness
+          - error_rate
+          - latency
+          - availability
+          - regression
+          - slo_or_error_budget
+          - active_alerts
+        require_platform_specific_readiness: true
+      remediation: Add blocking post-deployment gates for the missing categories.
+
+    # -----------------------------------------------------------------------
+    # Safe-to-change-now operational risk
+    # -----------------------------------------------------------------------
+
+    - id: risk.telemetry-backends
+      name: Required observability backends are reachable
+      type: providers.health
+      assertions:
+        providers:
+          - metrics
+          - logs
+          - traces
+          - grafana
+        maximum_latency: 3s
+        authentication_valid: true
+        query_permissions_valid: true
+      remediation: Restore backend connectivity or credentials before deploying.
+
+    - id: risk.current-health
+      name: Existing service is healthy before change
+      type: metric.threshold
+      source:
+        provider: metrics
+        query: |
+          (
+            sum(rate(http_server_request_duration_seconds_count{
+              service_name="${SERVICE_NAME}",
+              service_namespace="${SERVICE_NAMESPACE}",
+              deployment_environment="${ENVIRONMENT}",
+              http_response_status_code=~"2..|3.."
+            }[5m]))
+          )
+          /
+          clamp_min(
+            sum(rate(http_server_request_duration_seconds_count{
+              service_name="${SERVICE_NAME}",
+              service_namespace="${SERVICE_NAMESPACE}",
+              deployment_environment="${ENVIRONMENT}"
+            }[5m])),
+            0.001
+          )
+      window: 15m
+      assertions:
+        operator: greater_than_or_equal
+        threshold: 0.995
+        minimum_samples: 5
+      remediation: Stabilize the current release before introducing another change.
+
+    - id: risk.current-error-rate
+      name: Existing error rate is within its operating band
+      type: metric.threshold
+      source:
+        provider: metrics
+        query: |
+          100 *
+          sum(rate(http_server_request_duration_seconds_count{
+            service_name="${SERVICE_NAME}",
+            service_namespace="${SERVICE_NAMESPACE}",
+            deployment_environment="${ENVIRONMENT}",
+            http_response_status_code=~"5.."
+          }[5m]))
+          /
+          clamp_min(
+            sum(rate(http_server_request_duration_seconds_count{
+              service_name="${SERVICE_NAME}",
+              service_namespace="${SERVICE_NAMESPACE}",
+              deployment_environment="${ENVIRONMENT}"
+            }[5m])),
+            0.001
+          )
+      window: 15m
+      assertions:
+        operator: less_than_or_equal
+        threshold: 0.5
+        unit: percent
+      remediation: Investigate the existing error rate before deployment.
+
+    - id: risk.slo-status
+      name: SLO is currently meeting its objective
+      type: grafana.slo_status
+      source:
+        provider: grafana
+        uid_env: GRAFANA_SLO_UID
+      assertions:
+        status:
+          - met
+        maximum_data_age: 5m
+      remediation: Do not add change risk while the service is outside its SLO.
+
+    - id: risk.error-budget
+      name: Sufficient error budget remains
+      type: grafana.error_budget
+      source:
+        provider: grafana
+        uid_env: GRAFANA_SLO_UID
+      assertions:
+        remaining_percent:
+          greater_than_or_equal: 25
+      remediation: Wait for budget recovery or use an explicitly approved exception.
+
+    - id: risk.burn-rate
+      name: Error budget is not burning rapidly
+      type: grafana.burn_rate
+      source:
+        provider: grafana
+        uid_env: GRAFANA_SLO_UID
+      assertions:
+        windows:
+          - short: 5m
+            long: 1h
+            maximum: 14.4
+          - short: 30m
+            long: 6h
+            maximum: 6
+      remediation: Resolve the active reliability burn before deploying.
+
+    - id: risk.active-alerts
+      name: No firing critical service alerts
+      type: grafana.alert_state
+      source:
+        provider: grafana
+        labels:
+          service: "${SERVICE_NAME}"
+          environment: "${ENVIRONMENT}"
+      assertions:
+        forbidden_states:
+          - firing
+          - error
+        forbidden_severities:
+          - critical
+        pending_critical_is_failure: true
+      remediation: Resolve or explicitly silence the critical alert with audit context.
+
+    - id: risk.active-incidents
+      name: No active incident affects the service
+      type: evidence.incident_state
+      source:
+        provider: incidents
+      when:
+        provider_available: incidents
+      otherwise: skipped
+      assertions:
+        affected_service: "${SERVICE_NAME}"
+        affected_environment: "${ENVIRONMENT}"
+        forbidden_states:
+          - investigating
+          - identified
+          - monitoring
+        minimum_severity: major
+      remediation: Complete or formally waive the active incident before deployment.
+
+    - id: risk.dependencies
+      name: Critical dependencies are healthy
+      type: dependency.health
+      dependencies:
+        - name: payments
+          required: true
+          source:
+            provider: metrics
+            query: |
+              avg_over_time(probe_success{
+                dependency="payments",
+                environment="${ENVIRONMENT}"
+              }[5m])
+          assertions:
+            operator: greater_than_or_equal
+            threshold: 0.99
+        - name: inventory
+          required: true
+          source:
+            provider: metrics
+            query: |
+              avg_over_time(probe_success{
+                dependency="inventory",
+                environment="${ENVIRONMENT}"
+              }[5m])
+          assertions:
+            operator: greater_than_or_equal
+            threshold: 0.99
+      remediation: Restore required dependencies before deploying.
+
+    - id: risk.collector-health
+      name: Telemetry pipeline is healthy before change
+      type: telemetry.collector_health
+      source:
+        provider: metrics
+      assertions:
+        queries:
+          export_failures: |
+            sum(rate(otelcol_exporter_send_failed_spans[5m]))
+            + sum(rate(otelcol_exporter_send_failed_metric_points[5m]))
+            + sum(rate(otelcol_exporter_send_failed_log_records[5m]))
+          refused_data: |
+            sum(rate(otelcol_receiver_refused_spans[5m]))
+            + sum(rate(otelcol_receiver_refused_metric_points[5m]))
+            + sum(rate(otelcol_receiver_refused_log_records[5m]))
+          queue_utilization: |
+            max(
+              otelcol_exporter_queue_size
+              /
+              clamp_min(otelcol_exporter_queue_capacity, 1)
+            )
+        thresholds:
+          export_failures:
+            less_than_or_equal: 0
+          refused_data:
+            less_than_or_equal: 0
+          queue_utilization:
+            less_than_or_equal: 0.8
+      remediation: Restore collector capacity and exporter delivery before change.
+
+    - id: risk.capacity-headroom
+      name: Runtime has capacity for the rollout
+      type: runtime.capacity
+      source:
+        adapter: active
+      assertions:
+        cpu_headroom_percent:
+          greater_than_or_equal: 25
+        memory_headroom_percent:
+          greater_than_or_equal: 20
+        disk_headroom_percent:
+          greater_than_or_equal: 15
+        desired_surge_can_be_scheduled: true
+      remediation: Add capacity or reduce rollout surge before deployment.
+
+    - id: risk.change-freeze
+      name: Deployment is outside protected change windows
+      type: policy.change_window
+      source:
+        file: .github/change-windows.yml
+      assertions:
+        current_time_allowed: true
+        freeze_requires_approved_exception: true
+        exception:
+          environment_variable: CHANGE_EXCEPTION_ID
+          require_reason_env: CHANGE_EXCEPTION_REASON
+          require_approver_env: CHANGE_EXCEPTION_APPROVER
+      remediation: Wait for an allowed window or provide an approved exception.
+
+    - id: risk.concurrent-deployment
+      name: No conflicting deployment is active
+      type: deployment.concurrency
+      source:
+        provider: metrics
+        query: |
+          max(active_deployment{
+            service_name="${SERVICE_NAME}",
+            environment="${ENVIRONMENT}"
+          })
+      assertions:
+        operator: less_than_or_equal
+        threshold: 0
+        exclude_deployment_id: "${DEPLOYMENT_ID}"
+      remediation: Wait for the active deployment to finish.
+
+    - id: risk.cardinality-change
+      name: Telemetry cardinality change is bounded
+      type: telemetry.cardinality_estimate
+      enforcement: advisory
+      source:
+        provider: telemetry-contract
+      assertions:
+        new_metric_series:
+          less_than_or_equal: 500
+        new_log_attribute_keys:
+          less_than_or_equal: 20
+        new_span_attribute_keys:
+          less_than_or_equal: 20
+        estimated_series_growth_percent:
+          less_than_or_equal: 20
+      remediation: Remove unbounded dimensions or obtain a telemetry-cost exception.
+
+    - id: risk.telemetry-volume
+      name: Estimated telemetry volume is within budget
+      type: telemetry.volume_estimate
+      enforcement: advisory
+      source:
+        provider: telemetry-contract
+      assertions:
+        estimated_growth_percent:
+          metrics:
+            less_than_or_equal: 25
+          logs:
+            less_than_or_equal: 25
+          traces:
+            less_than_or_equal: 50
+      remediation: Reduce signal volume, sampling, or payload size before release.
+
+    # -----------------------------------------------------------------------
+    # Platform-specific pre-deployment validation
+    # -----------------------------------------------------------------------
+
+    - id: kubernetes.manifest
+      name: Kubernetes manifest matches the release contract
+      type: kubernetes.manifest
+      when:
+        runtime_type: kubernetes
+      otherwise: skipped
+      source:
+        artifacts: target.runtime.artifacts.rendered_manifests
+      assertions:
+        workload_exists: true
+        container_exists: true
+        image_is_digest_pinned: true
+        image_digest_env: IMAGE_DIGEST
+        namespace_is_explicit: true
+        forbid_latest_tag: true
+        forbid_privileged: true
+        read_only_root_filesystem: true
+      remediation: Render a deterministic, least-privileged workload manifest.
+
+    - id: kubernetes.probes
+      name: Kubernetes health probes are suitable for rollout
+      type: kubernetes.probes
+      when:
+        runtime_type: kubernetes
+      otherwise: skipped
+      source:
+        artifacts: target.runtime.artifacts.rendered_manifests
+      assertions:
+        readiness_probe_required: true
+        liveness_probe_required: true
+        startup_probe_required_when_startup_exceeds: 30s
+        readiness_probe_must_not_check_optional_dependencies: true
+        timeout_seconds:
+          maximum: 5
+        failure_threshold:
+          minimum: 2
+      remediation: Configure bounded readiness, liveness, and startup probes.
+
+    - id: kubernetes.resources
+      name: Kubernetes resources and scaling are declared
+      type: kubernetes.resources
+      when:
+        runtime_type: kubernetes
+      otherwise: skipped
+      source:
+        artifacts: target.runtime.artifacts.rendered_manifests
+      assertions:
+        requests_required:
+          - cpu
+          - memory
+        limits_required:
+          - memory
+        request_must_not_exceed_limit: true
+        production_minimum_replicas: 2
+        disruption_budget_for_multiple_replicas: true
+      remediation: Add realistic resources, replicas, and disruption protection.
+
+    - id: kubernetes.rollout-strategy
+      name: Kubernetes rollout strategy preserves availability
+      type: kubernetes.rollout_strategy
+      when:
+        runtime_type: kubernetes
+      otherwise: skipped
+      source:
+        artifacts: target.runtime.artifacts.rendered_manifests
+      assertions:
+        allowed_strategies:
+          - RollingUpdate
+        max_unavailable:
+          less_than_or_equal: 1
+        progress_deadline_required: true
+        minimum_ready_seconds:
+          greater_than_or_equal: 5
+      remediation: Use an availability-preserving rolling strategy.
+
+    - id: azure-container-apps.configuration
+      name: Container App configuration is release-safe
+      type: azure_container_apps.configuration
+      when:
+        runtime_type: azure_container_apps
+      otherwise: skipped
+      source:
+        artifacts: target.runtime.artifacts.rendered_configuration
+      assertions:
+        image_is_digest_pinned: true
+        revision_mode:
+          - Multiple
+        ingress_transport_declared: true
+        minimum_replicas:
+          greater_than_or_equal: 2
+        maximum_replicas:
+          greater_than_or_equal: 2
+        otel_environment_present: true
+        managed_identity_preferred: true
+      remediation: >
+        Render a digest-pinned, observable Container App with safe revision and
+        scaling settings.
+
+    - id: azure-container-apps.probes
+      name: Container App probes are configured
+      type: azure_container_apps.probes
+      when:
+        runtime_type: azure_container_apps
+      otherwise: skipped
+      source:
+        artifacts: target.runtime.artifacts.rendered_configuration
+      assertions:
+        startup_probe_required: true
+        readiness_probe_required: true
+        liveness_probe_required: true
+        probe_ports_match_ingress: true
+      remediation: Configure startup, readiness, and liveness probes.
+
+    - id: vm.release-identity
+      name: VM deployment exposes immutable release identity
+      type: vm.release_identity
+      when:
+        runtime_type:
+          - azure_vm
+          - linux_vm
+          - windows_vm
+      otherwise: skipped
+      source:
+        artifacts: target.runtime.artifacts.service_definition
+      assertions:
+        artifact_digest_declared: true
+        release_marker_declared: true
+        service_version_environment_declared: true
+        rollback_artifact_declared: true
+      remediation: >
+        Declare the artifact digest, release marker, service.version, and a
+        recoverable previous artifact.
+
+    - id: vm.service-definition
+      name: VM service manager definition is safe
+      type: vm.service_definition
+      when:
+        runtime_type:
+          - azure_vm
+          - linux_vm
+          - windows_vm
+      otherwise: skipped
+      source:
+        artifacts: target.runtime.artifacts.service_definition
+      assertions:
+        automatic_restart_on_failure: true
+        bounded_restart_delay: true
+        startup_timeout_declared: true
+        graceful_shutdown_declared: true
+        non_admin_identity: true
+        telemetry_agent_dependency_declared: true
+      remediation: Harden the systemd unit or Windows service definition.
+
+    - id: vm.host-capacity
+      name: VM fleet has deployment headroom
+      type: vm.capacity
+      when:
+        runtime_type:
+          - azure_vm
+          - linux_vm
+          - windows_vm
+      otherwise: skipped
+      source:
+        provider: metrics
+      assertions:
+        cpu_headroom_percent:
+          greater_than_or_equal: 25
+        memory_headroom_percent:
+          greater_than_or_equal: 20
+        disk_free_percent:
+          greater_than_or_equal: 15
+        healthy_hosts_percent:
+          greater_than_or_equal: 90
+      remediation: Restore fleet capacity before deploying to hosts.
+
+  post_deployment:
+    # -----------------------------------------------------------------------
+    # Normalized workload and release identity
+    # -----------------------------------------------------------------------
+
+    - id: workload.provisioned
+      name: Runtime accepted the intended workload
+      type: runtime.provisioned
+      source:
+        adapter: active
+      assertions:
+        resource_exists: true
+        provisioning_state:
+          - succeeded
+          - ready
+          - available
+        observed_after: "${DEPLOYED_AT}"
+      remediation: Inspect the runtime provisioning status and deployment events.
+
+    - id: workload.ready
+      name: Workload reaches normalized readiness
+      type: runtime.ready
+      source:
+        adapter: active
+      assertions:
+        ready: true
+        available_instances:
+          greater_than_or_equal: target.runtime.expected.minimum_available_replicas
+        unavailable_instances:
+          less_than_or_equal: 0
+        consecutive_successful_samples: 3
+      remediation: Inspect instance readiness, probes, events, and startup logs.
+
+    - id: workload.release
+      name: Runtime is executing the intended release
+      type: runtime.release_identity
+      source:
+        adapter: active
+        deployment_evidence: deployment
+      assertions:
+        expected_release_id: "${RELEASE_ID}"
+        expected_image_digest_env: IMAGE_DIGEST
+        expected_artifact_digest_env: ARTIFACT_DIGEST
+        require_no_unexpected_release_instances: true
+        deployment_id: "${DEPLOYMENT_ID}"
+      remediation: >
+        Stop promotion because the runtime release does not match the workflow
+        release, image digest, artifact digest, or deployment evidence.
+
+    - id: release.traffic
+      name: Candidate is receiving enough real or synthetic traffic
+      type: metric.threshold
+      category: workload_identity
+      source:
+        provider: metrics
+        query: |
+          sum(rate(http_server_request_duration_seconds_count{
+            service_name="${SERVICE_NAME}",
+            service_namespace="${SERVICE_NAMESPACE}",
+            deployment_environment="${ENVIRONMENT}",
+            service_version="${RELEASE_ID}"
+          }[2m]))
+      assertions:
+        operator: greater_than_or_equal
+        threshold: 0.1
+        unit: requests_per_second
+        minimum_total_requests: 200
+      remediation: Route verified traffic or run the release synthetic probe.
+
+    # -----------------------------------------------------------------------
+    # Telemetry presence, freshness, identity, and correlation
+    # -----------------------------------------------------------------------
+
+    - id: telemetry.metrics-presence
+      name: Candidate metrics are present
+      type: telemetry.presence
+      category: telemetry_presence
+      source:
+        provider: metrics
+        query: |
+          count({
+            service_name="${SERVICE_NAME}",
+            service_namespace="${SERVICE_NAMESPACE}",
+            deployment_environment="${ENVIRONMENT}",
+            service_version="${RELEASE_ID}"
+          })
+      assertions:
+        operator: greater_than
+        threshold: 0
+      remediation: Fix metrics export, routing, or resource attributes.
+
+    - id: telemetry.logs-presence
+      name: Candidate logs are present
+      type: telemetry.presence
+      category: telemetry_presence
+      source:
+        provider: logs
+        query: |
+          {resource_service_name="${SERVICE_NAME}",
+           resource_service_namespace="${SERVICE_NAMESPACE}",
+           resource_deployment_environment_name="${ENVIRONMENT}",
+           resource_service_version="${RELEASE_ID}"}
+      assertions:
+        minimum_records: 1
+      remediation: Fix log export, routing, or resource attributes.
+
+    - id: telemetry.traces-presence
+      name: Candidate traces are present
+      type: telemetry.presence
+      category: telemetry_presence
+      source:
+        provider: traces
+        query:
+          resource.service.name: "${SERVICE_NAME}"
+          resource.service.namespace: "${SERVICE_NAMESPACE}"
+          resource.deployment.environment.name: "${ENVIRONMENT}"
+          resource.service.version: "${RELEASE_ID}"
+      assertions:
+        minimum_traces: 1
+      remediation: Fix trace export, sampling, routing, or resource attributes.
+
+    - id: telemetry.freshness
+      name: Candidate telemetry is fresh
+      type: telemetry.freshness
+      category: telemetry_freshness
+      sources:
+        metrics: metrics
+        logs: logs
+        traces: traces
+      selectors:
+        service_name: "${SERVICE_NAME}"
+        service_namespace: "${SERVICE_NAMESPACE}"
+        environment: "${ENVIRONMENT}"
+        release_id: "${RELEASE_ID}"
+      assertions:
+        maximum_age:
+          metrics: 2m
+          logs: 2m
+          traces: 3m
+        maximum_future_skew: 30s
+      remediation: Investigate exporter queues, ingestion lag, or clock drift.
+
+    - id: telemetry.contract
+      name: Candidate satisfies the live telemetry contract
+      type: telemetry.contract
+      source:
+        providers:
+          - metrics
+          - logs
+          - traces
+      assertions:
+        required_signals:
+          - metrics
+          - logs
+          - traces
+        required_resource_attributes:
+          - service.name
+          - service.namespace
+          - service.version
+          - deployment.environment.name
+        expected_values:
+          service.name: "${SERVICE_NAME}"
+          service.namespace: "${SERVICE_NAMESPACE}"
+          service.version: "${RELEASE_ID}"
+          deployment.environment.name: "${ENVIRONMENT}"
+        require_http_server_duration_metric: true
+        require_error_logs_on_failed_requests: true
+        require_server_spans: true
+        forbid_sensitive_fields:
+          - authorization
+          - password
+          - access_token
+          - refresh_token
+      remediation: Fix the live instrumentation or collector transformations.
+
+    - id: telemetry.identity-consistency
+      name: Identity agrees across runtime, metrics, logs, and traces
+      type: telemetry.identity_consistency
+      sources:
+        runtime: active
+        metrics: metrics
+        logs: logs
+        traces: traces
+        deployment_evidence: deployment
+      assertions:
+        compare:
+          - service.name
+          - service.namespace
+          - service.version
+          - deployment.environment.name
+        expected_release_id: "${RELEASE_ID}"
+        maximum_distinct_release_ids: 1
+      remediation: Align resource detection and release labels across every signal.
+
+    - id: telemetry.trace-log-correlation
+      name: Trace and log correlation works
+      type: telemetry.correlation
+      source:
+        traces: traces
+        logs: logs
+      selectors:
+        service_name: "${SERVICE_NAME}"
+        environment: "${ENVIRONMENT}"
+        release_id: "${RELEASE_ID}"
+      assertions:
+        sampled_error_traces: 20
+        minimum_correlated_percent: 95
+        log_fields:
+          - trace_id
+          - span_id
+      remediation: Inject trace context into structured logs.
+
+    - id: telemetry.service-graph
+      name: Expected service relationships appear
+      type: telemetry.service_graph
+      enforcement: advisory
+      source:
+        provider: traces
+      assertions:
+        caller_present: true
+        required_dependencies:
+          - payments
+          - inventory
+        maximum_unknown_peer_percent: 5
+      remediation: Fix client instrumentation or peer-service attributes.
+
+    - id: telemetry.pipeline-health
+      name: Telemetry pipeline remains healthy after release
+      type: telemetry.collector_health
+      source:
+        provider: metrics
+      assertions:
+        queries:
+          export_failures: |
+            sum(rate(otelcol_exporter_send_failed_spans[5m]))
+            + sum(rate(otelcol_exporter_send_failed_metric_points[5m]))
+            + sum(rate(otelcol_exporter_send_failed_log_records[5m]))
+          refused_data: |
+            sum(rate(otelcol_receiver_refused_spans[5m]))
+            + sum(rate(otelcol_receiver_refused_metric_points[5m]))
+            + sum(rate(otelcol_receiver_refused_log_records[5m]))
+          queue_utilization: |
+            max(
+              otelcol_exporter_queue_size
+              /
+              clamp_min(otelcol_exporter_queue_capacity, 1)
+            )
+        thresholds:
+          export_failures:
+            less_than_or_equal: 0
+          refused_data:
+            less_than_or_equal: 0
+          queue_utilization:
+            less_than_or_equal: 0.8
+      remediation: Repair collector backpressure or exporter delivery.
+
+    # -----------------------------------------------------------------------
+    # Candidate health
+    # -----------------------------------------------------------------------
+
+    - id: release.error-rate
+      name: Candidate error rate is acceptable
+      type: metric.threshold
+      category: error_rate
+      source:
+        provider: metrics
+        query: |
+          100 *
+          sum(rate(http_server_request_duration_seconds_count{
+            service_name="${SERVICE_NAME}",
+            service_namespace="${SERVICE_NAMESPACE}",
+            deployment_environment="${ENVIRONMENT}",
+            service_version="${RELEASE_ID}",
+            http_response_status_code=~"5.."
+          }[5m]))
+          /
+          clamp_min(
+            sum(rate(http_server_request_duration_seconds_count{
+              service_name="${SERVICE_NAME}",
+              service_namespace="${SERVICE_NAMESPACE}",
+              deployment_environment="${ENVIRONMENT}",
+              service_version="${RELEASE_ID}"
+            }[5m])),
+            0.001
+          )
+      assertions:
+        operator: less_than_or_equal
+        threshold: 1
+        unit: percent
+        minimum_requests: 200
+      remediation: Inspect candidate error traces and logs; stop promotion.
+
+    - id: release.latency
+      name: Candidate p95 latency is acceptable
+      type: metric.threshold
+      category: latency
+      source:
+        provider: metrics
+        query: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(http_server_request_duration_seconds_bucket{
+                service_name="${SERVICE_NAME}",
+                service_namespace="${SERVICE_NAMESPACE}",
+                deployment_environment="${ENVIRONMENT}",
+                service_version="${RELEASE_ID}"
+              }[5m])
+            )
+          )
+      assertions:
+        operator: less_than_or_equal
+        threshold: 0.75
+        unit: seconds
+        minimum_requests: 200
+      remediation: Inspect slow traces, downstream calls, and saturation.
+
+    - id: release.availability
+      name: Candidate availability is acceptable
+      type: metric.threshold
+      category: availability
+      source:
+        provider: metrics
+        query: |
+          100 *
+          sum(rate(http_server_request_duration_seconds_count{
+            service_name="${SERVICE_NAME}",
+            service_namespace="${SERVICE_NAMESPACE}",
+            deployment_environment="${ENVIRONMENT}",
+            service_version="${RELEASE_ID}",
+            http_response_status_code=~"2..|3.."
+          }[5m]))
+          /
+          clamp_min(
+            sum(rate(http_server_request_duration_seconds_count{
+              service_name="${SERVICE_NAME}",
+              service_namespace="${SERVICE_NAMESPACE}",
+              deployment_environment="${ENVIRONMENT}",
+              service_version="${RELEASE_ID}"
+            }[5m])),
+            0.001
+          )
+      assertions:
+        operator: greater_than_or_equal
+        threshold: 99.5
+        unit: percent
+        minimum_requests: 200
+      remediation: Stop promotion and inspect failed requests and readiness.
+
+    - id: release.throughput
+      name: Candidate throughput is not unexpectedly low
+      type: metric.threshold
+      source:
+        provider: metrics
+        query: |
+          sum(rate(http_server_request_duration_seconds_count{
+            service_name="${SERVICE_NAME}",
+            deployment_environment="${ENVIRONMENT}",
+            service_version="${RELEASE_ID}"
+          }[5m]))
+      assertions:
+        operator: greater_than_or_equal
+        threshold: 0.1
+        unit: requests_per_second
+      remediation: Verify traffic routing and candidate readiness.
+
+    - id: release.saturation
+      name: Candidate has resource headroom
+      type: metric.multi_threshold
+      source:
+        provider: metrics
+      assertions:
+        queries:
+          cpu_utilization: |
+            max(process_cpu_utilization{
+              service_name="${SERVICE_NAME}",
+              deployment_environment="${ENVIRONMENT}",
+              service_version="${RELEASE_ID}"
+            })
+          memory_utilization: |
+            max(process_memory_utilization{
+              service_name="${SERVICE_NAME}",
+              deployment_environment="${ENVIRONMENT}",
+              service_version="${RELEASE_ID}"
+            })
+          queue_utilization: |
+            max(service_queue_utilization{
+              service_name="${SERVICE_NAME}",
+              deployment_environment="${ENVIRONMENT}",
+              service_version="${RELEASE_ID}"
+            })
+        thresholds:
+          cpu_utilization:
+            less_than_or_equal: 0.85
+          memory_utilization:
+            less_than_or_equal: 0.85
+          queue_utilization:
+            less_than_or_equal: 0.8
+      remediation: Increase capacity or fix the candidate's resource demand.
+
+    - id: release.stability
+      name: Candidate process is stable
+      type: runtime.stability
+      source:
+        adapter: active
+      assertions:
+        unexpected_restarts:
+          less_than_or_equal: 0
+        crash_loops:
+          less_than_or_equal: 0
+        out_of_memory_terminations:
+          less_than_or_equal: 0
+        unhealthy_instances:
+          less_than_or_equal: 0
+        evaluation_window: 10m
+      remediation: Inspect runtime termination reasons and startup logs.
+
+    # -----------------------------------------------------------------------
+    # Candidate-to-baseline regressions
+    # -----------------------------------------------------------------------
+
+    - id: regression.error-rate
+      name: Candidate error rate has not regressed
+      type: comparison.metric
+      category: regression
+      source:
+        provider: metrics
+        metric: http_error_rate_percent
+        candidate:
+          release_id: "${RELEASE_ID}"
+        baseline:
+          release_id: release.baseline
+      assertions:
+        absolute_increase_percentage_points:
+          less_than_or_equal: 0.25
+        relative_increase_percent:
+          less_than_or_equal: 50
+        minimum_candidate_requests: 200
+        minimum_baseline_requests: 500
+      remediation: Compare error traces between the candidate and baseline.
+
+    - id: regression.latency
+      name: Candidate p95 latency has not regressed
+      type: comparison.metric
+      category: regression
+      source:
+        provider: metrics
+        metric: http_server_duration_p95_seconds
+        candidate:
+          release_id: "${RELEASE_ID}"
+        baseline:
+          release_id: release.baseline
+      assertions:
+        absolute_increase:
+          less_than_or_equal: 0.1
+          unit: seconds
+        relative_increase_percent:
+          less_than_or_equal: 20
+        minimum_candidate_requests: 200
+        minimum_baseline_requests: 500
+      remediation: Compare slow trace exemplars and dependency spans.
+
+    - id: regression.availability
+      name: Candidate availability has not regressed
+      type: comparison.metric
+      category: regression
+      source:
+        provider: metrics
+        metric: http_availability_percent
+        candidate:
+          release_id: "${RELEASE_ID}"
+        baseline:
+          release_id: release.baseline
+      assertions:
+        absolute_decrease_percentage_points:
+          less_than_or_equal: 0.2
+        minimum_candidate_requests: 200
+        minimum_baseline_requests: 500
+      remediation: Compare failed requests and readiness with the baseline.
+
+    - id: regression.resource-usage
+      name: Candidate resource demand has not regressed
+      type: comparison.multi_metric
+      category: regression
+      source:
+        provider: metrics
+      metrics:
+        - process_cpu_seconds_rate
+        - process_resident_memory_bytes
+      candidate:
+        release_id: "${RELEASE_ID}"
+      baseline:
+        release_id: release.baseline
+      assertions:
+        normalized_per_request: true
+        relative_increase_percent:
+          cpu: 25
+          memory: 20
+      remediation: Profile the candidate or adjust resource requests deliberately.
+
+    - id: regression.dependency-latency
+      name: Candidate dependency latency has not regressed
+      type: comparison.trace_metrics
+      category: regression
+      source:
+        provider: traces
+      candidate:
+        release_id: "${RELEASE_ID}"
+      baseline:
+        release_id: release.baseline
+      assertions:
+        dependencies:
+          - payments
+          - inventory
+        p95_relative_increase_percent:
+          less_than_or_equal: 25
+        p95_absolute_increase:
+          less_than_or_equal: 0.15
+          unit: seconds
+      remediation: Inspect changed outbound spans and dependency behavior.
+
+    - id: regression.telemetry-volume
+      name: Candidate telemetry volume is controlled
+      type: comparison.telemetry_volume
+      enforcement: advisory
+      source:
+        providers:
+          - metrics
+          - logs
+          - traces
+      candidate:
+        release_id: "${RELEASE_ID}"
+      baseline:
+        release_id: release.baseline
+      assertions:
+        relative_increase_percent:
+          metric_series: 20
+          log_bytes: 25
+          spans: 50
+        normalized_per_request: true
+      remediation: Tune log levels, metric labels, or trace sampling.
+
+    # -----------------------------------------------------------------------
+    # Reliability, alerts, dependencies, synthetics, and custom policy
+    # -----------------------------------------------------------------------
+
+    - id: reliability.slo-status
+      name: Candidate observation window meets the SLO
+      type: grafana.slo_status
+      category: slo_or_error_budget
+      source:
+        provider: grafana
+        uid_env: GRAFANA_SLO_UID
+      assertions:
+        status:
+          - met
+        maximum_data_age: 5m
+        include_candidate_window: true
+      remediation: Stop promotion while the service is outside its objective.
+
+    - id: reliability.error-budget
+      name: Release does not exhaust the error budget
+      type: grafana.error_budget
+      category: slo_or_error_budget
+      source:
+        provider: grafana
+        uid_env: GRAFANA_SLO_UID
+      assertions:
+        remaining_percent:
+          greater_than_or_equal: 20
+        consumed_during_release_percent:
+          less_than_or_equal: 5
+      remediation: Stop promotion and investigate release-period failures.
+
+    - id: reliability.burn-rate
+      name: Candidate does not trigger fast or slow burn
+      type: grafana.burn_rate
+      category: slo_or_error_budget
+      source:
+        provider: grafana
+        uid_env: GRAFANA_SLO_UID
+      assertions:
+        windows:
+          - short: 5m
+            long: 1h
+            maximum: 14.4
+          - short: 30m
+            long: 6h
+            maximum: 6
+      remediation: Stop promotion and investigate the burn-rate signal.
+
+    - id: reliability.active-alerts
+      name: Candidate has not produced critical alerts
+      type: grafana.alert_state
+      category: active_alerts
+      source:
+        provider: grafana
+        labels:
+          service: "${SERVICE_NAME}"
+          environment: "${ENVIRONMENT}"
+      assertions:
+        forbidden_states:
+          - firing
+          - error
+        forbidden_severities:
+          - critical
+        require_started_after: "${DEPLOYED_AT}"
+        pending_critical_is_failure: true
+      remediation: Inspect the firing alert and its linked evidence.
+
+    - id: dependency.health
+      name: Critical dependencies remain healthy
+      type: dependency.health
+      source:
+        provider: metrics
+      dependencies:
+        - name: payments
+          query: |
+            avg_over_time(probe_success{
+              dependency="payments",
+              environment="${ENVIRONMENT}"
+            }[5m])
+          threshold:
+            greater_than_or_equal: 0.99
+        - name: inventory
+          query: |
+            avg_over_time(probe_success{
+              dependency="inventory",
+              environment="${ENVIRONMENT}"
+            }[5m])
+          threshold:
+            greater_than_or_equal: 0.99
+      assertions:
+        all_required_dependencies_must_pass: true
+      remediation: Separate candidate-caused failure from dependency failure.
+
+    - id: synthetic.result
+      name: Release synthetic journey passes
+      type: synthetic.result
+      source:
+        provider: synthetic
+      when:
+        provider_available: synthetic
+      otherwise: fail
+      assertions:
+        required_tests:
+          - checkout-health
+          - checkout-critical-journey
+        pass_rate_percent:
+          greater_than_or_equal: 100
+        maximum_duration:
+          checkout-health: 2s
+          checkout-critical-journey: 10s
+        release_identity_header:
+          name: x-service-version
+          equals: "${RELEASE_ID}"
+      remediation: Fix the release or synthetic journey before promotion.
+
+    - id: public-endpoint.health
+      name: Public health endpoint serves the candidate
+      type: http.assertion
+      source:
+        provider: public-probe
+        url: "https://${SERVICE_HOST}/health/ready"
+      assertions:
+        method: GET
+        expected_status:
+          - 200
+        maximum_duration: 2s
+        response_headers:
+          x-service-version: "${RELEASE_ID}"
+        response_json:
+          status: ready
+      remediation: Fix routing, readiness, TLS, or release identity.
+
+    - id: custom.business-kpi
+      name: Checkout completion rate remains plausible
+      type: metric.threshold
+      enforcement: advisory
+      source:
+        provider: metrics
+        query: |
+          sum(rate(checkout_completed_total{
+            environment="${ENVIRONMENT}",
+            service_version="${RELEASE_ID}"
+          }[5m]))
+          /
+          clamp_min(
+            sum(rate(checkout_started_total{
+              environment="${ENVIRONMENT}",
+              service_version="${RELEASE_ID}"
+            }[5m])),
+            0.001
+          )
+      assertions:
+        operator: greater_than_or_equal
+        threshold: 0.6
+      remediation: Review the business funnel before wider promotion.
+
+    # -----------------------------------------------------------------------
+    # Platform-specific post-deployment evidence
+    # -----------------------------------------------------------------------
+
+    - id: kubernetes.rollout
+      name: Kubernetes rollout completed
+      type: kubernetes.rollout_status
+      category: workload_readiness
+      when:
+        runtime_type: kubernetes
+      otherwise: skipped
+      source:
+        adapter: active
+      assertions:
+        observed_generation_matches: true
+        progressing_condition: true
+        available_condition: true
+        updated_replicas_equal_desired: true
+        available_replicas_equal_desired: true
+        unavailable_replicas:
+          less_than_or_equal: 0
+        rollout_completed_within: 10m
+      remediation: Inspect the Deployment, ReplicaSet, Pods, and events.
+
+    - id: kubernetes.image
+      name: Kubernetes pods run the expected image digest
+      type: kubernetes.image_identity
+      when:
+        runtime_type: kubernetes
+      otherwise: skipped
+      source:
+        adapter: active
+      assertions:
+        expected_digest_env: IMAGE_DIGEST
+        all_ready_pods_match: true
+        forbid_mutable_tag_only_identity: true
+      remediation: Fix image resolution or deployment manifest drift.
+
+    - id: kubernetes.pods
+      name: Kubernetes pods remain healthy
+      type: kubernetes.pod_health
+      when:
+        runtime_type: kubernetes
+      otherwise: skipped
+      source:
+        adapter: active
+      assertions:
+        ready_percent:
+          greater_than_or_equal: 100
+        restart_increase:
+          less_than_or_equal: 0
+        forbidden_waiting_reasons:
+          - CrashLoopBackOff
+          - ImagePullBackOff
+          - ErrImagePull
+          - CreateContainerConfigError
+        forbidden_termination_reasons:
+          - OOMKilled
+          - Error
+      remediation: Inspect pod status, termination reasons, probes, and logs.
+
+    - id: kubernetes.events
+      name: Kubernetes has no release-related warning events
+      type: kubernetes.events
+      enforcement: advisory
+      when:
+        runtime_type: kubernetes
+      otherwise: skipped
+      source:
+        adapter: active
+      assertions:
+        since: "${DEPLOYED_AT}"
+        forbidden_reasons:
+          - FailedScheduling
+          - FailedMount
+          - FailedAttachVolume
+          - BackOff
+          - Unhealthy
+          - Evicted
+        maximum_warning_events: 0
+      remediation: Inspect the reported Kubernetes events.
+
+    - id: azure-container-apps.revision
+      name: Container App revision is provisioned and active
+      type: azure_container_apps.revision_status
+      category: workload_readiness
+      when:
+        runtime_type: azure_container_apps
+      otherwise: skipped
+      source:
+        adapter: active
+      assertions:
+        provisioning_state:
+          - Succeeded
+        running_state:
+          - Running
+        active: true
+        healthy_replicas:
+          greater_than_or_equal: 2
+        failed_replicas:
+          less_than_or_equal: 0
+      remediation: Inspect revision provisioning, replicas, and system logs.
+
+    - id: azure-container-apps.image
+      name: Container App revision runs the expected image
+      type: azure_container_apps.image_identity
+      when:
+        runtime_type: azure_container_apps
+      otherwise: skipped
+      source:
+        adapter: active
+      assertions:
+        expected_digest_env: IMAGE_DIGEST
+        expected_revision_suffix_env: REVISION_SUFFIX
+        all_containers_match: true
+      remediation: Fix revision configuration or image drift.
+
+    - id: azure-container-apps.traffic
+      name: Container App traffic points to the candidate
+      type: azure_container_apps.traffic
+      when:
+        runtime_type: azure_container_apps
+      otherwise: skipped
+      source:
+        adapter: active
+      assertions:
+        candidate_revision_env: CONTAINER_APP_REVISION
+        minimum_candidate_weight_percent: 1
+        maximum_unknown_revision_weight_percent: 0
+        weights_sum_to_percent: 100
+      remediation: Correct the workflow-owned traffic configuration.
+
+    - id: azure-container-apps.replica-health
+      name: Container App replicas are stable
+      type: azure_container_apps.replica_health
+      when:
+        runtime_type: azure_container_apps
+      otherwise: skipped
+      source:
+        adapter: active
+      assertions:
+        restart_increase:
+          less_than_or_equal: 0
+        unhealthy_replicas:
+          less_than_or_equal: 0
+        activation_failures:
+          less_than_or_equal: 0
+        deactivation_failures:
+          less_than_or_equal: 0
+      remediation: Inspect replica console and system logs.
+
+    - id: azure-vm.provisioning
+      name: Azure VM remains provisioned
+      type: azure_vm.instance_view
+      when:
+        runtime_type: azure_vm
+      otherwise: skipped
+      source:
+        adapter: active
+      assertions:
+        provisioning_state:
+          - succeeded
+        power_state:
+          - running
+        platform_maintenance_active: false
+      remediation: Restore the VM before evaluating the application release.
+
+    - id: windows-vm.service
+      name: Windows service is running and stable
+      type: vm.service_health
+      category: workload_readiness
+      when:
+        operating_system: windows
+      otherwise: skipped
+      source:
+        provider: metrics
+        query: |
+          windows_service_state{
+            name="${WINDOWS_SERVICE_NAME}",
+            state="running",
+            environment="${ENVIRONMENT}"
+          }
+      assertions:
+        healthy_hosts_percent:
+          greater_than_or_equal: 100
+        unexpected_restart_increase:
+          less_than_or_equal: 0
+        exit_code:
+          equals: 0
+      remediation: Inspect Windows service events and application logs.
+
+    - id: linux-vm.service
+      name: systemd service is active and stable
+      type: vm.service_health
+      category: workload_readiness
+      when:
+        operating_system: linux
+      otherwise: skipped
+      source:
+        provider: metrics
+        query: |
+          node_systemd_unit_state{
+            name="${SYSTEMD_SERVICE_NAME}",
+            state="active",
+            environment="${ENVIRONMENT}"
+          }
+      assertions:
+        healthy_hosts_percent:
+          greater_than_or_equal: 100
+        unexpected_restart_increase:
+          less_than_or_equal: 0
+        failed_units:
+          less_than_or_equal: 0
+      remediation: Inspect systemd status, journal logs, and application logs.
+
+    - id: vm.release-marker
+      name: VM fleet reports the intended release marker
+      type: vm.release_marker
+      when:
+        runtime_type:
+          - azure_vm
+          - linux_vm
+          - windows_vm
+      otherwise: skipped
+      source:
+        provider: metrics
+        query: |
+          service_build_info{
+            service_name="${SERVICE_NAME}",
+            deployment_environment="${ENVIRONMENT}",
+            service_version="${RELEASE_ID}"
+          }
+      assertions:
+        expected_release_id: "${RELEASE_ID}"
+        healthy_hosts_percent:
+          greater_than_or_equal: 100
+        maximum_distinct_release_ids: 1
+        deployment_marker_env: RELEASE_MARKER
+      remediation: Stop promotion because one or more hosts run another build.
+
+    - id: vm.host-health
+      name: VM hosts remain healthy after deployment
+      type: vm.host_health
+      when:
+        runtime_type:
+          - azure_vm
+          - linux_vm
+          - windows_vm
+      otherwise: skipped
+      source:
+        provider: metrics
+      assertions:
+        cpu_utilization:
+          less_than_or_equal: 0.85
+        memory_utilization:
+          less_than_or_equal: 0.85
+        disk_utilization:
+          less_than_or_equal: 0.85
+        load_or_queue_saturation:
+          less_than_or_equal: 0.8
+        unavailable_hosts:
+          less_than_or_equal: 0
+      remediation: Inspect host capacity, disk pressure, and process demand.
+
+    - id: vm.telemetry-agent
+      name: VM telemetry agent is exporting
+      type: vm.agent_health
+      when:
+        runtime_type:
+          - azure_vm
+          - linux_vm
+          - windows_vm
+      otherwise: skipped
+      source:
+        provider: metrics
+      assertions:
+        agent_up_percent:
+          greater_than_or_equal: 100
+        export_failure_rate:
+          less_than_or_equal: 0
+        queue_utilization:
+          less_than_or_equal: 0.8
+        last_successful_export_age:
+          less_than_or_equal: 2m
+      remediation: Restore the host telemetry agent or collector.
+
+reporting:
+  github:
+    check_run:
+      enabled: true
+      name: Observability Gate
+      include:
+        - final_decision
+        - phase
+        - target
+        - release
+        - gate_summary
+        - failed_assertions
+        - evidence_age
+        - remediation
+      annotations:
+        enabled: true
+        maximum: 50
+
+    step_summary:
+      enabled: true
+      sections:
+        - decision
+        - identity
+        - target
+        - evidence_coverage
+        - blocking_gates
+        - advisory_gates
+        - skipped_gates
+        - comparisons
+        - links
+
+    pull_request_comment:
+      enabled: true
+      mode: update_single_comment
+      marker: observability-gate
+      only_when:
+        - pull_request
+        - pull_request_target
+
+  artifacts:
+    directory: observability-gate-results
+    formats:
+      - json
+      - junit
+      - sarif
+      - markdown
+    retention_days: 14
+    include_raw_provider_responses: false
+    include_evidence_hashes: true
+
+  outputs:
+    - decision
+    - phase
+    - target_id
+    - release_id
+    - baseline_release_id
+    - passed_count
+    - warned_count
+    - failed_count
+    - skipped_count
+    - evidence_coverage_percent
+    - report_path
+
+  links:
+    dashboard_env: GRAFANA_DASHBOARD_URL
+    runbook_env: RUNBOOK_URL
+    deployment_env: DEPLOYMENT_URL
+    traces_search_template_env: TRACE_SEARCH_URL
+    logs_search_template_env: LOG_SEARCH_URL
+
+security:
+  read_only: true
+
+  prohibited_operations:
+    - deploy
+    - rollback
+    - change_traffic
+    - scale_workload
+    - restart_workload
+    - mutate_runtime
+    - mutate_alerts
+    - mutate_dashboards
+    - create_silence
+    - ssh
+    - winrm
+
+  secrets:
+    forbid_in_configuration: true
+    accepted_sources:
+      - environment
+      - oidc
+      - ambient_identity
+    redact_environment_name_patterns:
+      - '*TOKEN*'
+      - '*PASSWORD*'
+      - '*SECRET*'
+      - '*KEY*'
+      - '*COOKIE*'
+    redact_provider_headers: true
+    redact_query_parameters: true
+
+  network:
+    allow_private_addresses: false
+    allow_loopback: false
+    allow_link_local: false
+    allow_metadata_endpoints: false
+    allowed_schemes:
+      - https
+    provider_hosts_must_match_configured_endpoints: true
+    http_probe_hosts_must_be_allowlisted: true
+
+  files:
+    workspace_only: true
+    reject_symlinks_outside_workspace: true
+    maximum_evidence_file_size: 25MiB
+    reject_world_writable_evidence: true
+
+  evidence:
+    require_provenance_for_blocking_files: true
+    hash_algorithm: sha256
+    reject_stale_evidence: true
+    reject_future_timestamps_beyond: 30s
+
+  commands:
+    shell_execution: forbidden
+    dynamic_plugins: forbidden
+
+limits:
+  maximum_gates: 200
+  maximum_queries: 200
+  maximum_query_length: 16KiB
+  maximum_total_runtime: 45m
+  maximum_parallel_requests_per_provider: 4
+  maximum_provider_response_size: 10MiB
+  maximum_report_size: 25MiB
+
