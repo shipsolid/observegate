@@ -1,0 +1,18 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": { "name": "checkout", "namespace": "shop", "uid": "deploy-uid", "generation": 7 },
+  "spec": { "replicas": 3, "selector": { "matchLabels": { "app": "checkout" } } },
+  "status": {
+    "observedGeneration": 7,
+    "replicas": 3,
+    "updatedReplicas": 3,
+    "readyReplicas": 2,
+    "availableReplicas": 2,
+    "unavailableReplicas": 1,
+    "conditions": [
+      { "type": "Progressing", "status": "True", "reason": "NewReplicaSetAvailable" },
+      { "type": "Available", "status": "False", "reason": "MinimumReplicasUnavailable" }
+    ]
+  }
+}

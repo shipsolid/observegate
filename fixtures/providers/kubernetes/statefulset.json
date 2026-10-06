@@ -1,0 +1,13 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": { "name": "orders", "namespace": "shop", "uid": "sts-uid", "generation": 3 },
+  "spec": { "replicas": 2, "selector": { "matchLabels": { "app": "orders" } } },
+  "status": {
+    "observedGeneration": 3,
+    "replicas": 2,
+    "updatedReplicas": 1,
+    "readyReplicas": 1,
+    "availableReplicas": 1
+  }
+}

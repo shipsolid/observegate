@@ -22,3 +22,8 @@ export * from "./transport/retry.js";
 export * from "./transport/url-policy.js";
 export * from "./traces/tempo-client.js";
 export * from "./traces/types.js";
+export * from "./runtime/types.js";
+export * from "./runtime/kubernetes/adapter.js";
+export * from "./runtime/kubernetes/client.js";
+export * from "./runtime/kubernetes/manifest.js";
+export * from "./runtime/kubernetes/normalize.js";

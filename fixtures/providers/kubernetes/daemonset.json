@@ -1,0 +1,19 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "DaemonSet",
+  "metadata": {
+    "name": "collector",
+    "namespace": "observability",
+    "uid": "ds-uid",
+    "generation": 5
+  },
+  "spec": { "selector": { "matchLabels": { "app": "collector" } } },
+  "status": {
+    "observedGeneration": 5,
+    "desiredNumberScheduled": 4,
+    "updatedNumberScheduled": 4,
+    "numberReady": 3,
+    "numberAvailable": 3,
+    "numberUnavailable": 1
+  }
+}
