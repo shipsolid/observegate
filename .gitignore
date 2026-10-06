@@ -1,0 +1,7 @@
+node_modules/
+coverage/
+packages/*/dist/
+.superpowers/
+*.tsbuildinfo
+*.log
+.DS_Store

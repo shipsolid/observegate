@@ -1,0 +1,8 @@
+coverage/
+dist/
+node_modules/
+.superpowers/
+README.md
+docs/observegate-impl.md
+docs/observegate-spec.md
+examples/observability-gate.yml
