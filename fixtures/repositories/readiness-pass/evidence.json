@@ -1,0 +1,111 @@
+{
+  "policy.self_check": {
+    "sections": [
+      "identity",
+      "targets",
+      "providers",
+      "gates.pre_deployment",
+      "gates.post_deployment",
+      "reporting",
+      "security"
+    ],
+    "uniqueGateIds": true,
+    "unknownFields": 0,
+    "inlineSecrets": 0,
+    "blockingPostGates": 10
+  },
+  "identity.contract": {
+    "serviceName": "checkout",
+    "serviceNamespace": "shop",
+    "environment": "production",
+    "releaseId": "abc1234"
+  },
+  "asset.metadata": { "owner": "payments-sre", "escalationContact": "payments-oncall" },
+  "asset.url": { "reachable": true, "scheme": "https", "nonempty": true },
+  "grafana.dashboard": {
+    "uid": "checkout",
+    "panels": [{}, {}, {}, {}],
+    "variables": [{ "name": "service" }, { "name": "environment" }]
+  },
+  "grafana.alert_rules": {
+    "rules": [
+      {
+        "enabled": true,
+        "severity": "critical",
+        "owner": "payments-sre",
+        "runbookUrl": "https://runbooks.example.com/one"
+      },
+      {
+        "enabled": true,
+        "severity": "warning",
+        "owner": "payments-sre",
+        "runbookUrl": "https://runbooks.example.com/two"
+      }
+    ]
+  },
+  "grafana.notification_policy": { "receiver": "critical-pager", "mutedDuringDeployment": false },
+  "grafana.slo_definition": { "objective": 99.9, "window": "30d", "labelsMatchIdentity": true },
+  "telemetry.query_validation": {
+    "queries": [
+      {
+        "valid": true,
+        "threshold": true,
+        "shape": "scalar",
+        "production": true,
+        "scoped": true,
+        "groupBy": ["service_name"]
+      }
+    ]
+  },
+  "artifact.instrumentation_configuration": {
+    "serviceName": "checkout",
+    "serviceVersion": "abc1234",
+    "environment": "production",
+    "otlpConfigured": true,
+    "metrics": true,
+    "logs": true,
+    "traces": true,
+    "debugExporter": false,
+    "plaintextRemote": false,
+    "hardcodedCredentials": false
+  },
+  "evidence.sarif": { "findings": [] },
+  "evidence.otlp_contract": {
+    "metricCount": 1,
+    "logCount": 1,
+    "traceCount": 1,
+    "correlatedLogCount": 1,
+    "errorSpanCount": 1,
+    "routes": ["/orders/{id}"]
+  },
+  "telemetry.pipeline_configuration": {
+    "receiver": true,
+    "processors": ["memory_limiter", "batch"],
+    "exporters": ["metrics", "logs", "traces"],
+    "retry": true,
+    "sendingQueue": true,
+    "tls": true
+  },
+  "synthetic.plan": {
+    "exists": true,
+    "timeoutMs": 30000,
+    "successAssertion": true,
+    "releaseAssertion": true,
+    "logsSecrets": false
+  },
+  "policy.coverage": {
+    "categories": [
+      "workload_identity",
+      "workload_readiness",
+      "telemetry_presence",
+      "telemetry_freshness",
+      "error_rate",
+      "latency",
+      "availability",
+      "regression",
+      "slo_or_error_budget",
+      "active_alerts"
+    ],
+    "platformSpecific": true
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "identity.contract": {
+    "serviceName": "checkout",
+    "serviceNamespace": "shop",
+    "environment": "Production!",
+    "releaseId": "latest"
+  },
+  "policy.coverage": { "categories": ["workload_readiness"], "platformSpecific": false },
+  "telemetry.query_validation": {
+    "queries": [
+      {
+        "valid": true,
+        "threshold": true,
+        "shape": "vector",
+        "production": true,
+        "scoped": false,
+        "groupBy": ["request_id"]
+      }
+    ]
+  }
+}
