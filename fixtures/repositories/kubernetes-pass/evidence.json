@@ -1,0 +1,62 @@
+{
+  "pre": {
+    "image": "ghcr.io/shipsolid/checkout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expectedImageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "namespaceExplicit": true,
+    "containerSecurityContext": {
+      "privileged": false,
+      "readOnlyRootFilesystem": true
+    },
+    "readinessProbe": { "timeoutSeconds": 2, "failureThreshold": 3 },
+    "livenessProbe": { "timeoutSeconds": 2, "failureThreshold": 3 },
+    "startupProbe": { "timeoutSeconds": 2, "failureThreshold": 3 },
+    "startupProbeRequired": true,
+    "readinessChecksOptionalDependencies": false,
+    "resources": {
+      "requests": { "cpu": "100m", "memory": "128Mi" },
+      "limits": { "cpu": "500m", "memory": "512Mi" }
+    },
+    "replicas": 3,
+    "production": true,
+    "disruptionBudget": { "minAvailable": 2 },
+    "strategy": "RollingUpdate",
+    "maxUnavailable": 1,
+    "progressDeadlineSeconds": 600,
+    "minimumReadySeconds": 10,
+    "document": 0
+  },
+  "post": {
+    "rollout": {
+      "generationObserved": true,
+      "conditions": [
+        { "type": "Progressing", "status": "True" },
+        { "type": "Available", "status": "True" }
+      ],
+      "replicas": { "desired": 3, "updated": 3, "ready": 3, "available": 3, "unavailable": 0 },
+      "durationMs": 120000,
+      "maximumDurationMs": 600000
+    },
+    "expectedImageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pods": [
+      {
+        "name": "checkout-abc",
+        "ready": true,
+        "restartIncrease": 0,
+        "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "waitingReasons": [],
+        "terminationReasons": [],
+        "probesHealthy": true
+      }
+    ],
+    "warningEvents": [],
+    "forbiddenEventReasons": [
+      "FailedScheduling",
+      "FailedMount",
+      "FailedAttachVolume",
+      "BackOff",
+      "Unhealthy",
+      "Evicted"
+    ],
+    "maximumWarningEvents": 0
+  }
+}

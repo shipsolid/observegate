@@ -8,15 +8,19 @@ export interface KubernetesManifestSelector {
 }
 
 export interface KubernetesManifestEvidence {
+  readonly document: number;
   readonly image: string;
+  readonly namespaceExplicit: boolean;
   readonly replicas?: number;
   readonly strategy?: string;
+  readonly maxUnavailable?: number | string;
   readonly progressDeadlineSeconds?: number;
   readonly minimumReadySeconds?: number;
   readonly podSecurityContext: Readonly<Record<string, unknown>>;
   readonly containerSecurityContext: Readonly<Record<string, unknown>>;
   readonly readinessProbe?: Readonly<Record<string, unknown>>;
   readonly livenessProbe?: Readonly<Record<string, unknown>>;
+  readonly startupProbe?: Readonly<Record<string, unknown>>;
   readonly resources: Readonly<Record<string, unknown>>;
   readonly disruptionBudget?: Readonly<Record<string, unknown>>;
 }
@@ -40,7 +44,7 @@ export function parseKubernetesManifest(
     });
   }
   const resources = documents.map((document) => document.toJS({ maxAliasCount: 0 }) as unknown);
-  const workload = resources.find((value) => {
+  const workloadIndex = resources.findIndex((value) => {
     const item = record(value);
     const metadata = record(item?.metadata);
     return (
@@ -49,6 +53,7 @@ export function parseKubernetesManifest(
       metadata.namespace === selector.namespace
     );
   });
+  const workload = resources[workloadIndex];
   const object = record(workload);
   const spec = record(object?.spec);
   const template = record(spec?.template);
@@ -75,10 +80,17 @@ export function parseKubernetesManifest(
   });
   const budgetSpec = record(record(budget)?.spec);
   const strategy = record(spec.strategy);
+  const rollingUpdate = record(strategy?.rollingUpdate);
   return Object.freeze({
+    document: workloadIndex,
     image: container.image,
+    namespaceExplicit: typeof record(object.metadata)?.namespace === "string",
     ...(typeof spec.replicas === "number" ? { replicas: spec.replicas } : {}),
     ...(typeof strategy?.type === "string" ? { strategy: strategy.type } : {}),
+    ...(typeof rollingUpdate?.maxUnavailable === "number" ||
+    typeof rollingUpdate?.maxUnavailable === "string"
+      ? { maxUnavailable: rollingUpdate.maxUnavailable }
+      : {}),
     ...(typeof spec.progressDeadlineSeconds === "number"
       ? { progressDeadlineSeconds: spec.progressDeadlineSeconds }
       : {}),
@@ -93,6 +105,9 @@ export function parseKubernetesManifest(
     ...(record(container.livenessProbe) === undefined
       ? {}
       : { livenessProbe: Object.freeze({ ...record(container.livenessProbe) }) }),
+    ...(record(container.startupProbe) === undefined
+      ? {}
+      : { startupProbe: Object.freeze({ ...record(container.startupProbe) }) }),
     resources: Object.freeze({ ...(record(container.resources) ?? {}) }),
     ...(budgetSpec === undefined ? {} : { disruptionBudget: Object.freeze({ ...budgetSpec }) })
   });

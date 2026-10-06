@@ -73,14 +73,21 @@ describe("parseKubernetesManifest", () => {
     ).toMatchObject({
       image:
         "ghcr.io/shipsolid/checkout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      document: 0,
+      namespaceExplicit: true,
       replicas: 3,
       strategy: "RollingUpdate",
+      maxUnavailable: 1,
       progressDeadlineSeconds: 600,
       minimumReadySeconds: 10,
       podSecurityContext: { runAsNonRoot: true },
-      containerSecurityContext: { allowPrivilegeEscalation: false },
+      containerSecurityContext: {
+        allowPrivilegeEscalation: false,
+        readOnlyRootFilesystem: true
+      },
       readinessProbe: { httpGet: { path: "/ready", port: 8080 } },
       livenessProbe: { httpGet: { path: "/health", port: 8080 } },
+      startupProbe: { httpGet: { path: "/health", port: 8080 } },
       resources: {
         requests: { cpu: "100m", memory: "128Mi" },
         limits: { cpu: "500m", memory: "512Mi" }

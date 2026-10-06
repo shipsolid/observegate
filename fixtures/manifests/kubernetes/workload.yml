@@ -7,6 +7,8 @@ spec:
   replicas: 3
   strategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   progressDeadlineSeconds: 600
   minReadySeconds: 10
   selector:
@@ -21,11 +23,16 @@ spec:
           image: ghcr.io/shipsolid/checkout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
           readinessProbe:
             httpGet:
               path: /ready
               port: 8080
           livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+          startupProbe:
             httpGet:
               path: /health
               port: 8080
