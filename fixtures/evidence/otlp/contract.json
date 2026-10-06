@@ -1,0 +1,27 @@
+{
+  "provenance": { "commit": "abc123", "workflow": "observegate-ci" },
+  "resource": {
+    "service.name": "checkout",
+    "service.namespace": "shop",
+    "service.version": "2026.10.6",
+    "deployment.environment.name": "production"
+  },
+  "metrics": [
+    { "name": "http.server.request.duration", "attributes": { "http.request.method": "POST" } }
+  ],
+  "logs": [
+    { "severity": "ERROR", "traceId": "trace-1", "attributes": { "service.name": "checkout" } }
+  ],
+  "traces": [
+    {
+      "traceId": "trace-1",
+      "spans": [
+        {
+          "name": "POST /orders/{id}",
+          "status": "ERROR",
+          "attributes": { "http.route": "/orders/{id}" }
+        }
+      ]
+    }
+  ]
+}

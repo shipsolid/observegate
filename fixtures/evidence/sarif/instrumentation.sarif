@@ -1,0 +1,28 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": { "driver": { "name": "otel-linter" } },
+      "results": [
+        {
+          "ruleId": "OTEL001",
+          "level": "error",
+          "message": { "text": "service.name is missing" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/app.ts" },
+                "region": { "startLine": 12 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "STYLE001",
+          "level": "warning",
+          "message": { "text": "unrelated style issue" }
+        }
+      ]
+    }
+  ]
+}

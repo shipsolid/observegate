@@ -1,0 +1,12 @@
+{
+  "incidents": [
+    {
+      "id": "inc-123",
+      "service": "checkout",
+      "environment": "production",
+      "severity": "critical",
+      "state": "active",
+      "updatedAt": "2026-10-06T08:00:00.000Z"
+    }
+  ]
+}
