@@ -6,6 +6,9 @@
     },
     {
       "path": "./packages/config"
+    },
+    {
+      "path": "./packages/gates"
     }
   ]
 }
