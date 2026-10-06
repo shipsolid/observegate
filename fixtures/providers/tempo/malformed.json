@@ -1,0 +1,9 @@
+{
+  "traces": [
+    {
+      "traceID": "bad",
+      "startTimeUnixNano": "not-nanoseconds",
+      "durationMs": "slow"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "traces": [
+    {
+      "traceID": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "rootServiceName": "checkout",
+      "rootTraceName": "POST /orders",
+      "startTimeUnixNano": "1791273600000000000",
+      "durationMs": 245.5,
+      "partial": true,
+      "resource": {
+        "service.name": "checkout",
+        "service.namespace": "shop",
+        "service.version": "2026.10.6",
+        "deployment.environment.name": "production"
+      },
+      "spans": [
+        {
+          "spanID": "00f067aa0ba902b7",
+          "name": "POST /orders",
+          "kind": "SERVER",
+          "status": "ERROR",
+          "durationMs": 245.5,
+          "resource": { "service.name": "checkout" },
+          "attributes": { "peer.service": "payments" }
+        }
+      ]
+    }
+  ],
+  "warnings": ["trace is partial"]
+}

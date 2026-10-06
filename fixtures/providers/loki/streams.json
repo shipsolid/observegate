@@ -1,0 +1,27 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "streams",
+    "result": [
+      {
+        "stream": {
+          "service_name": "checkout",
+          "deployment_environment": "production"
+        },
+        "values": [
+          [
+            "1791273600000000000",
+            "customer email and secret payload",
+            {
+              "level": "error",
+              "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+              "span_id": "00f067aa0ba902b7",
+              "customer_id": "must-not-leak"
+            }
+          ]
+        ]
+      }
+    ]
+  },
+  "warnings": ["results reached the configured limit"]
+}
