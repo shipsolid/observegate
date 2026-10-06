@@ -1,0 +1,58 @@
+metadata:
+  name: minimal
+execution:
+  active_target: test
+  phases:
+    pre_deployment:
+      timeout: 1m
+      concurrency: 1
+    post_deployment:
+      timeout: 1m
+      concurrency: 1
+identity:
+  canonical:
+    service_name: test
+    service_namespace: default
+    environment: test
+    release_id: release-1
+    deployment_id: deployment-1
+release:
+  candidate:
+    id: release-1
+observation:
+  pre_deployment: {}
+  post_deployment: {}
+decision:
+  outcomes:
+    pass:
+      exit_code: 0
+      conclusion: success
+    warn:
+      exit_code: 0
+      conclusion: neutral
+    fail:
+      exit_code: 1
+      conclusion: failure
+    inconclusive:
+      exit_code: 2
+      conclusion: failure
+    error:
+      exit_code: 3
+      conclusion: failure
+targets:
+  definitions:
+    test:
+      runtime:
+        type: generic
+        provider: evidence
+providers:
+  evidence:
+    local:
+      type: file
+gate_defaults: {}
+gates:
+  pre_deployment: []
+  post_deployment: []
+reporting: {}
+security: {}
+limits: {}

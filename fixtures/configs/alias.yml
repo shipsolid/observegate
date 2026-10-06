@@ -1,0 +1,4 @@
+metadata: &metadata
+  name: aliased
+execution:
+  <<: *metadata
