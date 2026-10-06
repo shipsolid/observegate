@@ -1,0 +1,86 @@
+metadata:
+  name: conditions
+execution:
+  active_target: aca
+  phases:
+    pre_deployment:
+      timeout: 2m
+      concurrency: 2
+    post_deployment:
+      timeout: 3m
+      concurrency: 2
+identity:
+  canonical:
+    service_name: checkout
+    service_namespace: commerce
+    environment: test
+    release_id: release-1
+    deployment_id: deployment-1
+release:
+  candidate:
+    id: release-1
+observation:
+  pre_deployment: {}
+  post_deployment: {}
+decision:
+  outcomes:
+    pass: { exit_code: 0, conclusion: success }
+    warn: { exit_code: 0, conclusion: neutral }
+    fail: { exit_code: 1, conclusion: failure }
+    inconclusive: { exit_code: 2, conclusion: failure }
+    error: { exit_code: 3, conclusion: failure }
+targets:
+  definitions:
+    aca:
+      runtime:
+        type: azure_container_apps
+        provider: azure-runtime
+    linux:
+      runtime:
+        type: linux_vm
+        operating_system: linux
+        provider: generic-runtime
+        expected:
+          minimum_available_replicas: 1
+providers:
+  runtime:
+    azure-runtime: { type: azure }
+    generic-runtime: { type: generic }
+  telemetry:
+    metrics: { type: prometheus }
+gate_defaults:
+  enabled: true
+  enforcement: blocking
+  timeout: 30s
+  retries: inherit
+  target: active
+gates:
+  pre_deployment:
+    - id: metric.first
+      name: First metric
+      type: metric.threshold
+      source: { provider: metrics }
+    - id: kubernetes.only
+      name: Kubernetes only
+      type: kubernetes.manifest
+      when: { runtime_type: kubernetes }
+      otherwise: skipped
+    - id: windows.only
+      name: Windows only
+      type: vm.service_health
+      when: { operating_system: windows }
+      otherwise: skipped
+    - id: optional.provider
+      name: Optional provider
+      type: evidence.sarif
+      when: { provider_available: static-analysis }
+      otherwise: skipped
+  post_deployment:
+    - id: post.metric
+      name: Post metric
+      type: metric.threshold
+      source: { provider: metrics }
+reporting:
+  outputs: [decision, phase, target_id, report_path]
+security: {}
+limits: {}
