@@ -1,0 +1,79 @@
+{
+  "providers.health": {
+    "providers": [
+      {
+        "reachable": true,
+        "authenticated": true,
+        "authorized": true,
+        "latencyMs": 120,
+        "maximumLatencyMs": 3000
+      }
+    ]
+  },
+  "metric.threshold": {
+    "value": 0.999,
+    "threshold": 0.995,
+    "operator": "gte",
+    "sampleCount": 12,
+    "minimumSamples": 5
+  },
+  "grafana.slo_status": {
+    "status": "met",
+    "fresh": true
+  },
+  "grafana.error_budget": {
+    "remainingPercent": 68,
+    "minimumRemainingPercent": 25,
+    "fresh": true
+  },
+  "grafana.burn_rate": {
+    "fresh": true,
+    "pairs": [
+      { "shortValue": 1.2, "longValue": 0.8, "maximum": 14.4 },
+      { "shortValue": 0.9, "longValue": 0.6, "maximum": 6 }
+    ]
+  },
+  "grafana.alert_state": {
+    "fresh": true,
+    "alerts": []
+  },
+  "evidence.incident_state": {
+    "incidents": []
+  },
+  "dependency.health": {
+    "dependencies": [
+      { "name": "payments", "required": true, "healthy": true },
+      { "name": "inventory", "required": true, "healthy": true }
+    ]
+  },
+  "telemetry.collector_health": {
+    "exportFailures": 0,
+    "refusedRecords": 0,
+    "maximumQueueUtilizationPercent": 35,
+    "allowedQueueUtilizationPercent": 80
+  },
+  "runtime.capacity": {
+    "cpuPercent": 55,
+    "maximumCpuPercent": 75,
+    "memoryPercent": 62,
+    "maximumMemoryPercent": 80,
+    "diskPercent": 48,
+    "maximumDiskPercent": 85,
+    "surgeSchedulable": true
+  },
+  "policy.change_window": {
+    "freezeActive": false
+  },
+  "deployment.concurrency": {
+    "currentDeploymentId": "deploy-42",
+    "deployments": [{ "id": "deploy-42", "active": true }]
+  },
+  "telemetry.cardinality_estimate": {
+    "estimate": 240,
+    "budget": 500
+  },
+  "telemetry.volume_estimate": {
+    "estimate": 18,
+    "budget": 25
+  }
+}
