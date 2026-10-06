@@ -15,6 +15,7 @@ export interface TransportRequest {
   readonly retry: RetryPolicy;
   readonly signal: AbortSignal;
   readonly deadlineAtMs?: number;
+  readonly responseType?: "json" | "none";
 }
 
 export interface TransportResponse<T = unknown> {
@@ -312,7 +313,10 @@ export class GuardedTransport {
           });
         }
 
-        const data = await readBoundedJson(response, request.maximumResponseBytes);
+        const data =
+          request.responseType === "none"
+            ? await response.body?.cancel().then(() => undefined)
+            : await readBoundedJson(response, request.maximumResponseBytes);
         return { status: response.status, data: data as T, headers: response.headers };
       }
       throw new GateError({
