@@ -1,0 +1,19 @@
+{
+  "name": "@observability-gate/action",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && rollup -c rollup.config.js",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@actions/core": "3.0.1",
+    "@actions/github": "9.1.1",
+    "@observability-gate/config": "0.0.0",
+    "@observability-gate/core": "0.0.0",
+    "@observability-gate/gates": "0.0.0",
+    "@observability-gate/providers": "0.0.0",
+    "@observability-gate/reporters": "0.0.0"
+  }
+}

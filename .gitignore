@@ -1,6 +1,7 @@
 node_modules/
 coverage/
 packages/*/dist/
+packages/action/lib/
 .superpowers/
 *.tsbuildinfo
 *.log

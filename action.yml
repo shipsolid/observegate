@@ -1,0 +1,49 @@
+name: Observability Gate
+description: Evidence-driven pre- and post-deployment observability gates
+author: ShipSolid
+inputs:
+  config:
+    description: Workspace-relative path to observability-gate.yml
+    required: true
+  phase:
+    description: pre_deployment or post_deployment
+    required: true
+  target:
+    description: Optional execution target override
+    required: false
+  output-directory:
+    description: Directory for JSON, Markdown, JUnit, and SARIF reports
+    required: false
+    default: observability-gate-results
+  github-token:
+    description: Optional token for explicitly enabled GitHub reporting
+    required: false
+outputs:
+  decision:
+    description: Final gate decision
+  phase:
+    description: Evaluated phase
+  target_id:
+    description: Evaluated target ID
+  release_id:
+    description: Candidate release ID
+  baseline_release_id:
+    description: Baseline release ID when available
+  passed_count:
+    description: Passed gate count
+  warned_count:
+    description: Warned gate count
+  failed_count:
+    description: Failed gate count
+  skipped_count:
+    description: Skipped gate count
+  evidence_coverage_percent:
+    description: Evidence coverage percentage
+  report_path:
+    description: Canonical JSON report path
+runs:
+  using: node24
+  main: dist/index.js
+branding:
+  icon: activity
+  color: purple

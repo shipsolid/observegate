@@ -1,0 +1,125 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExecutionResult } from "@observability-gate/core";
+
+const mocks = vi.hoisted(() => {
+  const inputs = new Map<string, string>();
+  const outputs = new Map<string, unknown>();
+  const addRaw = vi.fn();
+  const summary = { addRaw, write: vi.fn(async () => undefined) };
+  addRaw.mockReturnValue(summary);
+  return {
+    inputs,
+    outputs,
+    summary,
+    setFailed: vi.fn(),
+    warning: vi.fn(),
+    writeReports: vi.fn(async () => ({
+      paths: { json: "/tmp/observability-gate.json" },
+      totalBytes: 100
+    }))
+  };
+});
+
+vi.mock("@actions/core", () => ({
+  getInput: (name: string, options?: { required?: boolean }) => {
+    const value = mocks.inputs.get(name) ?? "";
+    if (options?.required === true && value.length === 0) throw new Error(`Missing input: ${name}`);
+    return value;
+  },
+  setOutput: (name: string, value: unknown) => mocks.outputs.set(name, value),
+  setFailed: mocks.setFailed,
+  warning: mocks.warning,
+  summary: mocks.summary
+}));
+
+vi.mock("@actions/github", () => ({
+  context: { repo: { owner: "shipsolid", repo: "observegate" }, sha: "abc", payload: {} },
+  getOctokit: vi.fn()
+}));
+
+vi.mock("@observability-gate/reporters", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@observability-gate/reporters")>();
+  return { ...original, writeReports: mocks.writeReports };
+});
+
+import { runAction } from "../src/main.js";
+
+function result(decision: ExecutionResult["decision"]): ExecutionResult {
+  return {
+    decision,
+    phase: "post_deployment",
+    target: { id: "production", runtimeType: "kubernetes", provider: "aks" },
+    release: { candidateId: "release-1", deploymentId: "deploy-1", baselineId: "release-0" },
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:01:00.000Z",
+    evidenceCoveragePercent: 100,
+    gates: [],
+    diagnostics: [],
+    links: {}
+  };
+}
+
+describe("GitHub Action adapter", () => {
+  beforeEach(() => {
+    mocks.inputs.clear();
+    mocks.outputs.clear();
+    mocks.inputs.set("config", "observability-gate.yml");
+    mocks.inputs.set("phase", "post_deployment");
+    mocks.inputs.set("output-directory", "/tmp/reports");
+    mocks.setFailed.mockClear();
+    mocks.warning.mockClear();
+    mocks.summary.addRaw.mockClear();
+    mocks.summary.write.mockClear();
+    mocks.writeReports.mockClear();
+  });
+
+  it("requires config and phase inputs", async () => {
+    mocks.inputs.delete("config");
+    await runAction({ service: { run: vi.fn() } });
+    expect(mocks.setFailed).toHaveBeenCalledWith("Missing input: config");
+  });
+
+  it.each(["pass", "warn"] as const)("publishes %s outputs without failing", async (decision) => {
+    const service = { run: vi.fn(async () => result(decision)) };
+    await runAction({
+      service,
+      workspaceRoot: "/workspace",
+      environment: { TOKEN: "secret-token" }
+    });
+
+    expect(service.run).toHaveBeenCalledOnce();
+    expect(mocks.outputs.get("decision")).toBe(decision);
+    expect(mocks.outputs.get("target_id")).toBe("production");
+    expect(mocks.outputs.get("report_path")).toBe("/tmp/observability-gate.json");
+    expect(mocks.summary.write).toHaveBeenCalledOnce();
+    expect(mocks.setFailed).not.toHaveBeenCalled();
+    expect(JSON.stringify([...mocks.outputs.values()])).not.toContain("secret-token");
+  });
+
+  it.each(["fail", "inconclusive", "error"] as const)("fails the step for %s", async (decision) => {
+    await runAction({ service: { run: async () => result(decision) } });
+    expect(mocks.setFailed).toHaveBeenCalledWith(`Observability Gate decision: ${decision}`);
+  });
+
+  it("passes the target override and phase to the service", async () => {
+    mocks.inputs.set("target", "blue");
+    const service = { run: vi.fn(async () => result("pass")) };
+    await runAction({ service });
+    expect(service.run).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: "post_deployment", targetOverride: "blue" })
+    );
+  });
+
+  it("degrades missing GitHub write permission to a reporting warning", async () => {
+    mocks.inputs.set("github-token", "token-value");
+    const github = await import("@actions/github");
+    vi.mocked(github.getOctokit).mockReturnValue({
+      rest: { checks: { create: vi.fn(async () => Promise.reject(new Error("forbidden"))) } }
+    } as never);
+    await runAction({ service: { run: async () => result("pass") } });
+    expect(mocks.warning).toHaveBeenCalledWith(
+      "GitHub report publication was not authorized; local reports are available."
+    );
+    expect(mocks.setFailed).not.toHaveBeenCalled();
+  });
+});

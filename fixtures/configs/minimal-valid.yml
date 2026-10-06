@@ -44,7 +44,7 @@ targets:
     test:
       runtime:
         type: generic
-        provider: evidence
+        provider: local
 providers:
   evidence:
     local:

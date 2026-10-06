@@ -1,0 +1,39 @@
+name: Action bundle
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checked-in-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Passing pre-deployment gate
+        id: passing
+        uses: ./
+        with:
+          config: fixtures/configs/minimal-valid.yml
+          phase: pre_deployment
+          output-directory: action-results/pass
+
+      - name: Expected failing post-deployment gate
+        id: failing
+        continue-on-error: true
+        uses: ./
+        with:
+          config: fixtures/configs/minimal-valid.yml
+          phase: post_deployment
+          output-directory: action-results/fail
+
+      - name: Assert bundle behavior
+        shell: bash
+        run: |
+          test "${{ steps.passing.outputs.decision }}" = "pass"
+          test "${{ steps.failing.outcome }}" = "failure"
+          test "${{ steps.failing.outputs.decision }}" = "error"

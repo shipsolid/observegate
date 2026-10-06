@@ -3,7 +3,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["**/dist/**", "**/coverage/**", ".superpowers/**"]
+    ignores: ["**/dist/**", "packages/action/lib/**", "**/coverage/**", ".superpowers/**"]
   },
   eslint.configs.recommended,
   ...tseslint.configs.strict
