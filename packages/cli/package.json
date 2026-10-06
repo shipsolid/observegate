@@ -1,0 +1,27 @@
+{
+  "name": "@observability-gate/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "observability-gate": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@observability-gate/config": "0.0.0",
+    "@observability-gate/core": "0.0.0",
+    "@observability-gate/gates": "0.0.0",
+    "@observability-gate/providers": "0.0.0",
+    "@observability-gate/reporters": "0.0.0",
+    "commander": "15.0.0"
+  }
+}

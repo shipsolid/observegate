@@ -79,6 +79,7 @@ function adapter(events: string[]): ApplicationPolicyAdapter<Policy> {
     },
     describeExecution() {
       return {
+        phase: "pre_deployment",
         target: { id: "production", runtimeType: "kubernetes", provider: "runtime" },
         release: { candidateId: "release-1", deploymentId: "deployment-1" },
         decisionPolicy: { minimumEvidenceCoveragePercent: 0, warnOnSkipped: false },

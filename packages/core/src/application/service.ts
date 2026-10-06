@@ -10,6 +10,7 @@ import type { GateRunContext } from "./run-gate.js";
 import { runPhase, type ObservationSchedule } from "./run-phase.js";
 
 export interface PreparedExecution {
+  readonly phase: ExecutionRequest["phase"];
   readonly target: TargetIdentity;
   readonly release: ReleaseIdentity;
   readonly decisionPolicy: DecisionPolicy;
@@ -19,6 +20,7 @@ export interface PreparedExecution {
   };
   readonly observation: ObservationSchedule;
   readonly links: Readonly<Record<string, string>>;
+  readonly configurationFingerprint?: string;
 }
 
 export interface ApplicationPolicyAdapter<TPolicy> {
@@ -216,6 +218,9 @@ export class ObservabilityGateService<TPolicy> {
         startedAt: startedAt.toISOString(),
         completedAt: this.clock().toISOString(),
         evidenceCoveragePercent: summary.evidenceCoveragePercent,
+        ...(prepared.execution.configurationFingerprint === undefined
+          ? {}
+          : { configurationFingerprint: prepared.execution.configurationFingerprint }),
         gates: summary.gates,
         diagnostics: Object.freeze([]),
         links: prepared.execution.links
