@@ -1,5 +1,8 @@
 export const productName = "Observability Gate";
 
+export * from "./application/run-gate.js";
+export * from "./application/run-phase.js";
+export * from "./application/service.js";
 export * from "./assertions/evaluate.js";
 export * from "./assertions/types.js";
 export * from "./assertions/units.js";
@@ -16,3 +19,5 @@ export * from "./evidence/freshness.js";
 export * from "./evidence/states.js";
 export * from "./evidence/store.js";
 export * from "./evidence/types.js";
+export * from "./execution/deadline.js";
+export * from "./execution/scheduler.js";

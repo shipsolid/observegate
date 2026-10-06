@@ -38,4 +38,7 @@ export interface ExecutionPlan {
   readonly gates: readonly PlannedGate[];
   readonly requiredProviders: readonly ProviderRequirement[];
   readonly deadlineMs: number;
+  readonly concurrency?: number;
+  readonly perProviderConcurrency?: number;
+  readonly failFast?: boolean;
 }

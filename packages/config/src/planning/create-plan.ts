@@ -170,7 +170,10 @@ export function createExecutionPlan(input: CreateExecutionPlanInput): ExecutionP
     runtimeType,
     gates: Object.freeze(gates),
     requiredProviders,
-    deadlineMs: parseDuration(policy.execution.phases[phase].timeout)
+    deadlineMs: parseDuration(policy.execution.phases[phase].timeout),
+    concurrency: policy.execution.phases[phase].concurrency,
+    perProviderConcurrency: policy.limits.maximum_parallel_requests_per_provider ?? 4,
+    failFast: policy.execution.enforcement?.fail_fast ?? false
   };
   return deepFreeze(plan);
 }
