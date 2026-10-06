@@ -8,4 +8,5 @@ export * from "./register-post-common.js";
 export * from "./register-post-reliability.js";
 export * from "./register-kubernetes.js";
 export * from "./register-container-apps.js";
+export * from "./register-vm.js";
 export * from "./register-risk.js";
