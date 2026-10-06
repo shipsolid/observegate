@@ -1,0 +1,18 @@
+export const errorCodes = [
+  "CONFIG_SYNTAX",
+  "CONFIG_SCHEMA",
+  "CONFIG_REFERENCE",
+  "SECURITY_POLICY",
+  "AUTHENTICATION",
+  "AUTHORIZATION",
+  "PROVIDER_UNAVAILABLE",
+  "PROVIDER_PROTOCOL",
+  "EVIDENCE_INVALID",
+  "CAPABILITY_UNSUPPORTED",
+  "GATE_EVALUATION",
+  "REPORTING",
+  "CANCELLED",
+  "INTERNAL"
+] as const;
+
+export type ErrorCode = (typeof errorCodes)[number];
