@@ -1,5 +1,8 @@
 export const productName = "Observability Gate";
 
+export * from "./assertions/evaluate.js";
+export * from "./assertions/types.js";
+export * from "./assertions/units.js";
 export * from "./domain/execution.js";
 export * from "./domain/gates.js";
 export * from "./domain/identity.js";

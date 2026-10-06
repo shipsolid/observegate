@@ -10,6 +10,10 @@ export interface AssertionResult {
   readonly observed?: unknown;
   readonly unit?: string;
   readonly message: string;
+  readonly children?: readonly AssertionResult[];
+  readonly diagnostic?: Diagnostic;
+  readonly requiredPassCount?: number;
+  readonly observedPassCount?: number;
 }
 
 export interface EvidenceReference {
