@@ -9,6 +9,9 @@
     },
     {
       "path": "./packages/gates"
+    },
+    {
+      "path": "./packages/providers"
     }
   ]
 }
