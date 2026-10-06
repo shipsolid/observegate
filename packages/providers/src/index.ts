@@ -1,4 +1,5 @@
 export * from "./security/redact.js";
+export * from "./capabilities.js";
 export * from "./logs/loki-client.js";
 export * from "./logs/types.js";
 export * from "./grafana/alerts.js";

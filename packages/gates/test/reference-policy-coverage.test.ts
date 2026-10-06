@@ -84,7 +84,7 @@ describe("reference policy gate coverage", () => {
         description: expect.any(String),
         supportedPhases: expect.any(Array),
         providerRequirements: expect.any(Array),
-        conditionKeys: ["runtime_type", "operating_system", "provider_available"],
+        conditionKeys: ["phase", "runtime_type", "operating_system", "provider_available"],
         assertionSchema: "normalized-evidence/v1",
         supportsRemediation: true
       });

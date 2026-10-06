@@ -1,0 +1,150 @@
+name: Deploy with ObserveGate
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Immutable release or image digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  pre-deployment:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Evaluate pre-deployment gates
+        uses: shipsolid/observegate@cb515c72d282c13dccb26fc4c7ff32505d3d0a40
+        with:
+          config: observability-gate.yml
+          phase: pre_deployment
+          target: aks-checkout
+          output-directory: observability-gate-results/pre
+        env:
+          TARGET_ID: aks-checkout
+          SERVICE_NAME: checkout
+          SERVICE_NAMESPACE: commerce
+          ENVIRONMENT: production
+          RELEASE_ID: ${{ inputs.release_id }}
+          DEPLOYMENT_ID: ${{ github.run_id }}
+          KUBE_CONTEXT: production
+          K8S_NAMESPACE: checkout
+          K8S_WORKLOAD: checkout
+          K8S_CONTAINER: checkout
+          IMAGE_DIGEST: ${{ inputs.release_id }}
+
+      - name: Upload pre-deployment evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: observability-gate-pre
+          path: observability-gate-results/pre
+          if-no-files-found: error
+
+  deploy:
+    needs: pre-deployment
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      deployed_at: ${{ steps.release.outputs.deployed_at }}
+      previous_release: ${{ steps.previous.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read previous release
+        id: previous
+        shell: bash
+        run: |
+          if helm status checkout --namespace checkout >/dev/null 2>&1; then
+            release_id="$(helm get values checkout --namespace checkout --output json | jq -r '.image.digest // "unknown"')"
+          else
+            release_id="none"
+          fi
+          echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy the user-owned Helm release
+        shell: bash
+        run: |
+          helm upgrade --install checkout deploy/chart \
+            --namespace checkout \
+            --create-namespace \
+            --atomic \
+            --wait \
+            --set-string image.digest="${{ inputs.release_id }}"
+
+      - name: Publish deployment outputs
+        id: release
+        shell: bash
+        run: echo "deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Capture read-only deployment evidence
+        shell: bash
+        run: |
+          mkdir -p deployment-evidence
+          helm get manifest checkout --namespace checkout > deployment-evidence/rendered.yaml
+
+      - name: Upload deployment evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: checkout-deployment-evidence
+          path: deployment-evidence
+          if-no-files-found: error
+
+  post-deployment:
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download deployment evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: checkout-deployment-evidence
+          path: deployment-evidence
+
+      - name: Evaluate post-deployment gates
+        uses: shipsolid/observegate@cb515c72d282c13dccb26fc4c7ff32505d3d0a40
+        with:
+          config: observability-gate.yml
+          phase: post_deployment
+          target: aks-checkout
+          output-directory: observability-gate-results/post
+          github-token: ${{ github.token }}
+        env:
+          TARGET_ID: aks-checkout
+          SERVICE_NAME: checkout
+          SERVICE_NAMESPACE: commerce
+          ENVIRONMENT: production
+          RELEASE_ID: ${{ inputs.release_id }}
+          DEPLOYMENT_ID: ${{ github.run_id }}
+          DEPLOYED_AT: ${{ needs.deploy.outputs.deployed_at }}
+          BASELINE_RELEASE_ID: ${{ needs.deploy.outputs.previous_release }}
+          KUBE_CONTEXT: production
+          K8S_NAMESPACE: checkout
+          K8S_WORKLOAD: checkout
+          K8S_CONTAINER: checkout
+          IMAGE_DIGEST: ${{ inputs.release_id }}
+
+      - name: Upload post-deployment reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: observability-gate-post
+          path: observability-gate-results/post
+          if-no-files-found: error

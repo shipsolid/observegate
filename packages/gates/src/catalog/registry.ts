@@ -49,7 +49,12 @@ export class GateCatalog {
       providerRequirements: Object.freeze(
         definition.providerRequirements.map((requirement) => Object.freeze({ ...requirement }))
       ),
-      conditionKeys: Object.freeze(["runtime_type", "operating_system", "provider_available"]),
+      conditionKeys: Object.freeze([
+        "phase",
+        "runtime_type",
+        "operating_system",
+        "provider_available"
+      ]),
       assertionSchema: "normalized-evidence/v1",
       supportsRemediation: true
     });

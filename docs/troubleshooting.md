@@ -1,0 +1,22 @@
+# Troubleshooting
+
+Diagnostics use stable error codes and safe messages. Standard output contains
+results; diagnostics go to standard error. Raw queries, response bodies, logs,
+and credential values are never required for routine diagnosis.
+
+| Code                   | Meaning                                                                 | Likely causes                                                                  | Safe remediation                                                                    |
+| ---------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| CONFIG_SYNTAX          | The YAML cannot be parsed safely.                                       | Duplicate keys, malformed YAML, aliases, or merge keys.                        | Fix the YAML; do not enable aliases or merges.                                      |
+| CONFIG_SCHEMA          | The policy does not match the strict schema.                            | Unknown fields, invalid values, or missing environment variables.              | Run `observability-gate validate --config <path>` and correct every reported field. |
+| CONFIG_REFERENCE       | A named target, provider, gate, or output cannot be resolved.           | Misspelled IDs or incompatible phase/provider references.                      | Compare IDs with `observability-gate catalog` and the active target.                |
+| SECURITY_POLICY        | A configured operation violates a security boundary.                    | Workspace escape, unsafe URL, forbidden operation, or untrusted YAML feature.  | Keep files inside the workspace and endpoints on approved HTTPS hosts.              |
+| AUTHENTICATION         | A provider rejected the supplied identity.                              | Expired or incorrect environment credential.                                   | Refresh the least-privilege credential at its source; never print it.               |
+| AUTHORIZATION          | The identity lacks a required read permission.                          | Missing Kubernetes get/list/watch, Azure Reader, or Grafana read scope.        | Grant only the documented read permission and retry.                                |
+| PROVIDER_UNAVAILABLE   | A required provider could not be reached.                               | Timeout, reset, DNS, or exhausted transient retries.                           | Verify endpoint reachability and provider health without weakening SSRF controls.   |
+| PROVIDER_PROTOCOL      | A provider returned an invalid protocol response.                       | Malformed JSON, unexpected status, or incompatible response shape.             | Check provider compatibility and sanitized provider logs.                           |
+| EVIDENCE_INVALID       | Evidence is absent, stale, insufficient, or malformed.                  | No matching release signal, old timestamps, too few samples, or invalid files. | Restore the evidence source or extend only the policy-approved observation window.  |
+| CAPABILITY_UNSUPPORTED | The selected adapter cannot supply a gate requirement.                  | Runtime/OS mismatch or missing adapter capability.                             | Select an applicable gate or supported read-only adapter.                           |
+| GATE_EVALUATION        | A gate exceeded its deadline or could not evaluate normalized evidence. | Gate timeout or invalid assertion input.                                       | Inspect the named gate and evidence age; keep the phase deadline bounded.           |
+| REPORTING              | A required report could not be published.                               | Filesystem, size limit, or GitHub permission failure.                          | Restore write access to the output directory or configured GitHub permission.       |
+| CANCELLED              | Execution was cancelled.                                                | SIGINT, SIGTERM, workflow cancellation, or parent abort.                       | Rerun when safe; cancelled partial results never count as pass.                     |
+| INTERNAL               | An unexpected product error occurred.                                   | Unhandled invariant or adapter defect.                                         | Capture the stable code and sanitized context, then file an issue without secrets.  |

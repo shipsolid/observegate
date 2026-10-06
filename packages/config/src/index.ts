@@ -7,4 +7,5 @@ export * from "./planning/references.js";
 export * from "./planning/types.js";
 export * from "./schema/common.js";
 export * from "./schema/gate-envelope.js";
+export * from "./schema/metadata.js";
 export * from "./schema/policy.js";
