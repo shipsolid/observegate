@@ -1,0 +1,17 @@
+{
+  "receiver": "default",
+  "routes": [
+    {
+      "receiver": "critical-pager",
+      "object_matchers": [["severity", "=", "critical"]],
+      "mute_time_intervals": ["deployment-freeze"]
+    }
+  ],
+  "mute_windows": [
+    {
+      "name": "deployment-freeze",
+      "start": "2026-10-06T07:50:00.000Z",
+      "end": "2026-10-06T08:10:00.000Z"
+    }
+  ]
+}

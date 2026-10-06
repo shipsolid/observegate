@@ -1,0 +1,31 @@
+[
+  {
+    "uid": "checkout-errors",
+    "title": "Checkout error rate",
+    "isPaused": false,
+    "labels": {
+      "service": "checkout",
+      "environment": "production",
+      "severity": "critical",
+      "owner": "payments-sre",
+      "runbook_url": "https://runbooks.example.com/checkout-errors"
+    },
+    "state": "firing",
+    "health": "error",
+    "lastEvaluation": "2026-10-06T08:00:00.000Z"
+  },
+  {
+    "uid": "checkout-latency",
+    "title": "Checkout latency",
+    "isPaused": false,
+    "labels": {
+      "service": "checkout",
+      "environment": "production",
+      "severity": "warning",
+      "owner": "payments-sre"
+    },
+    "state": "pending",
+    "health": "ok",
+    "lastEvaluation": "2026-10-06T07:59:55.000Z"
+  }
+]

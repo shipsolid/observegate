@@ -34,16 +34,19 @@ export interface GuardedTransportOptions {
 
 class HttpFailure extends GateError {
   public readonly retryAfterMs: number | undefined;
+  public readonly httpStatus: number;
 
   public constructor(options: {
     code: "AUTHENTICATION" | "AUTHORIZATION" | "PROVIDER_PROTOCOL" | "PROVIDER_UNAVAILABLE";
     safeMessage: string;
     retryable: boolean;
+    httpStatus: number;
     retryAfterMs?: number;
     cause?: unknown;
   }) {
     super(options);
     this.retryAfterMs = options.retryAfterMs;
+    this.httpStatus = options.httpStatus;
   }
 }
 
@@ -276,14 +279,16 @@ export class GuardedTransport {
             throw new HttpFailure({
               code: "AUTHENTICATION",
               safeMessage: "Provider rejected authentication",
-              retryable: false
+              retryable: false,
+              httpStatus: response.status
             });
           }
           if (response.status === 403) {
             throw new HttpFailure({
               code: "AUTHORIZATION",
               safeMessage: "Provider denied authorization",
-              retryable: false
+              retryable: false,
+              httpStatus: response.status
             });
           }
           if (request.retry.retryStatuses.includes(response.status)) {
@@ -295,13 +300,15 @@ export class GuardedTransport {
               code: "PROVIDER_UNAVAILABLE",
               safeMessage: `Provider returned retryable HTTP ${response.status}`,
               retryable: true,
+              httpStatus: response.status,
               ...(retryAfterMs === undefined ? {} : { retryAfterMs })
             });
           }
           throw new HttpFailure({
             code: "PROVIDER_PROTOCOL",
             safeMessage: `Provider returned HTTP ${response.status}`,
-            retryable: false
+            retryable: false,
+            httpStatus: response.status
           });
         }
 

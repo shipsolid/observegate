@@ -1,0 +1,18 @@
+{
+  "dashboard": {
+    "uid": "checkout-overview",
+    "title": "Checkout Overview",
+    "panels": [
+      { "id": 1, "title": "Request rate", "datasource": { "type": "prometheus" } },
+      { "id": 2, "title": "Errors", "datasource": { "type": "loki" } },
+      { "id": 3, "title": "Latency traces", "datasource": { "type": "tempo" } }
+    ],
+    "templating": {
+      "list": [
+        { "name": "service", "type": "query" },
+        { "name": "environment", "type": "custom" }
+      ]
+    }
+  },
+  "meta": { "updated": "2026-10-06T07:55:00.000Z" }
+}

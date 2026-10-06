@@ -1,0 +1,14 @@
+{
+  "uid": "checkout-availability",
+  "name": "Checkout availability",
+  "objective": 99.9,
+  "window": "30d",
+  "labels": { "service": "checkout", "environment": "production" },
+  "status": "met",
+  "evaluatedAt": "2026-10-06T08:00:00.000Z",
+  "errorBudget": { "remainingPercent": 72.5, "consumedPercent": 27.5 },
+  "burnRates": [
+    { "shortWindow": "5m", "longWindow": "1h", "value": 0.8 },
+    { "shortWindow": "30m", "longWindow": "6h", "value": 0.4 }
+  ]
+}
