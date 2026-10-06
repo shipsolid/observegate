@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Observability Gate" tests="2" failures="1" skipped="1" time="120">
+  <testcase classname="release.error-rate" name="release.error-rate" time="1">
+    <failure message="Error rate exceeded">failed</failure>
+  </testcase>
+  <testcase classname="policy.sarif" name="policy.sarif" time="1">
+    <skipped message="Unsafe instrumentation setting"/>
+  </testcase>
+</testsuite>

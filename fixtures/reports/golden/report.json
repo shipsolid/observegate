@@ -1,0 +1,92 @@
+{
+  "decision": "fail",
+  "phase": "post_deployment",
+  "target": {
+    "id": "production",
+    "runtimeType": "kubernetes",
+    "provider": "aks"
+  },
+  "release": {
+    "candidateId": "checkout-2026.10.6",
+    "deploymentId": "deploy-42",
+    "baselineId": "checkout-2026.10.5"
+  },
+  "startedAt": "2026-10-06T10:00:00.000Z",
+  "completedAt": "2026-10-06T10:02:00.000Z",
+  "evidenceCoveragePercent": 92.5,
+  "configurationFingerprint": "sha256:policy",
+  "gates": [
+    {
+      "id": "release.error-rate",
+      "name": "Candidate error rate",
+      "type": "release.error-rate",
+      "phase": "post_deployment",
+      "enforcement": "blocking",
+      "status": "failed",
+      "startedAt": "2026-10-06T10:01:00.000Z",
+      "completedAt": "2026-10-06T10:01:01.000Z",
+      "durationMs": 1000,
+      "assertions": [
+        {
+          "assertion": "error_rate",
+          "status": "failed",
+          "expected": 0.01,
+          "observed": 0.04,
+          "unit": "ratio",
+          "message": "Error rate exceeded",
+          "window": "10m",
+          "sampleCount": 500
+        }
+      ],
+      "evidence": [
+        {
+          "id": "ev-1",
+          "kind": "prometheus.range",
+          "provider": "metrics",
+          "observedAt": "2026-10-06T10:00:55.000Z",
+          "acquiredAt": "2026-10-06T10:01:00.000Z",
+          "ageMs": 5000,
+          "fingerprint": "sha256:evidence"
+        }
+      ],
+      "diagnostics": [
+        {
+          "code": "EVIDENCE_INVALID",
+          "message": "Threshold breached",
+          "retryable": false
+        }
+      ],
+      "remediation": "Inspect the candidate release."
+    },
+    {
+      "id": "policy.sarif",
+      "name": "Static findings",
+      "type": "policy.sarif",
+      "phase": "post_deployment",
+      "enforcement": "advisory",
+      "status": "warned",
+      "startedAt": "2026-10-06T10:01:01.000Z",
+      "completedAt": "2026-10-06T10:01:02.000Z",
+      "durationMs": 1000,
+      "assertions": [],
+      "evidence": [],
+      "diagnostics": [
+        {
+          "code": "EVIDENCE_INVALID",
+          "message": "Unsafe instrumentation setting",
+          "retryable": false,
+          "artifactLocation": {
+            "uri": "src/telemetry.ts",
+            "line": 12,
+            "column": 3
+          }
+        }
+      ]
+    }
+  ],
+  "diagnostics": [],
+  "links": {
+    "dashboard": "https://example.invalid/dashboard",
+    "runbook": "https://example.invalid/runbook"
+  }
+}

@@ -14,6 +14,8 @@ export interface AssertionResult {
   readonly diagnostic?: Diagnostic;
   readonly requiredPassCount?: number;
   readonly observedPassCount?: number;
+  readonly window?: string;
+  readonly sampleCount?: number;
 }
 
 export interface EvidenceReference {
@@ -32,6 +34,11 @@ export interface Diagnostic {
   readonly retryable: boolean;
   readonly provider?: string;
   readonly gateId?: string;
+  readonly artifactLocation?: {
+    readonly uri: string;
+    readonly line?: number;
+    readonly column?: number;
+  };
 }
 
 export interface GateDefinition {

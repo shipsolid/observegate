@@ -12,6 +12,9 @@
     },
     {
       "path": "./packages/providers"
+    },
+    {
+      "path": "./packages/reporters"
     }
   ]
 }
