@@ -2,6 +2,7 @@ coverage/
 dist/
 node_modules/
 .superpowers/
+.stryker-tmp/
 README.md
 docs/observegate-impl.md
 docs/observegate-spec.md

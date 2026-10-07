@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing annotated tag and draft release to publish (for example, v1.0.0)
+        required: true
+        type: string
+      confirm:
+        description: Type publish to approve immutable artifact publication
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: inputs.confirm == 'publish'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Verify immutable release input
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_TYPE}" = "tag"
+          test "${GITHUB_REF_NAME}" = "${RELEASE_TAG}"
+          test "$(git rev-list -n 1 "${RELEASE_TAG}")" = "${GITHUB_SHA}"
+          test "${RELEASE_TAG}" = "v$(node --print "require('./package.json').version")"
+          gh release view "${RELEASE_TAG}" --json isDraft --jq '.isDraft' | grep --fixed-strings true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify product
+        run: |
+          npm run ci
+          npm run test:e2e
+          npm run test:security
+          npm run test:property
+          npm run test:mutation
+          npm run test:performance
+          npm run bundle
+          npm run verify:bundle
+          npm run verify:read-only
+          git diff --exit-code
+
+      - name: Build reproducible release artifacts
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export SOURCE_DATE_EPOCH
+          chmod 0755 dist/cli/observegate.js
+          tar \
+            --sort=name \
+            --mtime="@${SOURCE_DATE_EPOCH}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            --create \
+            --gzip \
+            --file="dist/observegate-cli-${RELEASE_TAG}.tar.gz" \
+            --directory=dist/cli \
+            .
+          npm sbom --omit=dev --sbom-format=cyclonedx > "dist/observegate-${RELEASE_TAG}.cdx.json"
+          (
+            cd dist
+            sha256sum \
+              "observegate-cli-${RELEASE_TAG}.tar.gz" \
+              "observegate-${RELEASE_TAG}.cdx.json" \
+              > "observegate-${RELEASE_TAG}.sha256"
+          )
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/observegate-cli-${{ inputs.release_tag }}.tar.gz
+
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/observegate-cli-${{ inputs.release_tag }}.tar.gz
+          sbom-path: dist/observegate-${{ inputs.release_tag }}.cdx.json
+
+      - name: Preserve workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: observegate-${{ inputs.release_tag }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            dist/observegate-cli-${{ inputs.release_tag }}.tar.gz
+            dist/observegate-${{ inputs.release_tag }}.cdx.json
+            dist/observegate-${{ inputs.release_tag }}.sha256
+
+      - name: Upload assets and publish draft release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "dist/observegate-cli-${RELEASE_TAG}.tar.gz" \
+            "dist/observegate-${RELEASE_TAG}.cdx.json" \
+            "dist/observegate-${RELEASE_TAG}.sha256"
+          gh release edit "${RELEASE_TAG}" --draft=false

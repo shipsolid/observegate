@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "coverageAnalysis": "perTest",
+  "ignoreStatic": true,
+  "ignorePatterns": ["dist", "packages/*/dist", "packages/action/lib", "coverage", "docker"],
+  "reporters": ["clear-text", "progress"],
+  "cleanTempDir": "always",
+  "mutate": [
+    "packages/core/src/decisions/aggregate.ts",
+    "packages/core/src/assertions/evaluate.ts",
+    "packages/core/src/assertions/units.ts",
+    "packages/core/src/evidence/freshness.ts",
+    "packages/config/src/interpolation/expand.ts",
+    "packages/providers/src/security/redact.ts"
+  ],
+  "thresholds": {
+    "high": 90,
+    "low": 85,
+    "break": 85
+  },
+  "timeoutMS": 10000,
+  "concurrency": 4
+}

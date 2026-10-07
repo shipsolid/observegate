@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { RawPolicy } from "../src/index.js";
-import { expandString, interpolatePolicy, parsePolicy } from "../src/index.js";
+import { expandString, expandValue, interpolatePolicy, parsePolicy } from "../src/index.js";
 
 let policy: RawPolicy;
 
@@ -108,6 +108,51 @@ describe("expandString", () => {
     expect(unsupported.map((value) => expandString(value, {}))).toEqual(unsupported);
     expect(expandString("service=${SERVICE_NAME}", { SERVICE_NAME: "checkout" })).toBe(
       "service=checkout"
+    );
+  });
+
+  it("expands multiple independent variables without treating prior replacements as nesting", () => {
+    expect(
+      expandString("${ENVIRONMENT}/${SERVICE_NAME}/${RELEASE_ID}", {
+        ENVIRONMENT: "prod",
+        SERVICE_NAME: "checkout",
+        RELEASE_ID: "2026.10.7"
+      })
+    ).toBe("prod/checkout/2026.10.7");
+    expect(expandString("${OUTER_${INNER}} and ${VALID}", { VALID: "expanded" })).toBe(
+      "${OUTER_${INNER}} and expanded"
+    );
+    expect(expandString("${VALUE}}", { VALUE: "must-not-expand" })).toBe("${VALUE}}");
+  });
+
+  it("recursively expands objects and arrays while preserving missing values when requested", () => {
+    const input = {
+      service: "${SERVICE_NAME}",
+      nested: ["${ENVIRONMENT}", 3, null, { release: "${RELEASE_ID}" }],
+      missing: "${OPTIONAL}"
+    };
+
+    expect(
+      expandValue(
+        input,
+        { SERVICE_NAME: "checkout", ENVIRONMENT: "prod", RELEASE_ID: "2026.10.7" },
+        "preserve"
+      )
+    ).toEqual({
+      service: "checkout",
+      nested: ["prod", 3, null, { release: "2026.10.7" }],
+      missing: "${OPTIONAL}"
+    });
+    expect(input.service).toBe("${SERVICE_NAME}");
+  });
+
+  it.each([undefined, ""])("rejects a required variable with value %s", (value) => {
+    expect(() => expandString("${REQUIRED}", { REQUIRED: value })).toThrowError(
+      expect.objectContaining({
+        code: "CONFIG_SCHEMA",
+        safeMessage: "Missing required environment variable: REQUIRED",
+        retryable: false
+      })
     );
   });
 });

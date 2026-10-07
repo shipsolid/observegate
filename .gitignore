@@ -1,7 +1,9 @@
 node_modules/
 coverage/
+.stryker-tmp/
 packages/*/dist/
 packages/action/lib/
+dist/cli/
 .superpowers/
 *.tsbuildinfo
 *.log

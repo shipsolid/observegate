@@ -46,4 +46,24 @@ describe("Redactor", () => {
       redactor.redactValue({ monkey: "visible", threshold: 95, retryAfterSeconds: 2 })
     ).toEqual({ monkey: "visible", threshold: 95, retryAfterSeconds: 2 });
   });
+
+  it("redacts nested arrays and cycles while preserving queryless and invalid URLs", () => {
+    const redactor = new Redactor();
+    const cyclic: { name: string; self?: unknown } = { name: "checkout" };
+    cyclic.self = cyclic;
+
+    expect(
+      redactor.redactValue({
+        items: [{ password: "secret" }, "https://api.example.com/health"],
+        cyclic,
+        invalid: "https://[not-an-ipv6-address]/?token=secret",
+        nothing: null
+      })
+    ).toEqual({
+      items: [{ password: "[REDACTED]" }, "https://api.example.com/health"],
+      cyclic: { name: "checkout", self: "[REDACTED]" },
+      invalid: "https://[not-an-ipv6-address]/?token=secret",
+      nothing: null
+    });
+  });
 });

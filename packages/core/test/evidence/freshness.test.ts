@@ -59,4 +59,27 @@ describe("classifyFreshness", () => {
       })
     ).toBe(input.expected);
   });
+
+  it("treats age, future skew, and minimum samples as inclusive boundaries", () => {
+    expect(
+      classifyFreshness({
+        observedAt: "2026-10-06T07:28:00.000Z",
+        acquiredAt,
+        maximumAgeMs: 120_000,
+        maximumFutureSkewMs: 30_000,
+        sampleCount: 10,
+        minimumSamples: 10
+      })
+    ).toBe("valid");
+    expect(
+      classifyFreshness({
+        observedAt: "2026-10-06T07:30:30.000Z",
+        acquiredAt,
+        maximumAgeMs: 120_000,
+        maximumFutureSkewMs: 30_000,
+        sampleCount: 10,
+        minimumSamples: 10
+      })
+    ).toBe("valid");
+  });
 });

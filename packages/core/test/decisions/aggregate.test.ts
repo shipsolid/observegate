@@ -109,6 +109,82 @@ describe("aggregateDecision", () => {
       "error"
     ]);
   });
+
+  it("returns stable counts and blocking reason contracts", () => {
+    const failed = createGateResult({
+      ...gate("failed", "failed"),
+      assertions: [
+        {
+          assertion: "ready",
+          status: "failed",
+          observed: false,
+          expected: true,
+          message: "Workload is not ready."
+        }
+      ]
+    });
+    const errored = createGateResult({
+      ...gate("errored", "error"),
+      diagnostics: [{ code: "PROVIDER_ERROR", message: "Provider unavailable.", retryable: true }]
+    });
+    const summary = aggregateDecision({
+      gates: [
+        gate("passed", "passed"),
+        gate("warned", "warned", "advisory"),
+        failed,
+        gate("unknown", "inconclusive"),
+        errored,
+        gate("skipped", "skipped", "advisory")
+      ],
+      policy: { minimumEvidenceCoveragePercent: 100, warnOnSkipped: true },
+      evidenceRequirements: [{ gateId: "passed", requirementId: "metrics", satisfied: false }]
+    });
+
+    expect(summary.counts).toEqual({
+      passed: 1,
+      warned: 1,
+      failed: 1,
+      inconclusive: 1,
+      error: 1,
+      skipped: 1
+    });
+    expect(summary.blockingReasons).toEqual([
+      {
+        gateId: "evidence-coverage",
+        status: "failed",
+        message: "Evidence coverage 0% is below the required 100%."
+      },
+      { gateId: "failed", status: "failed", message: "Workload is not ready." },
+      {
+        gateId: "unknown",
+        status: "inconclusive",
+        message: "Blocking gate unknown ended with status inconclusive."
+      },
+      { gateId: "errored", status: "error", message: "Provider unavailable." }
+    ]);
+  });
+
+  it("does not let advisory failures block or advisory skips warn when disabled", () => {
+    const summary = aggregateDecision({
+      gates: [
+        gate("passed", "passed"),
+        gate("advisory-failed", "failed", "advisory"),
+        gate("advisory-skipped", "skipped", "advisory")
+      ],
+      policy: { minimumEvidenceCoveragePercent: 0, warnOnSkipped: false },
+      evidenceRequirements: []
+    });
+
+    expect(summary.decision).toBe("warn");
+    expect(summary.blockingReasons).toEqual([]);
+
+    const skippedOnly = aggregateDecision({
+      gates: [gate("passed", "passed"), gate("advisory-skipped", "skipped", "advisory")],
+      policy: { minimumEvidenceCoveragePercent: 0, warnOnSkipped: false },
+      evidenceRequirements: []
+    });
+    expect(skippedOnly.decision).toBe("pass");
+  });
 });
 
 describe("calculateEvidenceCoverage", () => {

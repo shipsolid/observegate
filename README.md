@@ -66,6 +66,20 @@ node packages/cli/dist/main.js catalog --json
 `validate` and `plan` do not contact providers. Standard output is user-facing; diagnostics go to
 standard error. Plans omit credentials, gate definitions, and raw queries.
 
+Published releases also include a self-contained CLI archive, CycloneDX SBOM, checksums, and GitHub
+attestations. After downloading the three release assets:
+
+```bash
+sha256sum --check observegate-v1.0.0.sha256
+gh attestation verify observegate-cli-v1.0.0.tar.gz --repo shipsolid/observegate
+mkdir observegate-cli
+tar -xzf observegate-cli-v1.0.0.tar.gz -C observegate-cli
+node observegate-cli/observegate.js catalog
+```
+
+Replace `v1.0.0` with the release tag. The archive has no production npm dependencies; Node.js 24
+is the only runtime requirement.
+
 ## Configuration and operations
 
 - [Configuration reference](docs/configuration.md)
@@ -89,10 +103,22 @@ The complete policy is [examples/observability-gate.yml](examples/observability-
 npm ci
 npm run ci
 npm run docs:generate
+npm run test:e2e
+npm run test:security
+npm run test:property
+npm run test:mutation
+npm run test:performance
+npm run bundle
+npm run verify:bundle
+npm run verify:read-only
 ```
 
 Generated configuration, gate, provider, and error-code tables are checked for drift in contract
-tests. The checked-in Action bundle is rebuilt from `packages/action` and must produce no diff.
+tests. `npm run bundle` rebuilds the checked-in Action and the standalone CLI under `dist/cli`; both
+must pass bundle and read-only verification without producing uncommitted Action changes.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for extension contracts and [SECURITY.md](SECURITY.md) for
+vulnerability reporting, artifact verification, and the trust boundary.
 
 ## Architecture
 
