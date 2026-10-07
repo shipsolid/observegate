@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { bundledPackages, npmPurl, type BundledPackage } from "./bundle-dependencies.ts";
 
 interface Component {
   readonly name?: unknown;
@@ -34,7 +35,8 @@ function identity(component: Component): string {
 
 export function inspectCycloneDx(
   sbom: CycloneDx,
-  manifest: { readonly name?: unknown; readonly version?: unknown }
+  manifest: { readonly name?: unknown; readonly version?: unknown },
+  expectedPackages: readonly BundledPackage[]
 ): readonly string[] {
   const violations: string[] = [];
   if (sbom.bomFormat !== "CycloneDX") violations.push("SBOM format must be CycloneDX");
@@ -59,6 +61,19 @@ export function inspectCycloneDx(
     violations.push(`SBOM does not identify ${manifest.name}@${manifest.version}`);
   }
 
+  for (const expected of expectedPackages) {
+    if (
+      !all.some(
+        (component) =>
+          component.version === expected.version &&
+          (identity(component) === expected.name ||
+            component.purl === npmPurl(expected.name, expected.version))
+      )
+    ) {
+      violations.push(`SBOM omits bundled package ${expected.name}@${expected.version}`);
+    }
+  }
+
   for (const component of all) {
     const name = identity(component);
     const purl = typeof component.purl === "string" ? component.purl : "";
@@ -69,28 +84,45 @@ export function inspectCycloneDx(
   return violations;
 }
 
-export async function verifySbom(sbomPath: string, manifestPath: string): Promise<void> {
-  const [sbomText, manifestText] = await Promise.all([
+export async function verifySbom(
+  sbomPath: string,
+  manifestPath: string,
+  sourceMapPath: string,
+  lockPath: string
+): Promise<void> {
+  const [sbomText, manifestText, sourceMapText, lockText] = await Promise.all([
     readFile(sbomPath, "utf8"),
-    readFile(manifestPath, "utf8")
+    readFile(manifestPath, "utf8"),
+    readFile(sourceMapPath, "utf8"),
+    readFile(lockPath, "utf8")
   ]);
   const violations = inspectCycloneDx(
     JSON.parse(sbomText) as CycloneDx,
-    JSON.parse(manifestText) as { readonly name?: unknown; readonly version?: unknown }
+    JSON.parse(manifestText) as { readonly name?: unknown; readonly version?: unknown },
+    bundledPackages(
+      JSON.parse(sourceMapText) as Parameters<typeof bundledPackages>[0],
+      JSON.parse(lockText) as Parameters<typeof bundledPackages>[1]
+    )
   );
   if (violations.length > 0) throw new Error(violations.join("\n"));
 }
 
 const entryPath = process.argv[1];
 if (entryPath !== undefined && import.meta.url === pathToFileURL(entryPath).href) {
-  const sbomPath = process.argv[2];
-  const manifestPath = process.argv[3];
-  if (sbomPath === undefined || manifestPath === undefined) {
-    process.stderr.write("Usage: verify-sbom <sbom.json> <package.json>\n");
+  const [sbomPath, manifestPath, sourceMapPath, lockPath] = process.argv.slice(2);
+  if (
+    sbomPath === undefined ||
+    manifestPath === undefined ||
+    sourceMapPath === undefined ||
+    lockPath === undefined
+  ) {
+    process.stderr.write(
+      "Usage: verify-sbom <sbom.json> <package.json> <bundle.js.map> <package-lock.json>\n"
+    );
     process.exitCode = 1;
   } else {
     try {
-      await verifySbom(sbomPath, manifestPath);
+      await verifySbom(sbomPath, manifestPath, sourceMapPath, lockPath);
       process.stdout.write("verify:sbom: artifact identity and dependency boundary verified\n");
     } catch (error) {
       process.stderr.write(`verify:sbom: ${error instanceof Error ? error.message : "failed"}\n`);
