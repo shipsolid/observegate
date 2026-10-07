@@ -25,5 +25,9 @@ describe("buildAzureRuntimeClients", () => {
     expect(Object.keys(clients ?? {}).sort()).toEqual(["containerAppsRead", "vmRead"]);
     expect(clients?.containerAppsRead).toBeDefined();
     expect(clients?.vmRead).toBeDefined();
+    expect(Object.keys(clients?.containerAppsRead ?? {})).toEqual([]);
+    expect(Object.keys(clients?.vmRead ?? {})).toEqual([]);
+    expect("client" in (clients?.containerAppsRead ?? {})).toBe(false);
+    expect("client" in (clients?.vmRead ?? {})).toBe(false);
   });
 });

@@ -17,14 +17,18 @@ interface AzureVmSdkReadSurface {
 }
 
 export class AzureSdkVmReadClient implements AzureVmReadClient {
-  public constructor(private readonly client: AzureVmSdkReadSurface) {}
+  readonly #instanceView: AzureVmSdkReadSurface["virtualMachines"]["instanceView"];
+
+  public constructor(client: AzureVmSdkReadSurface) {
+    this.#instanceView = client.virtualMachines.instanceView.bind(client.virtualMachines);
+  }
 
   public getInstanceView(
     resourceGroup: string,
     vmName: string,
     signal: AbortSignal
   ): Promise<unknown> {
-    return this.client.virtualMachines.instanceView(resourceGroup, vmName, { abortSignal: signal });
+    return this.#instanceView(resourceGroup, vmName, { abortSignal: signal });
   }
 }
 

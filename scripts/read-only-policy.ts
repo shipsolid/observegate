@@ -6,6 +6,7 @@ const kubernetesMutation =
   /^(?:create|replace|patch|delete|deleteCollection)(?:Namespaced|Cluster)[A-Z].+$/u;
 const azureMutation =
   /^(?:begin(?:CreateOrUpdate|Update|Delete|Restart|Start|Stop|Deallocate|Redeploy|Reapply|PerformMaintenance|PowerOff)(?:AndWait)?|createOrUpdate(?:AndWait)?|deleteById(?:AndWait)?|updateTraffic(?:AndWait)?|shiftTraffic(?:AndWait)?)$/u;
+const azureReadMethods = new Set(["get", "instanceView", "listReplicas", "listRevisions"]);
 
 function sdkKind(
   checker: ts.TypeChecker,
@@ -114,10 +115,7 @@ function inspectProgram(program: ts.Program, root: string): readonly string[] {
             kind === "kubernetes"
               ? name === undefined || /^(?:create|delete|patch|replace)/u.test(name)
               : kind === "azure"
-                ? name === undefined ||
-                  /^(?:beginCreate|beginDelete|beginUpdate|create|delete|restart|start|stop|update)/u.test(
-                    name
-                  )
+                ? name === undefined || !azureReadMethods.has(name)
                 : false;
           if (prohibitedByName || prohibitedSdkCall) {
             violations.push(

@@ -10,9 +10,11 @@ describe("read-only production policy", () => {
       `
           import type { CoreV1Api, BatchV1Api } from "@kubernetes/client-node";
           import type { ComputeManagementClient } from "@azure/arm-compute";
+          import type { ContainerAppsAPIClient } from "@azure/arm-appcontainers";
           declare const core: CoreV1Api;
           declare const batch: BatchV1Api;
           declare const client: ComputeManagementClient;
+          declare const apps: ContainerAppsAPIClient;
           declare const method: string;
           declare const moduleName: string;
 
@@ -22,6 +24,11 @@ describe("read-only production policy", () => {
           const mutate = core.replaceNamespacedSecret;
           mutate({ name: "secret", namespace: "default", body: {} });
           client.virtualMachines.beginUpdateAndWait("group", "vm", {});
+          client.virtualMachines.beginRunCommand("group", "vm", {});
+          client.virtualMachines.beginCapture("group", "vm", {});
+          client.virtualMachines.beginInstallPatches("group", "vm", {});
+          apps.containerAppsRevisions.activateRevision("group", "app", "revision");
+          apps.containerAppsRevisions.deactivateRevision("group", "app", "revision");
           const { beginDelete: remove } = client.virtualMachines;
           remove("group", "vm");
           client.virtualMachines[method]("group", "vm");
@@ -36,6 +43,11 @@ describe("read-only production policy", () => {
         expect.stringContaining("deleteNamespacedJob"),
         expect.stringContaining("replaceNamespacedSecret"),
         expect.stringContaining("beginUpdateAndWait"),
+        expect.stringContaining("beginRunCommand"),
+        expect.stringContaining("beginCapture"),
+        expect.stringContaining("beginInstallPatches"),
+        expect.stringContaining("activateRevision"),
+        expect.stringContaining("deactivateRevision"),
         expect.stringContaining("beginDelete"),
         expect.stringContaining("<computed>"),
         expect.stringContaining("runtime require"),

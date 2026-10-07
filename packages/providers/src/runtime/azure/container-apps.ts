@@ -43,10 +43,22 @@ interface ContainerAppsSdkReadSurface {
 }
 
 export class AzureSdkContainerAppsReadClient implements ContainerAppsReadClient {
-  public constructor(private readonly client: ContainerAppsSdkReadSurface) {}
+  readonly #getApp: ContainerAppsSdkReadSurface["containerApps"]["get"];
+  readonly #listRevisions: ContainerAppsSdkReadSurface["containerAppsRevisions"]["listRevisions"];
+  readonly #listReplicas: ContainerAppsSdkReadSurface["containerAppsRevisionReplicas"]["listReplicas"];
+
+  public constructor(client: ContainerAppsSdkReadSurface) {
+    this.#getApp = client.containerApps.get.bind(client.containerApps);
+    this.#listRevisions = client.containerAppsRevisions.listRevisions.bind(
+      client.containerAppsRevisions
+    );
+    this.#listReplicas = client.containerAppsRevisionReplicas.listReplicas.bind(
+      client.containerAppsRevisionReplicas
+    );
+  }
 
   public getApp(resourceGroup: string, appName: string, signal: AbortSignal): Promise<unknown> {
-    return this.client.containerApps.get(resourceGroup, appName, { abortSignal: signal });
+    return this.#getApp(resourceGroup, appName, { abortSignal: signal });
   }
 
   public async *listRevisions(
@@ -54,11 +66,9 @@ export class AzureSdkContainerAppsReadClient implements ContainerAppsReadClient 
     appName: string,
     signal: AbortSignal
   ): AsyncIterable<unknown> {
-    for await (const revision of this.client.containerAppsRevisions.listRevisions(
-      resourceGroup,
-      appName,
-      { abortSignal: signal }
-    )) {
+    for await (const revision of this.#listRevisions(resourceGroup, appName, {
+      abortSignal: signal
+    })) {
       yield revision;
     }
   }
@@ -69,14 +79,8 @@ export class AzureSdkContainerAppsReadClient implements ContainerAppsReadClient 
     revisionName: string,
     signal: AbortSignal
   ): Promise<readonly unknown[]> {
-    return (
-      await this.client.containerAppsRevisionReplicas.listReplicas(
-        resourceGroup,
-        appName,
-        revisionName,
-        { abortSignal: signal }
-      )
-    ).value;
+    return (await this.#listReplicas(resourceGroup, appName, revisionName, { abortSignal: signal }))
+      .value;
   }
 }
 
