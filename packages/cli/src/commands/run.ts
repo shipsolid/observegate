@@ -9,14 +9,17 @@ export interface RunOptions extends CommonOptions {
 }
 
 export async function runCommand(options: RunOptions, context: CommandContext): Promise<number> {
-  const result = await context.service.run(executionRequest(options, context));
+  const request = executionRequest(options, context);
+  const result = await context.service.run(request);
   writeResult(result, context.output, options.json === true);
   if (options.outputDirectory !== undefined) {
     try {
+      const maximumTotalBytes =
+        (await context.service.maximumReportBytes?.(request)) ?? 25 * 1024 * 1024;
       await writeReports(result, {
         directory: options.outputDirectory,
         formats: ["json", "markdown", "junit", "sarif"],
-        maximumTotalBytes: 10 * 1024 * 1024,
+        maximumTotalBytes,
         signal: context.signal
       });
     } catch (error) {

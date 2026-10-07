@@ -107,6 +107,23 @@ describe("GitHub Action adapter", () => {
     );
   });
 
+  it("uses the report limit resolved from the policy", async () => {
+    const service = {
+      run: vi.fn(async () => result("pass")),
+      maximumReportBytes: vi.fn(async () => 25 * 1024 * 1024)
+    };
+
+    await runAction({ service, runtime });
+
+    expect(service.maximumReportBytes).toHaveBeenCalledWith(
+      expect.objectContaining({ configPath: "observability-gate.yml" })
+    );
+    expect(mocks.writeReports).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ maximumTotalBytes: 25 * 1024 * 1024 })
+    );
+  });
+
   it("degrades missing GitHub write permission to a reporting warning", async () => {
     mocks.inputs.set("github-token", "token-value");
     const github = await import("@actions/github");

@@ -1,5 +1,6 @@
 import {
   ObservabilityGateService,
+  parseByteSize,
   stableFingerprint,
   type ExecutionRequest
 } from "@observability-gate/core";
@@ -25,7 +26,7 @@ function durationMs(value: string | undefined): number {
 
 export function createActionService() {
   const catalog = createBuiltInGateCatalog();
-  return new ObservabilityGateService<RawPolicy>({
+  const service = new ObservabilityGateService<RawPolicy>({
     policy: {
       load: (request) => loadPolicy(request.configPath, request.workspaceRoot),
       interpolate: (policy, request) =>
@@ -106,4 +107,20 @@ export function createActionService() {
         missingEvidenceBehavior: context.execution.missingEvidenceBehavior
       })
   });
+  return {
+    run: (request: ExecutionRequest) => service.run(request),
+    async maximumReportBytes(request: ExecutionRequest) {
+      const policy = interpolatePolicy(
+        await loadPolicy(request.configPath, request.workspaceRoot),
+        {
+          phase: request.phase,
+          environment: request.environment,
+          ...(request.targetOverride === undefined
+            ? {}
+            : { targetOverride: request.targetOverride })
+        }
+      );
+      return parseByteSize(policy.limits.maximum_report_size, 25 * 1024 * 1024);
+    }
+  };
 }

@@ -1,4 +1,9 @@
-import { stableFingerprint, type Evidence, type ProviderSession } from "@observability-gate/core";
+import {
+  parseByteSize,
+  stableFingerprint,
+  type Evidence,
+  type ProviderSession
+} from "@observability-gate/core";
 import { parseIncidentEvidence } from "./evidence/incidents.js";
 import { SafeEvidenceFileLoader } from "./evidence/files.js";
 import { parseOtlpContract } from "./evidence/otlp-contract.js";
@@ -62,15 +67,6 @@ function durationMs(value: unknown, fallback: number): number {
   if (match?.[1] === undefined || match[2] === undefined) return fallback;
   const multiplier = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]];
   return Number(match[1]) * (multiplier ?? 1);
-}
-
-function byteLimit(value: unknown, fallback: number): number {
-  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
-  if (typeof value !== "string") return fallback;
-  const match = /^(\d+(?:\.\d+)?)\s*(B|KiB|MiB)$/iu.exec(value);
-  if (match?.[1] === undefined || match[2] === undefined) return fallback;
-  const multiplier = { b: 1, kib: 1_024, mib: 1_048_576 }[match[2].toLowerCase()];
-  return Math.floor(Number(match[1]) * (multiplier ?? 1));
 }
 
 function bearerHeaders(
@@ -224,7 +220,7 @@ export function createPolicyProviderSession(
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     clock: now
   });
-  const maximumResponseBytes = byteLimit(
+  const maximumResponseBytes = parseByteSize(
     record(options.policy.limits).maximum_provider_response_size,
     2 * 1024 * 1024
   );

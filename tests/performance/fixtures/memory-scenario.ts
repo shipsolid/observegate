@@ -1,10 +1,17 @@
+import type { ExecutionResult, GateResult } from "../../../packages/core/src/index.ts";
+import { parseByteSize } from "../../../packages/core/src/index.ts";
+import { GuardedTransport } from "../../../packages/providers/src/transport/guarded-fetch.ts";
+import { UrlPolicy } from "../../../packages/providers/src/transport/url-policy.ts";
+import { writeReports } from "../../../packages/reporters/src/files.ts";
 import { renderJson } from "../../../packages/reporters/src/json.ts";
-import type { ExecutionResult } from "../../../packages/core/src/domain/execution.ts";
-import type { GateResult } from "../../../packages/core/src/domain/gates.ts";
 
 const gateCount = 200;
 const assertionsPerGate = 12;
 const evidencePerGate = 12;
+const configuredLimits = {
+  maximum_provider_response_size: "10MiB",
+  maximum_report_size: "25MiB"
+} as const;
 
 function gate(index: number, retainedEvidence: { readonly data: string }): GateResult {
   const padding = retainedEvidence.data.slice(0, 900);
@@ -41,21 +48,75 @@ function gate(index: number, retainedEvidence: { readonly data: string }): GateR
   };
 }
 
+function responseBody(bytes: number): string {
+  const empty = JSON.stringify({ data: "" });
+  return JSON.stringify({ data: "e".repeat(bytes - Buffer.byteLength(empty)) });
+}
+
+function errorCode(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+}
+
+function withExactJsonSize(result: ExecutionResult, bytes: number): ExecutionResult {
+  const base = { ...result, links: { padding: "" } };
+  const baseBytes = Buffer.byteLength(renderJson(base));
+  if (baseBytes > bytes)
+    throw new Error("The 200-gate report exceeds the configured fixture size.");
+  return { ...base, links: { padding: "x".repeat(bytes - baseBytes) } };
+}
+
 export interface MemoryScenarioMetrics {
   readonly gateCount: number;
   readonly responseBytes: number;
   readonly reportBytes: number;
   readonly retainedHeapBytes: number;
+  readonly maximumProviderResponseBytes: number;
+  readonly maximumReportBytes: number;
+  readonly providerRejectedOverLimit: boolean;
+  readonly reporterRejectedOverLimit: boolean;
 }
 
-export function runMemoryScenario(): MemoryScenarioMetrics {
-  const maximumProviderResponseBytes = 2 * 1024 * 1024;
+export async function runMemoryScenario(directory: string): Promise<MemoryScenarioMetrics> {
+  const maximumProviderResponseBytes = parseByteSize(
+    configuredLimits.maximum_provider_response_size,
+    1
+  );
+  const maximumReportBytes = parseByteSize(configuredLimits.maximum_report_size, 1);
   const baselineHeapBytes = process.memoryUsage().heapUsed;
-  const responseText = JSON.stringify({
-    data: "e".repeat(maximumProviderResponseBytes - 32)
+  let body = responseBody(maximumProviderResponseBytes);
+  const responseBytes = Buffer.byteLength(body);
+  const transport = new GuardedTransport({
+    urlPolicy: new UrlPolicy({
+      providerOrigins: ["https://metrics.example.com"],
+      probeHosts: [],
+      resolve: async () => ["93.184.216.34"]
+    }),
+    fetch: async () => new Response(body, { status: 200 })
   });
-  const responseBytes = Buffer.byteLength(responseText);
-  const retainedEvidence = JSON.parse(responseText) as { readonly data: string };
+  const request = {
+    url: "https://metrics.example.com/api/v1/query",
+    kind: "provider" as const,
+    timeoutMs: 10_000,
+    maximumResponseBytes: maximumProviderResponseBytes,
+    retry: {
+      attempts: 1,
+      initialBackoffMs: 1,
+      maximumBackoffMs: 1,
+      retryStatuses: []
+    },
+    signal: new AbortController().signal,
+    responseType: "json" as const
+  };
+  const accepted = await transport.request<{ readonly data: string }>(request);
+
+  body = responseBody(maximumProviderResponseBytes + 1);
+  let providerRejectedOverLimit = false;
+  try {
+    await transport.request(request);
+  } catch (error) {
+    providerRejectedOverLimit = errorCode(error) === "PROVIDER_PROTOCOL";
+  }
+
   const execution: ExecutionResult = {
     decision: "pass",
     phase: "post_deployment",
@@ -64,15 +125,45 @@ export function runMemoryScenario(): MemoryScenarioMetrics {
     startedAt: "2026-10-07T00:00:00.000Z",
     completedAt: "2026-10-07T00:01:00.000Z",
     evidenceCoveragePercent: 100,
-    gates: Array.from({ length: gateCount }, (_, index) => gate(index, retainedEvidence)),
+    gates: Array.from({ length: gateCount }, (_, index) => gate(index, accepted.data)),
     diagnostics: [],
     links: {}
   };
-  const report = renderJson(execution);
+  const exactLimitExecution = withExactJsonSize(execution, maximumReportBytes);
+  const reportBytes = Buffer.byteLength(renderJson(exactLimitExecution));
+  await writeReports(exactLimitExecution, {
+    directory: `${directory}/accepted`,
+    formats: ["json"],
+    maximumTotalBytes: maximumReportBytes,
+    signal: request.signal
+  });
+
+  let reporterRejectedOverLimit = false;
+  try {
+    await writeReports(
+      {
+        ...exactLimitExecution,
+        links: { padding: `${exactLimitExecution.links.padding ?? ""}x` }
+      },
+      {
+        directory: `${directory}/rejected`,
+        formats: ["json"],
+        maximumTotalBytes: maximumReportBytes,
+        signal: request.signal
+      }
+    );
+  } catch (error) {
+    reporterRejectedOverLimit = errorCode(error) === "REPORTING";
+  }
+
   return {
     gateCount,
     responseBytes,
-    reportBytes: Buffer.byteLength(report),
-    retainedHeapBytes: Math.max(0, process.memoryUsage().heapUsed - baselineHeapBytes)
+    reportBytes,
+    retainedHeapBytes: Math.max(0, process.memoryUsage().heapUsed - baselineHeapBytes),
+    maximumProviderResponseBytes,
+    maximumReportBytes,
+    providerRejectedOverLimit,
+    reporterRejectedOverLimit
   };
 }

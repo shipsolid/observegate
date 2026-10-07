@@ -732,6 +732,19 @@ function classifyFreshness(input) {
     return "valid";
 }
 
+function parseByteSize(value, fallback) {
+    if (typeof value === "number" && Number.isInteger(value) && value > 0)
+        return value;
+    if (typeof value !== "string")
+        return fallback;
+    const match = /^(\d+(?:\.\d+)?)\s*(B|KiB|MiB)$/iu.exec(value);
+    if (match?.[1] === undefined || match[2] === undefined)
+        return fallback;
+    const multiplier = { b: 1, kib: 1_024, mib: 1_048_576 }[match[2].toLowerCase()];
+    const bytes = Math.floor(Number(match[1]) * (multiplier ?? 1));
+    return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : fallback;
+}
+
 function assertionDto(assertion) {
     return {
         assertion: assertion.assertion,
@@ -52929,17 +52942,6 @@ function durationMs$1(value, fallback) {
     const multiplier = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]];
     return Number(match[1]) * (multiplier ?? 1);
 }
-function byteLimit(value, fallback) {
-    if (typeof value === "number" && Number.isInteger(value) && value > 0)
-        return value;
-    if (typeof value !== "string")
-        return fallback;
-    const match = /^(\d+(?:\.\d+)?)\s*(B|KiB|MiB)$/iu.exec(value);
-    if (match?.[1] === undefined || match[2] === undefined)
-        return fallback;
-    const multiplier = { b: 1, kib: 1_024, mib: 1_048_576 }[match[2].toLowerCase()];
-    return Math.floor(Number(match[1]) * (multiplier ?? 1));
-}
 function bearerHeaders(configuration, environment) {
     const authentication = record(configuration.authentication);
     const tokenName = string(authentication.bearer_token_env);
@@ -53056,7 +53058,7 @@ function createPolicyProviderSession(options) {
         ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
         clock: now
     });
-    const maximumResponseBytes = byteLimit(record(options.policy.limits).maximum_provider_response_size, 2 * 1024 * 1024);
+    const maximumResponseBytes = parseByteSize(record(options.policy.limits).maximum_provider_response_size, 2 * 1024 * 1024);
     const maximumFutureSkewMs = durationMs$1(record(record(options.policy.execution).clock).maximum_clock_skew, 30_000);
     const fileLoader = new SafeEvidenceFileLoader({
         workspaceRoot: options.workspaceRoot,
@@ -53482,7 +53484,7 @@ function durationMs(value) {
 }
 function createActionService() {
     const catalog = createBuiltInGateCatalog();
-    return new ObservabilityGateService({
+    const service = new ObservabilityGateService({
         policy: {
             load: (request) => loadPolicy(request.configPath, request.workspaceRoot),
             interpolate: (policy, request) => interpolatePolicy(policy, {
@@ -53554,6 +53556,19 @@ function createActionService() {
             missingEvidenceBehavior: context.execution.missingEvidenceBehavior
         })
     });
+    return {
+        run: (request) => service.run(request),
+        async maximumReportBytes(request) {
+            const policy = interpolatePolicy(await loadPolicy(request.configPath, request.workspaceRoot), {
+                phase: request.phase,
+                environment: request.environment,
+                ...(request.targetOverride === undefined
+                    ? {}
+                    : { targetOverride: request.targetOverride })
+            });
+            return parseByteSize(policy.limits.maximum_report_size, 25 * 1024 * 1024);
+        }
+    };
 }
 
 function shouldFail(result) {
@@ -53568,18 +53583,20 @@ async function runAction(dependencies = {}) {
         const runtime = dependencies.runtime ?? githubActionsRuntime;
         const inputs = readInputs(runtime);
         const service = dependencies.service ?? createActionService();
-        const result = await service.run({
+        const request = {
             workspaceRoot: dependencies.workspaceRoot ?? process.env.GITHUB_WORKSPACE ?? process.cwd(),
             configPath: inputs.config,
             phase: inputs.phase,
             ...(inputs.target === undefined ? {} : { targetOverride: inputs.target }),
             environment: dependencies.environment ?? process.env,
             cancellationSignal: controller.signal
-        });
+        };
+        const result = await service.run(request);
+        const maximumTotalBytes = (await service.maximumReportBytes?.(request)) ?? 25 * 1024 * 1024;
         const publication = await writeReports(result, {
             directory: inputs.outputDirectory,
             formats: ["json", "markdown", "junit", "sarif"],
-            maximumTotalBytes: 10 * 1024 * 1024,
+            maximumTotalBytes,
             signal: controller.signal
         });
         setActionOutputs(result, publication.paths.json ?? "", runtime);

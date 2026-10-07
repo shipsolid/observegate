@@ -2,6 +2,7 @@
 import { pathToFileURL } from "node:url";
 import {
   ObservabilityGateService,
+  parseByteSize,
   stableFingerprint,
   type GateCatalogMetadata
 } from "@observability-gate/core";
@@ -43,7 +44,7 @@ function durationMs(value: string | undefined): number {
 }
 
 function createDefaultService(catalog = createBuiltInGateCatalog()): CliService {
-  return new ObservabilityGateService<RawPolicy>({
+  const service = new ObservabilityGateService<RawPolicy>({
     policy: {
       load: (request) => loadPolicy(request.configPath, request.workspaceRoot),
       interpolate: (policy, request) =>
@@ -132,6 +133,24 @@ function createDefaultService(catalog = createBuiltInGateCatalog()): CliService 
         missingEvidenceBehavior: context.execution.missingEvidenceBehavior
       })
   });
+  return {
+    validate: (request) => service.validate(request),
+    plan: (request) => service.plan(request),
+    run: (request) => service.run(request),
+    async maximumReportBytes(request) {
+      const policy = interpolatePolicy(
+        await loadPolicy(request.configPath, request.workspaceRoot),
+        {
+          phase: request.phase,
+          environment: request.environment,
+          ...(request.targetOverride === undefined
+            ? {}
+            : { targetOverride: request.targetOverride })
+        }
+      );
+      return parseByteSize(policy.limits.maximum_report_size, 25 * 1024 * 1024);
+    }
+  };
 }
 
 export async function runCli(

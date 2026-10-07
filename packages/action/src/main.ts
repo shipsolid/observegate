@@ -1,4 +1,4 @@
-import type { ExecutionResult } from "@observability-gate/core";
+import type { ExecutionRequest, ExecutionResult } from "@observability-gate/core";
 import { writeReports } from "@observability-gate/reporters";
 import { publishCheck, updatePullRequestComment, writeStepSummary } from "./github-reporter.js";
 import { readInputs } from "./inputs.js";
@@ -7,14 +7,8 @@ import { createActionService } from "./service.js";
 import { githubActionsRuntime, type ActionRuntime } from "./actions-runtime.js";
 
 export interface ActionService {
-  readonly run: (request: {
-    readonly workspaceRoot: string;
-    readonly configPath: string;
-    readonly phase: "pre_deployment" | "post_deployment";
-    readonly targetOverride?: string;
-    readonly environment: Readonly<Record<string, string | undefined>>;
-    readonly cancellationSignal: AbortSignal;
-  }) => Promise<ExecutionResult>;
+  readonly run: (request: ExecutionRequest) => Promise<ExecutionResult>;
+  readonly maximumReportBytes?: (request: ExecutionRequest) => Promise<number>;
 }
 
 export interface RunActionDependencies {
@@ -39,18 +33,20 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
     const runtime = dependencies.runtime ?? githubActionsRuntime;
     const inputs = readInputs(runtime);
     const service = dependencies.service ?? createActionService();
-    const result = await service.run({
+    const request: ExecutionRequest = {
       workspaceRoot: dependencies.workspaceRoot ?? process.env.GITHUB_WORKSPACE ?? process.cwd(),
       configPath: inputs.config,
       phase: inputs.phase,
       ...(inputs.target === undefined ? {} : { targetOverride: inputs.target }),
       environment: dependencies.environment ?? process.env,
       cancellationSignal: controller.signal
-    });
+    };
+    const result = await service.run(request);
+    const maximumTotalBytes = (await service.maximumReportBytes?.(request)) ?? 25 * 1024 * 1024;
     const publication = await writeReports(result, {
       directory: inputs.outputDirectory,
       formats: ["json", "markdown", "junit", "sarif"],
-      maximumTotalBytes: 10 * 1024 * 1024,
+      maximumTotalBytes,
       signal: controller.signal
     });
     setActionOutputs(result, publication.paths.json ?? "", runtime);

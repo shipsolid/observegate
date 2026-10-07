@@ -21,3 +21,4 @@ export * from "./evidence/store.js";
 export * from "./evidence/types.js";
 export * from "./execution/deadline.js";
 export * from "./execution/scheduler.js";
+export * from "./limits/bytes.js";

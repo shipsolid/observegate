@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type {
   Diagnostic,
@@ -49,11 +52,13 @@ function harness(
     readonly diagnostics?: readonly Diagnostic[];
     readonly decision?: ExecutionResult["decision"];
     readonly signal?: AbortSignal;
+    readonly reportLimit?: number;
   } = {}
 ) {
   let stdout = "";
   let stderr = "";
   const requests: ExecutionRequest[] = [];
+  const reportLimitRequests: ExecutionRequest[] = [];
   const service = {
     async validate(request: ExecutionRequest) {
       requests.push(request);
@@ -66,6 +71,10 @@ function harness(
     async run(request: ExecutionRequest) {
       requests.push(request);
       return execution(options.decision);
+    },
+    async maximumReportBytes(request: ExecutionRequest) {
+      reportLimitRequests.push(request);
+      return options.reportLimit ?? 25 * 1024 * 1024;
     }
   };
   const catalog: GateCatalogMetadata = {
@@ -96,6 +105,7 @@ function harness(
       ...(options.signal === undefined ? {} : { signal: options.signal })
     },
     requests,
+    reportLimitRequests,
     stdout: () => stdout,
     stderr: () => stderr
   };
@@ -169,6 +179,32 @@ describe("observability-gate CLI", () => {
     expect(value.requests[0]?.phase).toBe("post_deployment");
     expect(value.requests[0]?.targetOverride).toBe("blue");
     expect(JSON.parse(value.stdout())).toMatchObject({ decision, targetId: "production" });
+  });
+
+  it("enforces the report limit resolved from the policy", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "observegate-cli-report-"));
+    try {
+      const value = harness({ reportLimit: 1 });
+      expect(
+        await runCli(
+          [
+            "run",
+            "--config",
+            "policy.yml",
+            "--phase",
+            "post_deployment",
+            "--output-directory",
+            directory
+          ],
+          value.dependencies
+        )
+      ).toBe(3);
+      expect(value.reportLimitRequests).toHaveLength(1);
+      expect(value.reportLimitRequests[0]?.configPath).toBe("policy.yml");
+      expect(value.stderr()).toContain("REPORTING");
+    } finally {
+      await rm(directory, { recursive: true });
+    }
   });
 
   it("explains known types and configured gate IDs and rejects unknown gates", async () => {

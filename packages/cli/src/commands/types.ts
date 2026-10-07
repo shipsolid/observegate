@@ -11,6 +11,7 @@ export interface CliService {
   readonly validate: (request: ExecutionRequest) => Promise<readonly Diagnostic[]>;
   readonly plan: (request: ExecutionRequest) => Promise<ExecutionPlan>;
   readonly run: (request: ExecutionRequest) => Promise<ExecutionResult>;
+  readonly maximumReportBytes?: (request: ExecutionRequest) => Promise<number>;
 }
 
 export interface CommandContext {
