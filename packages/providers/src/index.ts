@@ -36,3 +36,4 @@ export * from "./runtime/kubernetes/normalize.js";
 export * from "./runtime/vm/adapter.js";
 export * from "./runtime/vm/host-evidence.js";
 export * from "./runtime/vm/service-evidence.js";
+export * from "./session.js";

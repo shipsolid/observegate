@@ -4,6 +4,8 @@ import type { ExecutionRequest, ExecutionResult } from "../domain/execution.js";
 import type { Diagnostic, GateResult } from "../domain/gates.js";
 import type { ReleaseIdentity, TargetIdentity } from "../domain/identity.js";
 import type { ExecutionPlan, ProviderRequirement } from "../domain/planning.js";
+import type { Evidence } from "../evidence/types.js";
+import type { EvidenceStore } from "../evidence/store.js";
 import { GateError } from "../errors/gate-error.js";
 import { abortPromise, cancellationError } from "../execution/deadline.js";
 import type { GateRunContext } from "./run-gate.js";
@@ -36,6 +38,18 @@ export interface ApplicationPolicyAdapter<TPolicy> {
 
 export interface ProviderSession {
   readonly sample?: (signal: AbortSignal) => Promise<boolean>;
+  readonly resolveEvidence?: (
+    gateType: string,
+    definition: Readonly<Record<string, unknown>>,
+    context: {
+      readonly phase: ExecutionRequest["phase"];
+      readonly targetId: string;
+      readonly releaseId?: string;
+      readonly evidenceStore: EvidenceStore;
+      readonly signal: AbortSignal;
+      readonly clock: () => Date;
+    }
+  ) => Promise<readonly Evidence<unknown>[]>;
   readonly close?: () => Promise<void>;
 }
 

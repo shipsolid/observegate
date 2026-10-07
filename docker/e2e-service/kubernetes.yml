@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: observegate-e2e
+  namespace: observegate-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: observegate-e2e
+  template:
+    metadata:
+      labels:
+        app: observegate-e2e
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: checkout
+          image: observegate/e2e-service:local
+          imagePullPolicy: Never
+          env:
+            - name: RELEASE_ID
+              value: release-candidate
+            - name: ENVIRONMENT
+              value: test
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 1
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: observegate-e2e
+  namespace: observegate-e2e
+spec:
+  selector:
+    app: observegate-e2e
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -1,0 +1,11 @@
+{
+  "name": "observegate-e2e-service",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}

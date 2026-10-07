@@ -12,7 +12,7 @@ import events$2 from 'events';
 import 'assert';
 import require$$6 from 'util';
 import require$$0$1 from 'node:assert';
-import require$$0$3 from 'node:net';
+import require$$0$3, { isIP } from 'node:net';
 import require$$2 from 'node:http';
 import require$$0$2 from 'node:stream';
 import require$$0 from 'node:buffer';
@@ -32,9 +32,11 @@ import require$$1$5 from 'node:dns';
 import require$$5$3 from 'string_decoder';
 import 'child_process';
 import 'timers';
-import { mkdir as mkdir$1, open as open$2, rename as rename$1, rm as rm$1, realpath, stat as stat$1, readFile } from 'node:fs/promises';
-import { join, isAbsolute, resolve, relative, sep as sep$1 } from 'node:path';
+import { mkdir as mkdir$1, open as open$2, rename as rename$1, rm as rm$1, realpath, stat as stat$1, readFile, lstat as lstat$1 } from 'node:fs/promises';
+import { join, isAbsolute, resolve, relative, sep as sep$1, extname } from 'node:path';
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { lookup } from 'node:dns/promises';
 
 // We use any as a valid input type
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -28493,11 +28495,11 @@ var HttpCodes;
     HttpCodes[HttpCodes["ServiceUnavailable"] = 503] = "ServiceUnavailable";
     HttpCodes[HttpCodes["GatewayTimeout"] = 504] = "GatewayTimeout";
 })(HttpCodes || (HttpCodes = {}));
-var Headers;
+var Headers$1;
 (function (Headers) {
     Headers["Accept"] = "accept";
     Headers["ContentType"] = "content-type";
-})(Headers || (Headers = {}));
+})(Headers$1 || (Headers$1 = {}));
 var MediaTypes;
 (function (MediaTypes) {
     MediaTypes["ApplicationJson"] = "application/json";
@@ -28933,14 +28935,14 @@ function setOutput(name, value) {
  */
 function setFailed(message) {
     process.exitCode = ExitCode.Failure;
-    error$1(message);
+    error$2(message);
 }
 /**
  * Adds an error issue
  * @param message error issue message. Errors will be converted to string via toString()
  * @param properties optional properties to add to the annotation.
  */
-function error$1(message, properties = {}) {
+function error$2(message, properties = {}) {
     issueCommand('error', toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
 /**
@@ -29629,6 +29631,27 @@ class ObservabilityGateService {
         const execution = this.dependencies.policy.describeExecution(policy, plan, request);
         return { policy, plan, execution };
     }
+}
+
+function classifyFreshness(input) {
+    const observedAtMs = Date.parse(input.observedAt);
+    const acquiredAtMs = Date.parse(input.acquiredAt);
+    if (!Number.isFinite(observedAtMs) || !Number.isFinite(acquiredAtMs)) {
+        return "invalid";
+    }
+    if (observedAtMs - acquiredAtMs > input.maximumFutureSkewMs) {
+        return "invalid";
+    }
+    if (input.sampleCount === 0) {
+        return "missing";
+    }
+    if (acquiredAtMs - observedAtMs > input.maximumAgeMs) {
+        return "stale";
+    }
+    if (input.sampleCount < input.minimumSamples) {
+        return "insufficient";
+    }
+    return "valid";
 }
 
 function assertionDto(assertion) {
@@ -65695,7 +65718,7 @@ const seq = {
     createNode: (schema, obj, ctx) => YAMLSeq.from(schema, obj, ctx)
 };
 
-const string$1 = {
+const string$2 = {
     identify: value => typeof value === 'string',
     default: true,
     tag: 'tag:yaml.org,2002:str',
@@ -65835,7 +65858,7 @@ const intHex$1 = {
 const schema$2 = [
     map,
     seq,
-    string$1,
+    string$2,
     nullTag,
     boolTag,
     intOct$1,
@@ -66418,7 +66441,7 @@ const timestamp = {
 const schema = [
     map,
     seq,
-    string$1,
+    string$2,
     nullTag,
     trueTag,
     falseTag,
@@ -66441,7 +66464,7 @@ const schema = [
 
 const schemas = new Map([
     ['core', schema$2],
-    ['failsafe', [map, seq, string$1]],
+    ['failsafe', [map, seq, string$2]],
     ['json', schema$1],
     ['yaml11', schema],
     ['yaml-1.1', schema]
@@ -66530,7 +66553,7 @@ class Schema {
         this.tags = getTags(customTags, this.name, merge);
         this.toStringOptions = toStringDefaults ?? null;
         Object.defineProperty(this, MAP, { value: map });
-        Object.defineProperty(this, SCALAR$1, { value: string$1 });
+        Object.defineProperty(this, SCALAR$1, { value: string$2 });
         Object.defineProperty(this, SEQ, { value: seq });
         // Used by createMap()
         this.sortMapEntries =
@@ -71536,7 +71559,7 @@ function datetime(args) {
 // the unbounded form of `string()` as a literal, so every plain string shares one instance instead of building its own
 const anyString = /^[\s\S]{0,}$/;
 const integer = /^-?\d+$/;
-const number$1 = /^-?\d+(?:\.\d+)?$/;
+const number$2 = /^-?\d+(?:\.\d+)?$/;
 const boolean$1 = /^(?:true|false)$/i;
 const _null$2 = /^null$/i;
 // regex for string with no uppercase letters
@@ -72476,7 +72499,7 @@ const $ZodJWT = /*@__PURE__*/ $constructor("$ZodJWT", (inst, def) => {
 });
 const $ZodNumber = /*@__PURE__*/ $constructor("$ZodNumber", (inst, def) => {
     $ZodType.init(inst, def);
-    inst._zod.pattern = number$1;
+    inst._zod.pattern = number$2;
     inst._zod.parse = (payload, _ctx) => {
         if (def.coerce)
             try {
@@ -73230,7 +73253,7 @@ const $ZodRecord = /*@__PURE__*/ $constructor("$ZodRecord", (inst, def) => {
                     throw new Error("Async schemas not supported in object keys currently");
                 }
                 // Numeric string fallback: if key is a numeric string and failed, retry with Number(key). This handles z.number(), z.literal([1, 2, 3]), and unions containing numeric literals
-                const checkNumericKey = typeof key === "string" && number$1.test(key) && keyResult.issues.length;
+                const checkNumericKey = typeof key === "string" && number$2.test(key) && keyResult.issues.length;
                 if (checkNumericKey) {
                     const retryResult = def.keyType._zod.run({ value: Number(key), issues: [] }, ctx);
                     if (retryResult instanceof Promise) {
@@ -73915,7 +73938,7 @@ function isBackEdge(ctx, value) {
     return backEdges !== undefined && isRef(value) && backEdges.has(value);
 }
 
-const error = () => {
+const error$1 = () => {
     const Sizable = {
         string: { unit: "characters", verb: "to have" },
         file: { unit: "bytes", verb: "to have" },
@@ -74036,7 +74059,7 @@ const error = () => {
 };
 function en () {
     return {
-        localeError: error(),
+        localeError: error$1(),
     };
 }
 
@@ -75651,7 +75674,7 @@ function stringifyKeyNames(bySchema, json, visited) {
         return rest;
     rest.type = "string";
     if (!values)
-        rest.pattern = (types.includes("number") ? number$1 : integer).source;
+        rest.pattern = (types.includes("number") ? number$2 : integer).source;
     return rest;
 }
 /** Every record of one conversion, so the carriers are found in a single pass rather than once per record. */
@@ -75963,7 +75986,7 @@ const ZodType = /*@__PURE__*/ $constructor("ZodType", (inst, def) => {
         return nonoptional(this, params);
     },
     array() {
-        return array(this);
+        return array$1(this);
     },
     or(arg) {
         return union([this, arg]);
@@ -76225,7 +76248,7 @@ const ZodString = /*@__PURE__*/ $constructor("ZodString", (inst, def) => {
         return this.check(_isoDuration(ZodISODuration, params));
     },
 });
-function string(params) {
+function string$1(params) {
     return _string(ZodString, params);
 }
 const ZodStringFormat = /*@__PURE__*/ $constructor("ZodStringFormat", (inst, def) => {
@@ -76413,7 +76436,7 @@ const ZodNumber = /*@__PURE__*/ $constructor("ZodNumber", (inst, def) => {
         return this;
     },
 }));
-function number(params) {
+function number$1(params) {
     return _number(ZodNumber, params);
 }
 const ZodNumberFormat = /*@__PURE__*/ $constructor("ZodNumberFormat", (inst, def) => {
@@ -76478,7 +76501,7 @@ const ZodArray = /*@__PURE__*/ $constructor("ZodArray", (inst, def) => {
         return this.element;
     },
 });
-function array(element, params) {
+function array$1(element, params) {
     return _array(ZodArray, element, params);
 }
 const ZodObject = /*@__PURE__*/ $constructor("ZodObject", (inst, def) => {
@@ -76573,12 +76596,12 @@ const ZodRecord = /*@__PURE__*/ $constructor("ZodRecord", (inst, def) => {
     inst.keyType = def.keyType;
     inst.valueType = def.valueType;
 });
-function record$1(keyType, valueType, params) {
+function record$4(keyType, valueType, params) {
     // v3-compat: z.record(valueType, params?) — defaults keyType to z.string()
     if (!valueType || !valueType._zod) {
         return new ZodRecord({
             type: "record",
-            keyType: string(),
+            keyType: string$1(),
             valueType: keyType,
             ...normalizeParams(valueType),
         });
@@ -76831,55 +76854,55 @@ function superRefine(fn, params) {
 const configValueSchema = lazy(() => union([
     _null(),
     boolean(),
-    number().finite(),
-    string(),
-    array(configValueSchema),
-    record$1(string(), configValueSchema)
+    number$1().finite(),
+    string$1(),
+    array$1(configValueSchema),
+    record$4(string$1(), configValueSchema)
 ]));
-const configObjectSchema = record$1(string(), configValueSchema);
-const durationSchema = string().min(1);
+const configObjectSchema = record$4(string$1(), configValueSchema);
+const durationSchema = string$1().min(1);
 const phaseSettingsSchema = object({
     timeout: durationSchema,
-    concurrency: number().int().positive()
+    concurrency: number$1().int().positive()
 })
     .strict();
 
 const gateEnvelopeSchema = object({
-    id: string().min(1),
-    name: string().min(1),
-    type: string().min(1),
-    description: string().min(1).optional(),
-    category: string().min(1).optional(),
+    id: string$1().min(1),
+    name: string$1().min(1),
+    type: string$1().min(1),
+    description: string$1().min(1).optional(),
+    category: string$1().min(1).optional(),
     enforcement: _enum(["blocking", "advisory"]).optional(),
     source: configObjectSchema.optional(),
     sources: configObjectSchema.optional(),
     candidate: configObjectSchema.optional(),
     baseline: configObjectSchema.optional(),
     window: configValueSchema.optional(),
-    dependencies: array(configValueSchema).optional(),
+    dependencies: array$1(configValueSchema).optional(),
     selectors: configObjectSchema.optional(),
-    metrics: array(configValueSchema).optional(),
+    metrics: array$1(configValueSchema).optional(),
     assertions: configObjectSchema.optional(),
     when: configObjectSchema.optional(),
     otherwise: configValueSchema.optional(),
-    remediation: string().min(1).optional()
+    remediation: string$1().min(1).optional()
 })
     .strict();
 
 const metadataSchema = object({
-    name: string().min(1),
-    description: string().min(1).optional(),
-    owner: string().min(1).optional(),
-    service_tier: string().min(1).optional(),
-    tags: record$1(string(), string()).optional()
+    name: string$1().min(1),
+    description: string$1().min(1).optional(),
+    owner: string$1().min(1).optional(),
+    service_tier: string$1().min(1).optional(),
+    tags: record$4(string$1(), string$1()).optional()
 })
     .strict();
 const executionSchema = object({
-    active_target: string().min(1),
+    active_target: string$1().min(1),
     environment_substitution: object({
-        syntax: string(),
-        scope: string(),
-        missing_required_variable: string(),
+        syntax: string$1(),
+        scope: string$1(),
+        missing_required_variable: string$1(),
         allow_default_values: boolean()
     })
         .strict()
@@ -76890,20 +76913,20 @@ const executionSchema = object({
     })
         .strict(),
     retries: object({
-        attempts: number().int().nonnegative(),
+        attempts: number$1().int().nonnegative(),
         initial_backoff: durationSchema,
         maximum_backoff: durationSchema,
-        retry_on: array(string())
+        retry_on: array$1(string$1())
     })
         .strict()
         .optional(),
     enforcement: object({
         default: _enum(["blocking", "advisory"]),
         fail_fast: boolean(),
-        minimum_evidence_coverage_percent: number().min(0).max(100),
-        missing_blocking_evidence: string(),
-        provider_unavailable: string(),
-        unsupported_gate: string()
+        minimum_evidence_coverage_percent: number$1().min(0).max(100),
+        missing_blocking_evidence: string$1(),
+        provider_unavailable: string$1(),
+        unsupported_gate: string$1()
     })
         .strict()
         .optional(),
@@ -76916,40 +76939,40 @@ const executionSchema = object({
     .strict();
 const identitySchema = object({
     canonical: object({
-        service_name: string(),
-        service_namespace: string(),
-        environment: string(),
-        release_id: string(),
-        deployment_id: string()
+        service_name: string$1(),
+        service_namespace: string$1(),
+        environment: string$1(),
+        release_id: string$1(),
+        deployment_id: string$1()
     })
         .strict(),
-    required_resource_attributes: array(string()).optional(),
-    recommended_resource_attributes: array(string()).optional(),
-    provider_mappings: record$1(string(), record$1(string(), string())).optional()
+    required_resource_attributes: array$1(string$1()).optional(),
+    recommended_resource_attributes: array$1(string$1()).optional(),
+    provider_mappings: record$4(string$1(), record$4(string$1(), string$1())).optional()
 })
     .strict();
 const releaseSchema = object({
     candidate: object({
-        id: string(),
-        deployed_at: string().optional(),
+        id: string$1(),
+        deployed_at: string$1().optional(),
         minimum_age_before_evaluation: durationSchema.optional(),
         maximum_age_before_evaluation: durationSchema.optional()
     })
         .strict(),
     baseline: object({
-        strategy: string(),
-        explicit_release_id: string().optional(),
+        strategy: string$1(),
+        explicit_release_id: string$1().optional(),
         lookback: durationSchema,
-        minimum_samples: number().int().nonnegative(),
+        minimum_samples: number$1().int().nonnegative(),
         exclude_incident_windows: boolean(),
         exclude_deployment_windows: boolean()
     })
         .strict()
         .optional(),
     comparison: object({
-        method: string(),
-        minimum_candidate_samples: number().int().nonnegative(),
-        low_traffic_behavior: string(),
+        method: string$1(),
+        minimum_candidate_samples: number$1().int().nonnegative(),
+        low_traffic_behavior: string$1(),
         maximum_extension: durationSchema
     })
         .strict()
@@ -76968,23 +76991,23 @@ const observationSchema = object({
         evaluation_window: durationSchema.optional(),
         step: durationSchema.optional(),
         settle_between_samples: durationSchema.optional(),
-        minimum_successful_samples: number().int().nonnegative().optional(),
+        minimum_successful_samples: number$1().int().nonnegative().optional(),
         maximum_evidence_age: durationSchema.optional()
     })
         .strict(),
     no_data: object({
-        blocking_gate: string(),
-        advisory_gate: string(),
-        comparison_gate: string(),
-        synthetic_gate: string()
+        blocking_gate: string$1(),
+        advisory_gate: string$1(),
+        comparison_gate: string$1(),
+        synthetic_gate: string$1()
     })
         .strict()
         .optional()
 })
     .strict();
 const outcomeSchema = object({
-    exit_code: number().int().min(0).max(255),
-    conclusion: string().min(1)
+    exit_code: number$1().int().min(0).max(255),
+    conclusion: string$1().min(1)
 })
     .strict();
 const decisionSchema = object({
@@ -76997,9 +77020,9 @@ const decisionSchema = object({
     })
         .strict(),
     aggregate: object({
-        fail_when: array(string()),
-        warn_when: array(string()),
-        pass_when: array(string())
+        fail_when: array$1(string$1()),
+        warn_when: array$1(string$1()),
+        pass_when: array$1(string$1())
     })
         .strict()
         .optional()
@@ -77010,11 +77033,11 @@ const targetDefinitionSchema = object({
 })
     .strict();
 const targetsSchema = object({
-    definitions: record$1(string(), targetDefinitionSchema)
+    definitions: record$4(string$1(), targetDefinitionSchema)
 })
     .strict();
-const providerDefinitionSchema = record$1(string(), configValueSchema);
-const providerGroupSchema = record$1(string(), providerDefinitionSchema);
+const providerDefinitionSchema = record$4(string$1(), configValueSchema);
+const providerGroupSchema = record$4(string$1(), providerDefinitionSchema);
 const providersSchema = object({
     runtime: providerGroupSchema.optional(),
     telemetry: providerGroupSchema.optional(),
@@ -77027,26 +77050,26 @@ const gateDefaultsSchema = object({
     enforcement: _enum(["blocking", "advisory"]).optional(),
     timeout: durationSchema.optional(),
     retries: configValueSchema.optional(),
-    target: string().optional(),
-    emit: array(string()).optional(),
-    redact: array(string()).optional()
+    target: string$1().optional(),
+    emit: array$1(string$1()).optional(),
+    redact: array$1(string$1()).optional()
 })
     .strict();
 const gatesSchema = object({
-    pre_deployment: array(gateEnvelopeSchema),
-    post_deployment: array(gateEnvelopeSchema)
+    pre_deployment: array$1(gateEnvelopeSchema),
+    post_deployment: array$1(gateEnvelopeSchema)
 })
     .strict();
 const reportingSchema = object({
     github: configObjectSchema.optional(),
     artifacts: configObjectSchema.optional(),
-    outputs: array(configValueSchema).optional(),
+    outputs: array$1(configValueSchema).optional(),
     links: configObjectSchema.optional()
 })
     .strict();
 const securitySchema = object({
     read_only: boolean().optional(),
-    prohibited_operations: array(string()).optional(),
+    prohibited_operations: array$1(string$1()).optional(),
     secrets: configObjectSchema.optional(),
     network: configObjectSchema.optional(),
     files: configObjectSchema.optional(),
@@ -77055,11 +77078,11 @@ const securitySchema = object({
 })
     .strict();
 const limitsSchema = object({
-    maximum_gates: number().int().positive().optional(),
-    maximum_queries: number().int().positive().optional(),
+    maximum_gates: number$1().int().positive().optional(),
+    maximum_queries: number$1().int().positive().optional(),
     maximum_query_length: configValueSchema.optional(),
     maximum_total_runtime: durationSchema.optional(),
-    maximum_parallel_requests_per_provider: number().int().positive().optional(),
+    maximum_parallel_requests_per_provider: number$1().int().positive().optional(),
     maximum_provider_response_size: configValueSchema.optional(),
     maximum_report_size: configValueSchema.optional()
 })
@@ -77702,13 +77725,13 @@ async function executeGate(gate, catalog, context) {
     }
 }
 
-function record(value) {
+function record$3(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value)
         ? value
         : undefined;
 }
 function parseGateDefinition(input) {
-    const value = record(input);
+    const value = record$3(input);
     if (value === undefined) {
         throw new GateError({
             code: "CONFIG_SCHEMA",
@@ -77728,7 +77751,7 @@ function assertion(name, passed, message, observed, expected) {
     });
 }
 function evidenceValue(evidence) {
-    const value = record(evidence[0]?.value);
+    const value = record$3(evidence[0]?.value);
     if (value === undefined) {
         throw new GateError({
             code: "EVIDENCE_INVALID",
@@ -77761,7 +77784,7 @@ function createEvidenceGate(options) {
                     source: Object.freeze({ provider: "policy", capability: options.type }),
                     target: context.targetId,
                     acquiredAt,
-                    value: record(definition.value) ?? definition,
+                    value: record$3(definition.value) ?? definition,
                     diagnostics: Object.freeze([])
                 })
             ];
@@ -77777,8 +77800,8 @@ const containerAppsRevisionStatusGate = createEvidenceGate({
     description: "Validate Container Apps application, revision, and replica readiness.",
     phases: ["post_deployment"],
     evaluate(_definition, value) {
-        const revision = record(value.revision) ?? {};
-        const replicas = record(value.replicas) ?? {};
+        const revision = record$3(value.revision) ?? {};
+        const replicas = record$3(value.replicas) ?? {};
         const healthy = typeof replicas.healthy === "number" ? replicas.healthy : 0;
         const minimum = typeof replicas.minimumHealthy === "number" ? replicas.minimumHealthy : 1;
         return [
@@ -77796,7 +77819,7 @@ const containerAppsImageIdentityGate = createEvidenceGate({
     description: "Compare Container Apps image digest and revision suffix with release expectations.",
     phases: ["post_deployment"],
     evaluate(_definition, value) {
-        const revision = record(value.revision) ?? {};
+        const revision = record$3(value.revision) ?? {};
         return [
             assertion("image digest", typeof revision.expectedImageDigest === "string" &&
                 revision.imageDigest === revision.expectedImageDigest, "Candidate image digest matches the expected release", revision.imageDigest, revision.expectedImageDigest),
@@ -77809,7 +77832,7 @@ const containerAppsTrafficGate = createEvidenceGate({
     description: "Observe workflow-owned Container Apps traffic weights without mutating them.",
     phases: ["post_deployment"],
     evaluate(_definition, value) {
-        const traffic = record(value.traffic) ?? {};
+        const traffic = record$3(value.traffic) ?? {};
         const candidate = typeof traffic.candidateWeight === "number" ? traffic.candidateWeight : 0;
         const minimum = typeof traffic.minimumCandidateWeight === "number" ? traffic.minimumCandidateWeight : 1;
         const unknown = typeof traffic.unknownRevisionWeight === "number"
@@ -77830,7 +77853,7 @@ const containerAppsReplicaHealthGate = createEvidenceGate({
     description: "Validate Container Apps replica stability and lifecycle failures.",
     phases: ["post_deployment"],
     evaluate(_definition, value) {
-        const replicas = record(value.replicas) ?? {};
+        const replicas = record$3(value.replicas) ?? {};
         return [
             assertion("restart increase", replicas.restartIncrease === 0, "Replica restarts did not increase", replicas.restartIncrease, 0),
             assertion("unhealthy replicas", replicas.unhealthy === 0, "No candidate replicas are unhealthy", replicas.unhealthy, 0),
@@ -77849,7 +77872,7 @@ const containerAppsConfigurationGate = createEvidenceGate({
     phases: ["pre_deployment"],
     evaluate(_definition, value) {
         const image = typeof value.image === "string" ? value.image : "";
-        const otel = record(value.otelEnvironment) ?? {};
+        const otel = record$3(value.otelEnvironment) ?? {};
         return [
             located$1(value, "digest-pinned image", /@sha256:[a-f0-9]{64}$/iu.test(image), "Container image is pinned by sha256 digest", image, "$.properties.template.containers[0].image"),
             located$1(value, "revision mode", value.revisionMode === "Multiple", "Active revision mode is Multiple", value.revisionMode, "$.properties.configuration.activeRevisionsMode", "Multiple"),
@@ -77875,7 +77898,7 @@ const containerAppsProbesGate = createEvidenceGate({
             return located$1(value, `${type.toLowerCase()} probe`, index >= 0, `${type} probe is configured`, index >= 0, `$.properties.template.containers[0].probes[?(@.type=='${type}')]`, true);
         });
         for (const [index, probe] of probes.entries()) {
-            const port = record(probe.httpGet)?.port ?? record(probe.tcpSocket)?.port;
+            const port = record$3(probe.httpGet)?.port ?? record$3(probe.tcpSocket)?.port;
             results.push(located$1(value, `${String(probe.type ?? "probe").toLowerCase()} port`, typeof ingressPort === "number" && port === ingressPort, "Probe port matches ingress target port", port, `$.properties.template.containers[0].probes[${index}]`, ingressPort));
         }
         return results;
@@ -77906,8 +77929,8 @@ const kubernetesRolloutStatusGate = createEvidenceGate({
     description: "Validate Kubernetes observed generation, conditions, replicas, and rollout duration.",
     phases: ["post_deployment"],
     evaluate(_definition, value) {
-        const rollout = record(value.rollout) ?? {};
-        const replicas = record(rollout.replicas) ?? {};
+        const rollout = record$3(value.rollout) ?? {};
+        const replicas = record$3(rollout.replicas) ?? {};
         const conditions = records(rollout.conditions);
         const desired = typeof replicas.desired === "number" ? replicas.desired : 0;
         return [
@@ -78005,7 +78028,7 @@ const kubernetesManifestGate = createEvidenceGate({
     phases: ["pre_deployment"],
     evaluate(_definition, value) {
         const image = typeof value.image === "string" ? value.image : "";
-        const security = record(value.containerSecurityContext) ?? {};
+        const security = record$3(value.containerSecurityContext) ?? {};
         const digest = image.match(/@(sha256:[a-f0-9]{64})$/iu)?.[1];
         return [
             located(value, "digest-pinned image", digest !== undefined, "Container image is pinned by sha256 digest", image, "$.spec.template.spec.containers[0].image"),
@@ -78018,7 +78041,7 @@ const kubernetesManifestGate = createEvidenceGate({
     }
 });
 function probeAssertions(value, name, probeValue) {
-    const probe = record(probeValue);
+    const probe = record$3(probeValue);
     const path = `$.spec.template.spec.containers[0].${name}Probe`;
     return [
         located(value, `${name} probe`, probe !== undefined, `${name} probe is configured`, probe !== undefined, path, true),
@@ -78046,9 +78069,9 @@ const kubernetesResourcesGate = createEvidenceGate({
     description: "Validate Kubernetes resources, replicas, and disruption protection.",
     phases: ["pre_deployment"],
     evaluate(_definition, value) {
-        const resources = record(value.resources) ?? {};
-        const requests = record(resources.requests);
-        const limits = record(resources.limits);
+        const resources = record$3(value.resources) ?? {};
+        const requests = record$3(resources.requests);
+        const limits = record$3(resources.limits);
         const cpuRequest = quantity(requests?.cpu);
         const cpuLimit = quantity(limits?.cpu);
         const memoryRequest = quantity(requests?.memory);
@@ -78061,7 +78084,7 @@ const kubernetesResourcesGate = createEvidenceGate({
             located(value, "CPU request and limit", cpuRequest !== undefined && (cpuLimit === undefined || cpuRequest <= cpuLimit), "CPU request does not exceed its limit", cpuRequest, "$.spec.template.spec.containers[0].resources"),
             located(value, "memory request and limit", memoryRequest !== undefined && memoryLimit !== undefined && memoryRequest <= memoryLimit, "Memory request does not exceed its limit", memoryRequest, "$.spec.template.spec.containers[0].resources"),
             located(value, "production replicas", value.production !== true || replicas >= 2, "Production workload has at least two replicas", replicas, "$.spec.replicas", 2),
-            located(value, "disruption budget", replicas < 2 || record(value.disruptionBudget) !== undefined, "Multi-replica workload has a disruption budget", value.disruptionBudget, "$[PodDisruptionBudget].spec")
+            located(value, "disruption budget", replicas < 2 || record$3(value.disruptionBudget) !== undefined, "Multi-replica workload has a disruption budget", value.disruptionBudget, "$[PodDisruptionBudget].spec")
         ];
     }
 });
@@ -78265,9 +78288,9 @@ function sanitizeIdentity(value) {
 }
 function identityValues(value, key) {
     return [
-        record(value.runtime)?.[key],
-        record(value.attestation)?.[key],
-        record(value.expected)?.[key]
+        record$3(value.runtime)?.[key],
+        record$3(value.attestation)?.[key],
+        record$3(value.expected)?.[key]
     ]
         .filter((item) => typeof item === "string" && item.length > 0)
         .map(sanitizeIdentity);
@@ -79184,7 +79207,7 @@ const vmServiceHealthGate = createEvidenceGate({
     phases: ["post_deployment"],
     evaluate(_definition, value) {
         const observed = hosts(value);
-        const services = observed.map((host) => record(host.service));
+        const services = observed.map((host) => record$3(host.service));
         return [
             assertion("expected hosts", expectedHostsPresent(value, observed), "Every expected host is present", observed.map((host) => host.hostId), value.expectedHostIds),
             assertion("host evidence", observed.length > 0 && observed.every((host) => host.available === true), "Every host has complete evidence"),
@@ -79203,7 +79226,7 @@ const vmReleaseMarkerGate = createEvidenceGate({
     evaluate(_definition, value) {
         const observed = hosts(value);
         const releases = observed
-            .map((host) => record(host.release)?.releaseId)
+            .map((host) => record$3(host.release)?.releaseId)
             .filter((release) => typeof release === "string");
         return [
             assertion("expected hosts", expectedHostsPresent(value, observed), "Every expected host is present"),
@@ -79220,7 +79243,7 @@ const vmHostHealthGate = createEvidenceGate({
     phases: ["post_deployment"],
     evaluate(_definition, value) {
         const observed = hosts(value);
-        const capacities = observed.map((host) => record(host.capacity));
+        const capacities = observed.map((host) => record$3(host.capacity));
         const within = (field, maximumField) => capacities.every((capacity) => typeof capacity?.[field] === "number" &&
             typeof value[maximumField] === "number" &&
             capacity[field] <= value[maximumField]);
@@ -79240,7 +79263,7 @@ const vmAgentHealthGate = createEvidenceGate({
     phases: ["post_deployment"],
     evaluate(_definition, value) {
         const observed = hosts(value);
-        const agents = observed.map((host) => record(host.agent));
+        const agents = observed.map((host) => record$3(host.agent));
         return [
             assertion("expected hosts", expectedHostsPresent(value, observed), "Every expected host is present"),
             assertion("agent up", agents.length > 0 && agents.every((agent) => agent?.up === true), "Telemetry agent is up on every host"),
@@ -79326,6 +79349,2722 @@ function createBuiltInGateCatalog() {
     return catalog;
 }
 
+function parseIncidentEvidence(content) {
+    let payload;
+    try {
+        payload = JSON.parse(content.toString("utf8"));
+    }
+    catch {
+        payload = undefined;
+    }
+    const raw = payload;
+    if (!Array.isArray(raw?.incidents)) {
+        throw new GateError({
+            code: "EVIDENCE_INVALID",
+            safeMessage: "Incident evidence is invalid",
+            retryable: false
+        });
+    }
+    const incidents = [];
+    for (const value of raw.incidents) {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) {
+            throw new GateError({
+                code: "EVIDENCE_INVALID",
+                safeMessage: "Incident record is invalid",
+                retryable: false
+            });
+        }
+        const incident = value;
+        if (typeof incident.id !== "string" ||
+            typeof incident.service !== "string" ||
+            typeof incident.environment !== "string" ||
+            typeof incident.severity !== "string" ||
+            typeof incident.state !== "string" ||
+            typeof incident.updatedAt !== "string" ||
+            !Number.isFinite(Date.parse(incident.updatedAt))) {
+            throw new GateError({
+                code: "EVIDENCE_INVALID",
+                safeMessage: "Incident record is invalid",
+                retryable: false
+            });
+        }
+        incidents.push(Object.freeze({
+            id: incident.id,
+            service: incident.service,
+            environment: incident.environment,
+            severity: incident.severity,
+            state: incident.state,
+            updatedAt: new Date(incident.updatedAt).toISOString()
+        }));
+    }
+    return Object.freeze({ incidents: Object.freeze(incidents) });
+}
+
+function error(code, message, cause) {
+    return new GateError({ code, safeMessage: message, retryable: false, cause });
+}
+function contained(root, path) {
+    const child = relative(root, path);
+    return child === "" || (!child.startsWith(`..${sep$1}`) && child !== ".." && !isAbsolute(child));
+}
+function mediaType(path) {
+    switch (extname(path).toLowerCase()) {
+        case ".json":
+        case ".sarif":
+            return "application/json";
+        case ".xml":
+            return "application/xml";
+        case ".jwt":
+        case ".jws":
+            return "application/jose";
+        default:
+            return "application/octet-stream";
+    }
+}
+class SafeEvidenceFileLoader {
+    workspaceRoot;
+    maximumBytes;
+    clock;
+    constructor(options) {
+        this.workspaceRoot = resolve(options.workspaceRoot);
+        this.maximumBytes = options.maximumBytes ?? 25 * 1024 * 1024;
+        this.clock = options.clock ?? Date.now;
+    }
+    async load(request) {
+        if (isAbsolute(request.path)) {
+            throw error("SECURITY_POLICY", "Evidence path must be workspace-relative");
+        }
+        const root = await realpath(this.workspaceRoot);
+        const candidate = resolve(root, request.path);
+        if (!contained(root, candidate)) {
+            throw error("SECURITY_POLICY", "Evidence path escapes the workspace");
+        }
+        let canonicalPath;
+        try {
+            await lstat$1(candidate);
+            canonicalPath = await realpath(candidate);
+        }
+        catch (cause) {
+            throw error("EVIDENCE_INVALID", "Evidence file does not exist", cause);
+        }
+        if (!contained(root, canonicalPath)) {
+            throw error("SECURITY_POLICY", "Evidence symlink escapes the workspace");
+        }
+        const metadata = await stat$1(canonicalPath);
+        if (!metadata.isFile()) {
+            throw error("SECURITY_POLICY", "Evidence path is not a regular file");
+        }
+        if (request.blocking && (metadata.mode & 0o002) !== 0) {
+            throw error("SECURITY_POLICY", "Blocking evidence must not be world-writable");
+        }
+        if (metadata.size > this.maximumBytes) {
+            throw error("EVIDENCE_INVALID", "Evidence file exceeds the configured size limit");
+        }
+        const now = this.clock();
+        if (request.maximumAgeMs !== undefined && now - metadata.mtimeMs > request.maximumAgeMs) {
+            throw error("EVIDENCE_INVALID", "Evidence file is stale");
+        }
+        if (request.maximumFutureSkewMs !== undefined &&
+            metadata.mtimeMs - now > request.maximumFutureSkewMs) {
+            throw error("EVIDENCE_INVALID", "Evidence file modification time is in the future");
+        }
+        const chunks = [];
+        let bytes = 0;
+        try {
+            for await (const chunk of createReadStream(canonicalPath)) {
+                const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                bytes += buffer.length;
+                if (bytes > this.maximumBytes) {
+                    throw error("EVIDENCE_INVALID", "Evidence file exceeded the configured size limit");
+                }
+                chunks.push(buffer);
+            }
+        }
+        catch (cause) {
+            if (cause instanceof GateError)
+                throw cause;
+            throw error("EVIDENCE_INVALID", "Evidence file could not be read", cause);
+        }
+        const content = Buffer.concat(chunks, bytes);
+        return Object.freeze({
+            relativePath: relative(root, canonicalPath),
+            canonicalPath,
+            mediaType: mediaType(canonicalPath),
+            size: bytes,
+            modifiedAt: metadata.mtime.toISOString(),
+            digest: createHash("sha256").update(content).digest("hex"),
+            content
+        });
+    }
+    async loadOptional(request) {
+        try {
+            return await this.load(request);
+        }
+        catch (cause) {
+            if (cause instanceof GateError &&
+                cause.code === "EVIDENCE_INVALID" &&
+                cause.safeMessage === "Evidence file does not exist") {
+                return undefined;
+            }
+            throw cause;
+        }
+    }
+}
+
+function validateProvenance(value, expected) {
+    if (value === null ||
+        typeof value !== "object" ||
+        Array.isArray(value) ||
+        value.commit !== expected.commit ||
+        value.workflow !== expected.workflow) {
+        throw new GateError({
+            code: "EVIDENCE_INVALID",
+            safeMessage: "Evidence provenance does not match the workflow and commit",
+            retryable: false
+        });
+    }
+}
+
+function record$2(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : undefined;
+}
+function invalid$3(message) {
+    throw new GateError({ code: "EVIDENCE_INVALID", safeMessage: message, retryable: false });
+}
+function rejectForbiddenKeys(value) {
+    if (Array.isArray(value)) {
+        value.forEach(rejectForbiddenKeys);
+        return;
+    }
+    const object = record$2(value);
+    if (object === undefined)
+        return;
+    for (const [key, nested] of Object.entries(object)) {
+        if (/(?:request|user)[._-]?id|raw[._-]?timestamp|password|secret|token|cookie|authorization/iu.test(key)) {
+            invalid$3("OTLP contract contains a forbidden cardinality or sensitive field");
+        }
+        rejectForbiddenKeys(nested);
+    }
+}
+function parseOtlpContract(content, expectedProvenance) {
+    let payload;
+    try {
+        payload = JSON.parse(content.toString("utf8"));
+    }
+    catch {
+        return invalid$3("OTLP contract is not valid JSON");
+    }
+    rejectForbiddenKeys(payload);
+    const root = record$2(payload);
+    const resource = record$2(root?.resource);
+    if (root === undefined ||
+        resource === undefined ||
+        typeof resource["service.name"] !== "string" ||
+        typeof resource["service.namespace"] !== "string" ||
+        typeof resource["service.version"] !== "string" ||
+        typeof resource["deployment.environment.name"] !== "string" ||
+        !Array.isArray(root.metrics) ||
+        !Array.isArray(root.logs) ||
+        !Array.isArray(root.traces)) {
+        return invalid$3("OTLP contract is missing required signals or resource identity");
+    }
+    validateProvenance(root.provenance, expectedProvenance);
+    const traceIds = new Set();
+    const routes = new Set();
+    let errorSpanCount = 0;
+    for (const rawTrace of root.traces) {
+        const trace = record$2(rawTrace);
+        if (typeof trace?.traceId !== "string" || !Array.isArray(trace.spans)) {
+            return invalid$3("OTLP trace contract is invalid");
+        }
+        traceIds.add(trace.traceId);
+        for (const rawSpan of trace.spans) {
+            const span = record$2(rawSpan);
+            const attributes = record$2(span?.attributes);
+            if (span === undefined || attributes === undefined)
+                return invalid$3("OTLP span is invalid");
+            if (span.status === "ERROR")
+                errorSpanCount += 1;
+            const route = attributes["http.route"];
+            if (typeof route === "string") {
+                if (!route.startsWith("/") ||
+                    /\/(?:\d+|[0-9a-f]{8}-[0-9a-f-]{27,})(?:\/|$)/iu.test(route)) {
+                    return invalid$3("OTLP HTTP route is not normalized");
+                }
+                routes.add(route);
+            }
+        }
+    }
+    let correlatedLogCount = 0;
+    for (const rawLog of root.logs) {
+        const log = record$2(rawLog);
+        if (log === undefined)
+            return invalid$3("OTLP log contract is invalid");
+        if (typeof log.traceId === "string" && traceIds.has(log.traceId))
+            correlatedLogCount += 1;
+    }
+    for (const rawMetric of root.metrics) {
+        if (typeof record$2(rawMetric)?.name !== "string")
+            return invalid$3("OTLP metric contract is invalid");
+    }
+    return Object.freeze({
+        resource: Object.freeze({
+            serviceName: resource["service.name"],
+            serviceNamespace: resource["service.namespace"],
+            serviceVersion: resource["service.version"],
+            deploymentEnvironment: resource["deployment.environment.name"]
+        }),
+        metricCount: root.metrics.length,
+        logCount: root.logs.length,
+        traceCount: root.traces.length,
+        correlatedLogCount,
+        errorSpanCount,
+        routes: Object.freeze([...routes])
+    });
+}
+
+function record$1(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : undefined;
+}
+function invalid$2(message) {
+    throw new GateError({ code: "EVIDENCE_INVALID", safeMessage: message, retryable: false });
+}
+function parseSarifEvidence(content, options) {
+    let payload;
+    try {
+        payload = JSON.parse(content.toString("utf8"));
+    }
+    catch (cause) {
+        throw new GateError({
+            code: "EVIDENCE_INVALID",
+            safeMessage: "SARIF is not valid JSON",
+            retryable: false,
+            cause
+        });
+    }
+    const root = record$1(payload);
+    if (root?.version !== "2.1.0" || !Array.isArray(root.runs)) {
+        return invalid$2("SARIF envelope is invalid");
+    }
+    const findings = [];
+    for (const rawRun of root.runs) {
+        const run = record$1(rawRun);
+        if (run === undefined || !Array.isArray(run.results))
+            return invalid$2("SARIF run is invalid");
+        for (const rawResult of run.results) {
+            const result = record$1(rawResult);
+            const message = record$1(result?.message);
+            if (result === undefined ||
+                typeof result.ruleId !== "string" ||
+                typeof result.level !== "string" ||
+                typeof message?.text !== "string") {
+                return invalid$2("SARIF result is invalid");
+            }
+            const ruleId = result.ruleId;
+            if (!options.acceptedRulePrefixes.some((prefix) => ruleId.startsWith(prefix)))
+                continue;
+            const rawLocation = Array.isArray(result.locations) ? record$1(result.locations[0]) : undefined;
+            const physical = record$1(rawLocation?.physicalLocation);
+            const artifact = record$1(physical?.artifactLocation);
+            const region = record$1(physical?.region);
+            const path = typeof artifact?.uri === "string" ? artifact.uri : undefined;
+            const line = typeof region?.startLine === "number" ? region.startLine : undefined;
+            findings.push(Object.freeze({
+                ruleId,
+                level: result.level,
+                message: message.text,
+                ...(path === undefined
+                    ? {}
+                    : { location: Object.freeze({ path, ...(line === undefined ? {} : { line }) }) })
+            }));
+        }
+    }
+    return Object.freeze({ findings: Object.freeze(findings) });
+}
+
+function invalid$1(message) {
+    throw new GateError({ code: "EVIDENCE_INVALID", safeMessage: message, retryable: false });
+}
+function attributes(value) {
+    return Object.fromEntries([...value.matchAll(/([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)"/gu)].map((match) => [
+        match[1] ?? "",
+        (match[2] ?? "").replace(/&quot;/gu, '"').replace(/&amp;/gu, "&")
+    ]));
+}
+function parseSyntheticEvidence(content) {
+    const text = content.toString("utf8").trim();
+    if (text.startsWith("<")) {
+        if (/<!DOCTYPE|<!ENTITY/iu.test(text)) {
+            throw new GateError({
+                code: "SECURITY_POLICY",
+                safeMessage: "Synthetic XML entities and document types are forbidden",
+                retryable: false
+            });
+        }
+        const tests = [];
+        for (const match of text.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/gu)) {
+            const attrs = attributes(match[1] ?? "");
+            const body = match[2] ?? "";
+            const durationSeconds = Number(attrs.time);
+            if (attrs.name === undefined || !Number.isFinite(durationSeconds) || durationSeconds < 0) {
+                return invalid$1("JUnit synthetic testcase is invalid");
+            }
+            const status = /<failure\b/iu.test(body)
+                ? "failed"
+                : /<skipped\b/iu.test(body)
+                    ? "skipped"
+                    : "passed";
+            tests.push(Object.freeze({
+                name: attrs.name,
+                status,
+                durationMs: durationSeconds * 1000,
+                ...(attrs.timestamp === undefined ? {} : { timestamp: attrs.timestamp }),
+                ...(attrs["observed-release"] === undefined
+                    ? {}
+                    : { observedRelease: attrs["observed-release"] })
+            }));
+        }
+        if (tests.length === 0)
+            return invalid$1("JUnit synthetic evidence contains no testcases");
+        return Object.freeze({ tests: Object.freeze(tests) });
+    }
+    let payload;
+    try {
+        payload = JSON.parse(text);
+    }
+    catch {
+        return invalid$1("Synthetic evidence is neither valid JSON nor JUnit XML");
+    }
+    if (payload === null ||
+        typeof payload !== "object" ||
+        !Array.isArray(payload.tests)) {
+        return invalid$1("Synthetic JSON envelope is invalid");
+    }
+    const tests = [];
+    for (const value of payload.tests) {
+        if (value === null || typeof value !== "object" || Array.isArray(value))
+            return invalid$1("Synthetic test is invalid");
+        const test = value;
+        if (typeof test.name !== "string" ||
+            !["passed", "failed", "skipped"].includes(String(test.status)) ||
+            typeof test.durationMs !== "number" ||
+            !Number.isFinite(test.durationMs))
+            return invalid$1("Synthetic test is invalid");
+        tests.push(Object.freeze(test));
+    }
+    return Object.freeze({ tests: Object.freeze(tests) });
+}
+
+function isRecord$5(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function stringLabels(value) {
+    if (!isRecord$5(value) || Object.values(value).some((item) => typeof item !== "string")) {
+        return undefined;
+    }
+    return Object.freeze({ ...value });
+}
+function normalizeAlertRules(payload, selector) {
+    if (!Array.isArray(payload)) {
+        return undefined;
+    }
+    const rules = [];
+    for (const value of payload) {
+        if (!isRecord$5(value))
+            return undefined;
+        const labels = stringLabels(value.labels);
+        if (labels === undefined ||
+            typeof value.uid !== "string" ||
+            typeof value.title !== "string" ||
+            typeof value.isPaused !== "boolean" ||
+            !["normal", "pending", "firing", "no_data", "error"].includes(String(value.state)) ||
+            !["ok", "error", "no_data"].includes(String(value.health)) ||
+            typeof value.lastEvaluation !== "string" ||
+            !Number.isFinite(Date.parse(value.lastEvaluation))) {
+            return undefined;
+        }
+        if (Object.entries(selector).some(([key, expected]) => labels[key] !== expected)) {
+            continue;
+        }
+        rules.push(Object.freeze({
+            uid: value.uid,
+            title: value.title,
+            enabled: !value.isPaused,
+            labels,
+            ...(labels.severity === undefined ? {} : { severity: labels.severity }),
+            ...(labels.owner === undefined ? {} : { owner: labels.owner }),
+            ...(labels.runbook_url === undefined ? {} : { runbookUrl: labels.runbook_url }),
+            state: value.state,
+            health: value.health,
+            evaluatedAt: new Date(value.lastEvaluation).toISOString()
+        }));
+    }
+    return Object.freeze(rules);
+}
+function normalizeNotificationRoute(payload, request) {
+    if (!isRecord$5(payload) || !Array.isArray(payload.routes)) {
+        return undefined;
+    }
+    const route = payload.routes.find((value) => {
+        if (!isRecord$5(value) || !Array.isArray(value.object_matchers))
+            return false;
+        const objectMatchers = value.object_matchers;
+        return Object.entries(request.selector).every(([key, expected]) => objectMatchers.some((matcher) => Array.isArray(matcher) &&
+            matcher[0] === key &&
+            matcher[1] === "=" &&
+            matcher[2] === expected));
+    });
+    if (!isRecord$5(route) || typeof route.receiver !== "string") {
+        return undefined;
+    }
+    const muteTimeIntervals = route.mute_time_intervals ?? [];
+    if (!Array.isArray(muteTimeIntervals) ||
+        muteTimeIntervals.some((item) => typeof item !== "string")) {
+        return undefined;
+    }
+    const deploymentStart = Date.parse(request.deploymentStart);
+    const deploymentEnd = Date.parse(request.deploymentEnd);
+    if (!Number.isFinite(deploymentStart) || !Number.isFinite(deploymentEnd)) {
+        return undefined;
+    }
+    const muteWindows = Array.isArray(payload.mute_windows) ? payload.mute_windows : [];
+    const mutedDuringDeployment = muteWindows.some((window) => {
+        if (!isRecord$5(window) || typeof window.name !== "string")
+            return false;
+        return (muteTimeIntervals.includes(window.name) &&
+            Date.parse(String(window.start)) <= deploymentStart &&
+            Date.parse(String(window.end)) >= deploymentEnd);
+    });
+    return Object.freeze({
+        receiver: route.receiver,
+        matchers: Object.freeze({ ...request.selector }),
+        muteTimeIntervals: Object.freeze([...muteTimeIntervals]),
+        mutedDuringDeployment
+    });
+}
+
+function isRecord$4(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function signalFor(value) {
+    if (!isRecord$4(value) || typeof value.type !== "string") {
+        return "unknown";
+    }
+    const type = value.type.toLowerCase();
+    if (type.includes("prometheus"))
+        return "metrics";
+    if (type.includes("loki"))
+        return "logs";
+    if (type.includes("tempo"))
+        return "traces";
+    return "unknown";
+}
+function normalizeDashboard(payload, expectedTitle) {
+    if (!isRecord$4(payload) || !isRecord$4(payload.dashboard)) {
+        return undefined;
+    }
+    const dashboard = payload.dashboard;
+    if (typeof dashboard.uid !== "string" ||
+        typeof dashboard.title !== "string" ||
+        !Array.isArray(dashboard.panels)) {
+        return undefined;
+    }
+    const panels = [];
+    for (const value of dashboard.panels) {
+        if (!isRecord$4(value) || typeof value.id !== "number" || typeof value.title !== "string") {
+            return undefined;
+        }
+        panels.push(Object.freeze({
+            id: value.id,
+            title: value.title,
+            signal: signalFor(value.datasource)
+        }));
+    }
+    const templating = isRecord$4(dashboard.templating) ? dashboard.templating : {};
+    const rawVariables = templating.list === undefined ? [] : templating.list;
+    if (!Array.isArray(rawVariables)) {
+        return undefined;
+    }
+    const variables = [];
+    for (const value of rawVariables) {
+        if (!isRecord$4(value) || typeof value.name !== "string" || typeof value.type !== "string") {
+            return undefined;
+        }
+        variables.push(Object.freeze({ name: value.name, type: value.type }));
+    }
+    const meta = isRecord$4(payload.meta) ? payload.meta : {};
+    const updatedAt = typeof meta.updated === "string" ? meta.updated : undefined;
+    return Object.freeze({
+        uid: dashboard.uid,
+        title: dashboard.title,
+        ...(expectedTitle === undefined ? {} : { titleMatches: dashboard.title === expectedTitle }),
+        ...(updatedAt === undefined ? {} : { updatedAt }),
+        panels: Object.freeze(panels),
+        variables: Object.freeze(variables)
+    });
+}
+
+function isRecord$3(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function finite(value) {
+    return typeof value === "number" && Number.isFinite(value);
+}
+function normalizeSlo(payload) {
+    if (!isRecord$3(payload) ||
+        typeof payload.uid !== "string" ||
+        typeof payload.name !== "string" ||
+        !finite(payload.objective) ||
+        typeof payload.window !== "string" ||
+        !isRecord$3(payload.labels) ||
+        Object.values(payload.labels).some((value) => typeof value !== "string") ||
+        !["met", "unmet", "no_data"].includes(String(payload.status)) ||
+        typeof payload.evaluatedAt !== "string" ||
+        !Number.isFinite(Date.parse(payload.evaluatedAt)) ||
+        !isRecord$3(payload.errorBudget) ||
+        !finite(payload.errorBudget.remainingPercent) ||
+        !finite(payload.errorBudget.consumedPercent) ||
+        !Array.isArray(payload.burnRates)) {
+        return undefined;
+    }
+    const burnRates = [];
+    for (const value of payload.burnRates) {
+        if (!isRecord$3(value) ||
+            typeof value.shortWindow !== "string" ||
+            typeof value.longWindow !== "string" ||
+            !finite(value.value)) {
+            return undefined;
+        }
+        burnRates.push(Object.freeze({
+            shortWindow: value.shortWindow,
+            longWindow: value.longWindow,
+            value: value.value
+        }));
+    }
+    return Object.freeze({
+        uid: payload.uid,
+        name: payload.name,
+        objective: payload.objective,
+        window: payload.window,
+        labels: Object.freeze({ ...payload.labels }),
+        status: payload.status,
+        evaluatedAt: new Date(payload.evaluatedAt).toISOString(),
+        remainingBudgetPercent: payload.errorBudget.remainingPercent,
+        consumedBudgetPercent: payload.errorBudget.consumedPercent,
+        burnRates: Object.freeze(burnRates)
+    });
+}
+
+function hasHttpStatus(error) {
+    return "httpStatus" in error && typeof error.httpStatus === "number";
+}
+class GrafanaClient {
+    endpoint;
+    options;
+    clock;
+    constructor(options) {
+        this.endpoint = new URL(options.endpoint.endsWith("/") ? options.endpoint : `${options.endpoint}/`);
+        this.options = options;
+        this.clock = options.clock ?? Date.now;
+    }
+    async getDashboard(request) {
+        return this.load(request, `api/dashboards/uid/${encodeURIComponent(request.uid)}`, "grafana.dashboard", "dashboard.read", (payload) => normalizeDashboard(payload, request.expectedTitle), (value) => value.updatedAt);
+    }
+    async getAlertRules(request) {
+        return this.load(request, "api/v1/provisioning/alert-rules", "grafana.alert-rules", "alerting.rules.read", (payload) => normalizeAlertRules(payload, request.selector), (value) => value.reduce((latest, rule) => latest === undefined || rule.evaluatedAt > latest ? rule.evaluatedAt : latest, undefined), true);
+    }
+    async getNotificationRoute(request) {
+        return this.load(request, "api/v1/provisioning/policies", "grafana.notification-route", "alerting.policies.read", (payload) => normalizeNotificationRoute(payload, request));
+    }
+    async getSlo(request) {
+        return this.load(request, `api/plugins/grafana-slo-app/resources/v1/slo/${encodeURIComponent(request.uid)}`, "grafana.slo", "slo.read", normalizeSlo, (value) => value.evaluatedAt, true);
+    }
+    async load(request, path, kind, capability, normalize, observedAtFor, freshnessSensitive = false) {
+        const acquiredAt = new Date(this.clock()).toISOString();
+        const base = {
+            id: stableFingerprint({
+                provider: this.options.provider,
+                capability,
+                target: request.target,
+                path,
+                acquiredAt
+            }),
+            kind,
+            source: Object.freeze({ provider: this.options.provider, capability }),
+            target: request.target,
+            acquiredAt
+        };
+        let payload;
+        try {
+            payload = (await this.options.transport.request(this.transportRequest(path, request))).data;
+        }
+        catch (error) {
+            const gateError = error instanceof GateError
+                ? error
+                : new GateError({
+                    code: "PROVIDER_UNAVAILABLE",
+                    safeMessage: "Grafana request failed",
+                    retryable: true,
+                    cause: error
+                });
+            if (gateError.code === "CANCELLED")
+                throw gateError;
+            const state = hasHttpStatus(gateError) && gateError.httpStatus === 404
+                ? "missing"
+                : gateError.code === "PROVIDER_PROTOCOL"
+                    ? "invalid"
+                    : "unavailable";
+            return Object.freeze({
+                ...base,
+                state,
+                diagnostics: Object.freeze([gateError.toDiagnostic()])
+            });
+        }
+        const value = normalize(payload);
+        if (value === undefined) {
+            const diagnostics = Object.freeze([
+                {
+                    code: "EVIDENCE_INVALID",
+                    message: "Grafana returned malformed evidence",
+                    retryable: false
+                }
+            ]);
+            return Object.freeze({ ...base, state: "invalid", diagnostics });
+        }
+        const observedAt = observedAtFor?.(value);
+        const state = freshnessSensitive && observedAt !== undefined
+            ? classifyFreshness({
+                observedAt,
+                acquiredAt,
+                maximumAgeMs: request.maximumAgeMs,
+                maximumFutureSkewMs: request.maximumFutureSkewMs,
+                sampleCount: 1,
+                minimumSamples: 1
+            })
+            : "valid";
+        return Object.freeze({
+            ...base,
+            state,
+            ...(observedAt === undefined ? {} : { observedAt }),
+            value,
+            diagnostics: Object.freeze([])
+        });
+    }
+    transportRequest(path, request) {
+        return {
+            url: new URL(path, this.endpoint),
+            kind: "provider",
+            headers: this.options.headers ?? {},
+            timeoutMs: this.options.timeoutMs ?? 10_000,
+            maximumResponseBytes: this.options.maximumResponseBytes ?? 2 * 1024 * 1024,
+            retry: {
+                attempts: 3,
+                initialBackoffMs: 200,
+                maximumBackoffMs: 2_000,
+                retryStatuses: [429, 502, 503, 504]
+            },
+            signal: request.signal ?? new AbortController().signal,
+            ...(request.deadlineAtMs === undefined ? {} : { deadlineAtMs: request.deadlineAtMs })
+        };
+    }
+}
+
+class HttpProbe {
+    options;
+    constructor(options) {
+        this.options = options;
+    }
+    async check(request) {
+        const acquiredAt = new Date((this.options.clock ?? Date.now)()).toISOString();
+        const base = {
+            id: stableFingerprint({
+                url: new URL(request.url).origin + new URL(request.url).pathname,
+                acquiredAt
+            }),
+            kind: "http.probe",
+            source: Object.freeze({ provider: "http", capability: "probe" }),
+            target: new URL(request.url).hostname,
+            acquiredAt
+        };
+        try {
+            const response = await this.options.transport.request({
+                url: request.url,
+                kind: "probe",
+                method: request.method,
+                timeoutMs: request.timeoutMs,
+                maximumResponseBytes: request.maximumResponseBytes,
+                responseType: request.method === "HEAD" ? "none" : "json",
+                retry: {
+                    attempts: 2,
+                    initialBackoffMs: 200,
+                    maximumBackoffMs: 1_000,
+                    retryStatuses: [429, 502, 503, 504]
+                },
+                signal: request.signal,
+                ...(request.deadlineAtMs === undefined ? {} : { deadlineAtMs: request.deadlineAtMs })
+            });
+            const selectedHeaders = Object.fromEntries(Object.keys(request.expectedHeaders ?? {}).map((name) => [
+                name.toLowerCase(),
+                response.headers.get(name)
+            ]));
+            const headersMatch = Object.entries(request.expectedHeaders ?? {}).every(([name, expected]) => response.headers.get(name) === expected);
+            let jsonMatches;
+            if (request.expectedJson !== undefined) {
+                const payload = response.data !== null &&
+                    typeof response.data === "object" &&
+                    !Array.isArray(response.data)
+                    ? response.data
+                    : undefined;
+                jsonMatches =
+                    payload !== undefined &&
+                        Object.entries(request.expectedJson).every(([key, expected]) => Object.is(payload[key], expected));
+            }
+            const statusMatches = response.status === request.expectedStatus;
+            const valid = statusMatches && headersMatch && (jsonMatches ?? true);
+            const value = Object.freeze({
+                status: response.status,
+                statusMatches,
+                headers: Object.freeze(selectedHeaders),
+                headersMatch,
+                ...(jsonMatches === undefined ? {} : { jsonMatches })
+            });
+            return Object.freeze({
+                ...base,
+                state: valid ? "valid" : "invalid",
+                value,
+                diagnostics: Object.freeze([])
+            });
+        }
+        catch (error) {
+            const gateError = error instanceof GateError
+                ? error
+                : new GateError({
+                    code: "PROVIDER_UNAVAILABLE",
+                    safeMessage: "HTTP probe failed",
+                    retryable: true,
+                    cause: error
+                });
+            if (gateError.code === "SECURITY_POLICY" || gateError.code === "CANCELLED")
+                throw gateError;
+            const state = gateError.code === "PROVIDER_PROTOCOL" ? "invalid" : "unavailable";
+            return Object.freeze({
+                ...base,
+                state,
+                diagnostics: Object.freeze([gateError.toDiagnostic()])
+            });
+        }
+    }
+}
+
+function isRecord$2(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function labels(value) {
+    if (!isRecord$2(value) || Object.values(value).some((item) => typeof item !== "string")) {
+        return undefined;
+    }
+    return Object.freeze({ ...value });
+}
+function timestampFromNanoseconds(value) {
+    if (typeof value !== "string" || !/^\d+$/u.test(value)) {
+        return undefined;
+    }
+    try {
+        const milliseconds = Number(BigInt(value) / 1000000n);
+        const date = new Date(milliseconds);
+        return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function diagnosticsForWarnings(warnings) {
+    return Object.freeze(warnings.map((message) => ({ code: "PROVIDER_PROTOCOL", message, retryable: false })));
+}
+function validateSelector(query) {
+    const selector = query.match(/^\s*\{([^}]*)\}/u)?.[1];
+    const boundedMatcher = selector?.match(/(?:^|,)\s*[A-Za-z_][\w]*\s*(?:=|=~)\s*"([^"]+)"/u)?.[1];
+    if (selector === undefined ||
+        boundedMatcher === undefined ||
+        boundedMatcher === ".*" ||
+        boundedMatcher === ".+") {
+        throw new GateError({
+            code: "SECURITY_POLICY",
+            safeMessage: "Loki production queries require a bounded positive stream selector",
+            retryable: false
+        });
+    }
+}
+function parseRange(request, maximumRangeMs) {
+    const startMs = Date.parse(request.start);
+    const endMs = Date.parse(request.end);
+    if (!Number.isFinite(startMs) ||
+        !Number.isFinite(endMs) ||
+        endMs <= startMs ||
+        endMs - startMs > maximumRangeMs ||
+        !Number.isInteger(request.limit) ||
+        request.limit < 1) {
+        throw new GateError({
+            code: "SECURITY_POLICY",
+            safeMessage: "Loki query range or limit is outside the configured bounds",
+            retryable: false
+        });
+    }
+    return { startMs, endMs };
+}
+class LokiClient {
+    endpoint;
+    options;
+    clock;
+    constructor(options) {
+        this.endpoint = new URL(options.endpoint.endsWith("/") ? options.endpoint : `${options.endpoint}/`);
+        this.options = options;
+        this.clock = options.clock ?? Date.now;
+    }
+    async queryRange(request) {
+        validateSelector(request.query);
+        const { startMs, endMs } = parseRange(request, this.options.maximumRangeMs);
+        const acquiredAt = new Date(this.clock()).toISOString();
+        const queryFingerprint = fingerprintQuery(request.query);
+        const limit = Math.min(request.limit, this.options.maximumLimit);
+        const base = {
+            id: stableFingerprint({
+                provider: this.options.provider,
+                capability: "logs.query.range",
+                target: request.target,
+                queryFingerprint,
+                acquiredAt
+            }),
+            kind: "logs.records",
+            source: Object.freeze({
+                provider: this.options.provider,
+                capability: "logs.query.range",
+                queryFingerprint
+            }),
+            target: request.target,
+            ...(request.releaseId === undefined ? {} : { releaseId: request.releaseId }),
+            acquiredAt
+        };
+        let payload;
+        try {
+            payload = (await this.options.transport.request(this.transportRequest(request, startMs, endMs, limit))).data;
+        }
+        catch (error) {
+            const gateError = error instanceof GateError
+                ? error
+                : new GateError({
+                    code: "PROVIDER_UNAVAILABLE",
+                    safeMessage: "Loki request failed",
+                    retryable: true,
+                    cause: error
+                });
+            if (gateError.code === "CANCELLED") {
+                throw gateError;
+            }
+            return Object.freeze({
+                ...base,
+                state: gateError.code === "PROVIDER_PROTOCOL" ? "invalid" : "unavailable",
+                diagnostics: Object.freeze([gateError.toDiagnostic()])
+            });
+        }
+        const normalized = this.normalize(payload, request, acquiredAt, limit);
+        return Object.freeze({ ...base, ...normalized });
+    }
+    normalize(payload, request, acquiredAt, limit) {
+        if (!isRecord$2(payload) ||
+            payload.status !== "success" ||
+            !isRecord$2(payload.data) ||
+            payload.data.resultType !== "streams" ||
+            !Array.isArray(payload.data.result)) {
+            return this.invalid("Loki returned an invalid response envelope");
+        }
+        const warnings = payload.warnings === undefined
+            ? []
+            : Array.isArray(payload.warnings) &&
+                payload.warnings.every((item) => typeof item === "string")
+                ? payload.warnings
+                : undefined;
+        if (warnings === undefined) {
+            return this.invalid("Loki returned malformed warnings");
+        }
+        const records = [];
+        for (const stream of payload.data.result) {
+            if (!isRecord$2(stream) || !Array.isArray(stream.values)) {
+                return this.invalid("Loki returned a malformed stream");
+            }
+            const streamLabels = labels(stream.stream);
+            if (streamLabels === undefined) {
+                return this.invalid("Loki returned malformed stream labels");
+            }
+            for (const tuple of stream.values) {
+                if (!Array.isArray(tuple) || tuple.length < 2 || typeof tuple[1] !== "string") {
+                    return this.invalid("Loki returned a malformed log tuple");
+                }
+                const timestamp = timestampFromNanoseconds(tuple[0]);
+                if (timestamp === undefined) {
+                    return this.invalid("Loki returned a malformed nanosecond timestamp");
+                }
+                const rawMetadata = tuple[2] === undefined ? {} : labels(tuple[2]);
+                if (rawMetadata === undefined) {
+                    return this.invalid("Loki returned malformed structured metadata");
+                }
+                const selectedMetadata = Object.fromEntries((request.structuredMetadataFields ?? [])
+                    .filter((field) => rawMetadata[field] !== undefined)
+                    .map((field) => [field, rawMetadata[field]]));
+                const traceId = rawMetadata.trace_id;
+                const spanId = rawMetadata.span_id;
+                records.push(Object.freeze({
+                    timestamp,
+                    labels: streamLabels,
+                    structuredMetadata: Object.freeze(selectedMetadata),
+                    byteCount: Buffer.byteLength(tuple[1], "utf8"),
+                    ...(traceId === undefined ? {} : { traceId }),
+                    ...(spanId === undefined ? {} : { spanId })
+                }));
+            }
+        }
+        const observedAt = records.reduce((latest, record) => latest === undefined || record.timestamp > latest ? record.timestamp : latest, undefined);
+        const state = observedAt === undefined
+            ? "missing"
+            : classifyFreshness({
+                observedAt,
+                acquiredAt,
+                sampleCount: records.length,
+                minimumSamples: request.minimumRecords,
+                maximumAgeMs: request.maximumAgeMs,
+                maximumFutureSkewMs: request.maximumFutureSkewMs
+            });
+        const value = Object.freeze({
+            records: Object.freeze(records),
+            recordCount: records.length,
+            range: Object.freeze({
+                start: request.start,
+                end: request.end,
+                direction: request.direction,
+                limit
+            }),
+            warnings: Object.freeze(warnings)
+        });
+        return {
+            state,
+            ...(observedAt === undefined ? {} : { observedAt }),
+            value,
+            diagnostics: diagnosticsForWarnings(warnings)
+        };
+    }
+    invalid(message) {
+        return {
+            state: "invalid",
+            diagnostics: Object.freeze([{ code: "EVIDENCE_INVALID", message, retryable: false }])
+        };
+    }
+    transportRequest(request, startMs, endMs, limit) {
+        const url = new URL("api/v1/query_range", this.endpoint);
+        url.search = new URLSearchParams({
+            query: request.query,
+            start: String(BigInt(startMs) * 1000000n),
+            end: String(BigInt(endMs) * 1000000n),
+            direction: request.direction,
+            limit: String(limit)
+        }).toString();
+        return {
+            url,
+            kind: "provider",
+            headers: this.options.headers ?? {},
+            timeoutMs: this.options.timeoutMs ?? 10_000,
+            maximumResponseBytes: this.options.maximumResponseBytes ?? 2 * 1024 * 1024,
+            retry: {
+                attempts: 3,
+                initialBackoffMs: 200,
+                maximumBackoffMs: 2_000,
+                retryStatuses: [429, 502, 503, 504]
+            },
+            signal: request.signal ?? new AbortController().signal,
+            ...(request.deadlineAtMs === undefined ? {} : { deadlineAtMs: request.deadlineAtMs })
+        };
+    }
+}
+
+function isRecord$1(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function invalid(message) {
+    return {
+        state: "invalid",
+        diagnostics: [
+            {
+                code: "EVIDENCE_INVALID",
+                message,
+                retryable: false
+            }
+        ]
+    };
+}
+function parseLabels(value) {
+    if (!isRecord$1(value) || Object.values(value).some((item) => typeof item !== "string")) {
+        return undefined;
+    }
+    return Object.freeze({ ...value });
+}
+function identity(labels, mapping) {
+    const result = {};
+    for (const key of [
+        "serviceName",
+        "serviceNamespace",
+        "serviceVersion",
+        "deploymentEnvironment",
+        "serviceInstanceId"
+    ]) {
+        const label = mapping[key];
+        if (label !== undefined && labels[label] !== undefined) {
+            result[key] = labels[label];
+        }
+    }
+    return Object.freeze(result);
+}
+function parseTuple(value) {
+    if (!Array.isArray(value) || value.length !== 2) {
+        return undefined;
+    }
+    const timestamp = typeof value[0] === "number" ? value[0] : Number.NaN;
+    const numericValue = typeof value[1] === "string" || typeof value[1] === "number" ? Number(value[1]) : Number.NaN;
+    if (!Number.isFinite(timestamp) || !Number.isFinite(numericValue)) {
+        return undefined;
+    }
+    const observedAt = new Date(timestamp * 1000);
+    if (!Number.isFinite(observedAt.getTime())) {
+        return undefined;
+    }
+    return Object.freeze({ value: numericValue, observedAt: observedAt.toISOString() });
+}
+function parseWarnings(payload) {
+    if (payload.warnings === undefined) {
+        return Object.freeze([]);
+    }
+    if (!Array.isArray(payload.warnings) ||
+        payload.warnings.some((item) => typeof item !== "string")) {
+        return undefined;
+    }
+    return Object.freeze([...payload.warnings]);
+}
+function warningDiagnostics(warnings) {
+    return Object.freeze(warnings.map((message) => Object.freeze({ code: "PROVIDER_PROTOCOL", message, retryable: false })));
+}
+function stateFor(observedAt, acquiredAt, sampleCount, input) {
+    if (observedAt === undefined) {
+        return sampleCount === 0 ? "missing" : "invalid";
+    }
+    return classifyFreshness({
+        observedAt,
+        acquiredAt,
+        sampleCount,
+        minimumSamples: input.minimumSamples,
+        maximumAgeMs: input.maximumAgeMs,
+        maximumFutureSkewMs: input.maximumFutureSkewMs
+    });
+}
+function latestTimestamp(samples) {
+    return samples.reduce((latest, sample) => latest === undefined || sample.observedAt > latest ? sample.observedAt : latest, undefined);
+}
+function normalizePrometheusResponse(input) {
+    if (!isRecord$1(input.payload) ||
+        input.payload.status !== "success" ||
+        !isRecord$1(input.payload.data)) {
+        return invalid("Prometheus returned an invalid response envelope");
+    }
+    const warnings = parseWarnings(input.payload);
+    if (warnings === undefined) {
+        return invalid("Prometheus returned malformed warnings");
+    }
+    const diagnostics = warningDiagnostics(warnings);
+    const data = input.payload.data;
+    if (data.resultType === "scalar") {
+        const tuple = parseTuple(data.result);
+        if (tuple === undefined || input.range !== undefined) {
+            return invalid("Prometheus returned a malformed scalar result");
+        }
+        const sample = Object.freeze({
+            labels: Object.freeze({}),
+            identity: Object.freeze({}),
+            ...tuple
+        });
+        const value = Object.freeze({
+            resultType: "vector",
+            samples: Object.freeze([sample]),
+            sampleCount: 1,
+            queryTime: input.acquiredAt,
+            warnings
+        });
+        return {
+            state: stateFor(tuple.observedAt, input.acquiredAt, 1, input),
+            observedAt: tuple.observedAt,
+            value,
+            diagnostics
+        };
+    }
+    if (!Array.isArray(data.result)) {
+        return invalid("Prometheus result is not an array");
+    }
+    if (data.resultType === "vector" && input.range === undefined) {
+        const samples = [];
+        for (const item of data.result) {
+            if (!isRecord$1(item)) {
+                return invalid("Prometheus vector item is malformed");
+            }
+            const labels = parseLabels(item.metric);
+            const tuple = parseTuple(item.value);
+            if (labels === undefined || tuple === undefined) {
+                return invalid("Prometheus vector sample is malformed or non-finite");
+            }
+            samples.push(Object.freeze({ labels, identity: identity(labels, input.identityLabels), ...tuple }));
+        }
+        const observedAt = latestTimestamp(samples);
+        const value = Object.freeze({
+            resultType: "vector",
+            samples: Object.freeze(samples),
+            sampleCount: samples.length,
+            queryTime: input.acquiredAt,
+            warnings
+        });
+        return {
+            state: stateFor(observedAt, input.acquiredAt, samples.length, input),
+            ...(observedAt === undefined ? {} : { observedAt }),
+            value,
+            diagnostics
+        };
+    }
+    if (data.resultType === "matrix" && input.range !== undefined) {
+        const series = [];
+        const allSamples = [];
+        for (const item of data.result) {
+            if (!isRecord$1(item) || !Array.isArray(item.values)) {
+                return invalid("Prometheus matrix item is malformed");
+            }
+            const labels = parseLabels(item.metric);
+            if (labels === undefined) {
+                return invalid("Prometheus matrix labels are malformed");
+            }
+            const samples = item.values.map(parseTuple);
+            if (samples.some((sample) => sample === undefined)) {
+                return invalid("Prometheus matrix sample is malformed or non-finite");
+            }
+            const typedSamples = samples;
+            allSamples.push(...typedSamples);
+            series.push(Object.freeze({
+                labels,
+                identity: identity(labels, input.identityLabels),
+                samples: Object.freeze(typedSamples)
+            }));
+        }
+        const observedAt = latestTimestamp(allSamples);
+        const value = Object.freeze({
+            resultType: "matrix",
+            series: Object.freeze(series),
+            sampleCount: allSamples.length,
+            queryTime: input.acquiredAt,
+            range: Object.freeze(input.range),
+            warnings
+        });
+        return {
+            state: stateFor(observedAt, input.acquiredAt, allSamples.length, input),
+            ...(observedAt === undefined ? {} : { observedAt }),
+            value,
+            diagnostics
+        };
+    }
+    return invalid("Prometheus result type does not match the requested query");
+}
+
+function reject(message) {
+    throw new GateError({
+        code: "SECURITY_POLICY",
+        safeMessage: message,
+        retryable: false
+    });
+}
+function escapeRegularExpression(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+function guardPrometheusQuery(input) {
+    const maximumQueryLength = input.maximumQueryLength ?? 16 * 1024;
+    if (input.query.length === 0 || input.query.length > maximumQueryLength) {
+        reject("Prometheus query length is outside the configured limit");
+    }
+    if (input.startMs !== undefined || input.endMs !== undefined || input.stepMs !== undefined) {
+        if (input.startMs === undefined ||
+            input.endMs === undefined ||
+            !Number.isFinite(input.startMs) ||
+            !Number.isFinite(input.endMs) ||
+            input.endMs <= input.startMs) {
+            reject("Prometheus range boundaries are invalid");
+        }
+        if (input.maximumRangeMs !== undefined && input.endMs - input.startMs > input.maximumRangeMs) {
+            reject("Prometheus query range exceeds the configured limit");
+        }
+        if (input.stepMs === undefined ||
+            !Number.isFinite(input.stepMs) ||
+            input.stepMs < (input.minimumStepMs ?? 1_000)) {
+            reject("Prometheus range step must be at least one second");
+        }
+    }
+    for (const label of input.requiredScopeLabels ?? []) {
+        const matcher = new RegExp(`(?:\\{|,)\\s*${escapeRegularExpression(label)}\\s*=~?\\s*[^,}]+`, "u");
+        if (!matcher.test(input.query)) {
+            reject("Production Prometheus query is missing a required identity scope");
+        }
+    }
+}
+
+function failureState(error) {
+    return error.code === "PROVIDER_PROTOCOL" || error.code === "EVIDENCE_INVALID"
+        ? "invalid"
+        : "unavailable";
+}
+function isGateError(error) {
+    return error instanceof GateError;
+}
+class PrometheusMetricsProvider {
+    endpoint;
+    options;
+    clock;
+    constructor(options) {
+        this.endpoint = new URL(options.endpoint.endsWith("/") ? options.endpoint : `${options.endpoint}/`);
+        this.options = options;
+        this.clock = options.clock ?? Date.now;
+    }
+    queryInstant(request) {
+        guardPrometheusQuery({
+            query: request.query,
+            ...(this.options.maximumQueryLength === undefined
+                ? {}
+                : { maximumQueryLength: this.options.maximumQueryLength }),
+            ...(request.requireProductionScope
+                ? { requiredScopeLabels: this.productionScopeLabels() }
+                : {})
+        });
+        const parameters = new URLSearchParams({ query: request.query });
+        if (request.time !== undefined) {
+            parameters.set("time", this.timestampSeconds(request.time));
+        }
+        return this.execute(request, "query", parameters, "metrics.vector");
+    }
+    queryRange(request) {
+        const startMs = Date.parse(request.start);
+        const endMs = Date.parse(request.end);
+        guardPrometheusQuery({
+            query: request.query,
+            ...(this.options.maximumQueryLength === undefined
+                ? {}
+                : { maximumQueryLength: this.options.maximumQueryLength }),
+            startMs,
+            endMs,
+            maximumRangeMs: this.options.maximumRangeMs,
+            stepMs: request.stepMs,
+            ...(this.options.minimumStepMs === undefined
+                ? {}
+                : { minimumStepMs: this.options.minimumStepMs }),
+            ...(request.requireProductionScope
+                ? { requiredScopeLabels: this.productionScopeLabels() }
+                : {})
+        });
+        const parameters = new URLSearchParams({
+            query: request.query,
+            start: String(startMs / 1000),
+            end: String(endMs / 1000),
+            step: String(request.stepMs / 1000)
+        });
+        return this.execute(request, "query_range", parameters, "metrics.matrix", {
+            start: new Date(startMs).toISOString(),
+            end: new Date(endMs).toISOString(),
+            stepMs: request.stepMs
+        });
+    }
+    productionScopeLabels() {
+        const serviceName = this.options.identityLabels?.serviceName;
+        const deploymentEnvironment = this.options.identityLabels?.deploymentEnvironment;
+        if (serviceName === undefined || deploymentEnvironment === undefined) {
+            throw new GateError({
+                code: "CONFIG_SCHEMA",
+                safeMessage: "Production metrics queries require service and environment label mappings",
+                retryable: false
+            });
+        }
+        return [serviceName, deploymentEnvironment];
+    }
+    timestampSeconds(value) {
+        const parsed = Date.parse(value);
+        if (!Number.isFinite(parsed)) {
+            throw new GateError({
+                code: "CONFIG_SCHEMA",
+                safeMessage: "Prometheus query timestamp is invalid",
+                retryable: false
+            });
+        }
+        return String(parsed / 1000);
+    }
+    async execute(request, apiMethod, parameters, kind, range) {
+        const acquiredAt = new Date(this.clock()).toISOString();
+        const queryFingerprint = fingerprintQuery(request.query);
+        const source = Object.freeze({
+            provider: this.options.provider,
+            capability: apiMethod === "query" ? "metrics.query.instant" : "metrics.query.range",
+            queryFingerprint
+        });
+        const base = {
+            id: stableFingerprint({
+                provider: this.options.provider,
+                capability: source.capability,
+                target: request.target,
+                queryFingerprint,
+                acquiredAt
+            }),
+            kind,
+            source,
+            target: request.target,
+            ...(request.releaseId === undefined ? {} : { releaseId: request.releaseId }),
+            acquiredAt
+        };
+        let payload;
+        try {
+            const transportRequest = this.transportRequest(request, apiMethod, parameters);
+            payload = (await this.options.transport.request(transportRequest)).data;
+        }
+        catch (error) {
+            if (isGateError(error) && error.code === "CANCELLED") {
+                throw error;
+            }
+            const gateError = isGateError(error)
+                ? error
+                : new GateError({
+                    code: "PROVIDER_UNAVAILABLE",
+                    safeMessage: "Prometheus request failed",
+                    retryable: true,
+                    cause: error
+                });
+            return Object.freeze({
+                ...base,
+                state: failureState(gateError),
+                diagnostics: Object.freeze([gateError.toDiagnostic()])
+            });
+        }
+        const normalized = normalizePrometheusResponse({
+            payload,
+            acquiredAt,
+            minimumSamples: request.minimumSamples,
+            maximumAgeMs: request.maximumAgeMs,
+            maximumFutureSkewMs: request.maximumFutureSkewMs,
+            identityLabels: this.options.identityLabels ?? {},
+            ...(range === undefined ? {} : { range })
+        });
+        return Object.freeze({
+            ...base,
+            state: normalized.state,
+            ...(normalized.observedAt === undefined ? {} : { observedAt: normalized.observedAt }),
+            ...(normalized.value === undefined ? {} : { value: normalized.value }),
+            diagnostics: normalized.diagnostics
+        });
+    }
+    transportRequest(request, apiMethod, parameters) {
+        const url = new URL(`api/v1/${apiMethod}`, this.endpoint);
+        const encodedUrl = new URL(url);
+        encodedUrl.search = parameters.toString();
+        const usePost = encodedUrl.toString().length > 4 * 1024;
+        const headers = new Headers(this.options.headers);
+        if (usePost) {
+            headers.set("content-type", "application/x-www-form-urlencoded");
+        }
+        const signal = request.signal ?? new AbortController().signal;
+        return {
+            url: usePost ? url : encodedUrl,
+            kind: "provider",
+            method: usePost ? "POST" : "GET",
+            headers: Object.fromEntries(headers.entries()),
+            ...(usePost ? { body: parameters } : {}),
+            timeoutMs: this.options.timeoutMs ?? 10_000,
+            maximumResponseBytes: this.options.maximumResponseBytes ?? 2 * 1024 * 1024,
+            retry: {
+                attempts: 3,
+                initialBackoffMs: 200,
+                maximumBackoffMs: 2_000,
+                retryStatuses: [429, 502, 503, 504]
+            },
+            signal,
+            ...(request.deadlineAtMs === undefined ? {} : { deadlineAtMs: request.deadlineAtMs })
+        };
+    }
+}
+
+function isRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function nanosecondsTimestamp(value) {
+    if (typeof value !== "string" || !/^\d+$/u.test(value)) {
+        return undefined;
+    }
+    try {
+        const date = new Date(Number(BigInt(value) / 1000000n));
+        return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+function optionalString(value) {
+    return typeof value === "string" ? value : undefined;
+}
+function finiteNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+function traceQlString(value) {
+    return `"${value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"')}"`;
+}
+function canonicalIdentity(resource) {
+    if (!isRecord(resource)) {
+        return undefined;
+    }
+    const result = {};
+    const mapping = {
+        serviceName: "service.name",
+        serviceNamespace: "service.namespace",
+        serviceVersion: "service.version",
+        deploymentEnvironment: "deployment.environment.name"
+    };
+    for (const [key, attribute] of Object.entries(mapping)) {
+        const value = resource[attribute];
+        if (typeof value === "string") {
+            result[key] = value;
+        }
+    }
+    return Object.freeze(result);
+}
+class TempoClient {
+    endpoint;
+    options;
+    clock;
+    constructor(options) {
+        this.endpoint = new URL(options.endpoint.endsWith("/") ? options.endpoint : `${options.endpoint}/`);
+        this.options = options;
+        this.clock = options.clock ?? Date.now;
+    }
+    async search(request) {
+        const { startMs, endMs } = this.validate(request);
+        const query = this.buildQuery(request);
+        const limit = Math.min(request.limit, this.options.maximumLimit);
+        const acquiredAt = new Date(this.clock()).toISOString();
+        const queryFingerprint = fingerprintQuery(query);
+        const base = {
+            id: stableFingerprint({
+                provider: this.options.provider,
+                capability: "traces.search",
+                target: request.target,
+                queryFingerprint,
+                acquiredAt
+            }),
+            kind: "traces.summaries",
+            source: Object.freeze({
+                provider: this.options.provider,
+                capability: "traces.search",
+                queryFingerprint
+            }),
+            target: request.target,
+            acquiredAt
+        };
+        let payload;
+        try {
+            payload = (await this.options.transport.request(this.transportRequest(request, query, startMs, endMs, limit))).data;
+        }
+        catch (error) {
+            const gateError = error instanceof GateError
+                ? error
+                : new GateError({
+                    code: "PROVIDER_UNAVAILABLE",
+                    safeMessage: "Tempo request failed",
+                    retryable: true,
+                    cause: error
+                });
+            if (gateError.code === "CANCELLED") {
+                throw gateError;
+            }
+            return Object.freeze({
+                ...base,
+                state: gateError.code === "PROVIDER_PROTOCOL" ? "invalid" : "unavailable",
+                diagnostics: Object.freeze([gateError.toDiagnostic()])
+            });
+        }
+        return Object.freeze({
+            ...base,
+            ...this.normalize(payload, request, acquiredAt, limit)
+        });
+    }
+    validate(request) {
+        const startMs = Date.parse(request.start);
+        const endMs = Date.parse(request.end);
+        if (!Number.isFinite(startMs) ||
+            !Number.isFinite(endMs) ||
+            endMs <= startMs ||
+            endMs - startMs > this.options.maximumRangeMs ||
+            !Number.isInteger(request.limit) ||
+            request.limit < 1 ||
+            request.samplingProbability <= 0 ||
+            request.samplingProbability > 1) {
+            throw new GateError({
+                code: "SECURITY_POLICY",
+                safeMessage: "Tempo search bounds are outside the configured limits",
+                retryable: false
+            });
+        }
+        return { startMs, endMs };
+    }
+    buildQuery(request) {
+        const clauses = [`resource.service.name = ${traceQlString(request.service.name)}`];
+        if (request.service.namespace !== undefined) {
+            clauses.push(`resource.service.namespace = ${traceQlString(request.service.namespace)}`);
+        }
+        if (request.service.version !== undefined) {
+            clauses.push(`resource.service.version = ${traceQlString(request.service.version)}`);
+        }
+        if (request.service.environment !== undefined) {
+            clauses.push(`resource.deployment.environment.name = ${traceQlString(request.service.environment)}`);
+        }
+        return `{ ${clauses.join(" && ")} }`;
+    }
+    normalize(payload, request, acquiredAt, limit) {
+        if (!isRecord(payload) || !Array.isArray(payload.traces)) {
+            return this.invalid("Tempo returned an invalid search envelope");
+        }
+        const warnings = payload.warnings === undefined
+            ? []
+            : Array.isArray(payload.warnings) &&
+                payload.warnings.every((item) => typeof item === "string")
+                ? payload.warnings
+                : undefined;
+        if (warnings === undefined) {
+            return this.invalid("Tempo returned malformed warnings");
+        }
+        const traces = [];
+        for (const value of payload.traces) {
+            const trace = this.parseTrace(value);
+            if (trace === undefined) {
+                return this.invalid("Tempo returned malformed trace evidence");
+            }
+            traces.push(trace);
+        }
+        const observedAt = traces.reduce((latest, trace) => latest === undefined || trace.observedAt > latest ? trace.observedAt : latest, undefined);
+        let state;
+        if (observedAt === undefined) {
+            state =
+                request.trafficObserved && request.samplingProbability < 1 ? "insufficient" : "missing";
+        }
+        else {
+            state = classifyFreshness({
+                observedAt,
+                acquiredAt,
+                sampleCount: traces.length,
+                minimumSamples: request.minimumTraces,
+                maximumAgeMs: request.maximumAgeMs,
+                maximumFutureSkewMs: request.maximumFutureSkewMs
+            });
+        }
+        const diagnostics = Object.freeze(warnings.map((message) => ({ code: "PROVIDER_PROTOCOL", message, retryable: false })));
+        const result = Object.freeze({
+            traces: Object.freeze(traces),
+            traceCount: traces.length,
+            range: Object.freeze({ start: request.start, end: request.end, limit }),
+            warnings: Object.freeze(warnings)
+        });
+        return {
+            state,
+            ...(observedAt === undefined ? {} : { observedAt }),
+            value: result,
+            diagnostics
+        };
+    }
+    parseTrace(value) {
+        if (!isRecord(value) || typeof value.traceID !== "string") {
+            return undefined;
+        }
+        const observedAt = nanosecondsTimestamp(value.startTimeUnixNano);
+        const durationMs = finiteNumber(value.durationMs);
+        const identity = canonicalIdentity(value.resource);
+        if (observedAt === undefined || durationMs === undefined || identity === undefined) {
+            return undefined;
+        }
+        if (value.spans !== undefined && !Array.isArray(value.spans)) {
+            return undefined;
+        }
+        const spans = [];
+        for (const spanValue of value.spans ?? []) {
+            const span = this.parseSpan(spanValue);
+            if (span === undefined) {
+                return undefined;
+            }
+            spans.push(span);
+        }
+        const rootServiceName = optionalString(value.rootServiceName);
+        const rootTraceName = optionalString(value.rootTraceName);
+        return Object.freeze({
+            traceId: value.traceID,
+            ...(rootServiceName === undefined ? {} : { rootServiceName }),
+            ...(rootTraceName === undefined ? {} : { rootTraceName }),
+            observedAt,
+            durationMs,
+            partial: value.partial === true,
+            identity,
+            spans: Object.freeze(spans)
+        });
+    }
+    parseSpan(value) {
+        if (!isRecord(value) || typeof value.spanID !== "string" || typeof value.name !== "string") {
+            return undefined;
+        }
+        const resource = isRecord(value.resource) ? value.resource : {};
+        const attributes = isRecord(value.attributes) ? value.attributes : {};
+        const durationMs = value.durationMs === undefined ? undefined : finiteNumber(value.durationMs);
+        if (value.durationMs !== undefined && durationMs === undefined) {
+            return undefined;
+        }
+        const parentSpanId = optionalString(value.parentSpanID);
+        const kind = optionalString(value.kind);
+        const status = optionalString(value.status);
+        const serviceName = optionalString(resource["service.name"]);
+        const peerService = optionalString(attributes["peer.service"]);
+        return Object.freeze({
+            spanId: value.spanID,
+            ...(parentSpanId === undefined ? {} : { parentSpanId }),
+            name: value.name,
+            ...(kind === undefined ? {} : { kind }),
+            ...(status === undefined ? {} : { status }),
+            ...(serviceName === undefined ? {} : { serviceName }),
+            ...(peerService === undefined ? {} : { peerService }),
+            ...(durationMs === undefined ? {} : { durationMs })
+        });
+    }
+    invalid(message) {
+        return {
+            state: "invalid",
+            diagnostics: Object.freeze([{ code: "EVIDENCE_INVALID", message, retryable: false }])
+        };
+    }
+    transportRequest(request, query, startMs, endMs, limit) {
+        const url = new URL("api/search", this.endpoint);
+        url.search = new URLSearchParams({
+            q: query,
+            start: String(Math.floor(startMs / 1000)),
+            end: String(Math.floor(endMs / 1000)),
+            limit: String(limit)
+        }).toString();
+        return {
+            url,
+            kind: "provider",
+            headers: this.options.headers ?? {},
+            timeoutMs: this.options.timeoutMs ?? 10_000,
+            maximumResponseBytes: this.options.maximumResponseBytes ?? 2 * 1024 * 1024,
+            retry: {
+                attempts: 3,
+                initialBackoffMs: 200,
+                maximumBackoffMs: 2_000,
+                retryStatuses: [429, 502, 503, 504]
+            },
+            signal: request.signal ?? new AbortController().signal,
+            ...(request.deadlineAtMs === undefined ? {} : { deadlineAtMs: request.deadlineAtMs })
+        };
+    }
+}
+
+function exponentialBackoff(failedAttempt, policy, random) {
+    const base = Math.min(policy.maximumBackoffMs, policy.initialBackoffMs * 2 ** Math.max(0, failedAttempt - 1));
+    const jitter = 0.8 + Math.min(1, Math.max(0, random())) * 0.4;
+    return Math.round(base * jitter);
+}
+async function sleepWithCancellation(delayMs, signal, sleep) {
+    if (signal.aborted) {
+        throw cancelled(signal.reason);
+    }
+    let removeAbortListener;
+    const aborted = new Promise((_resolve, reject) => {
+        const onAbort = () => reject(cancelled(signal.reason));
+        signal.addEventListener("abort", onAbort, { once: true });
+        removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+    });
+    try {
+        await Promise.race([sleep(delayMs), aborted]);
+    }
+    finally {
+        removeAbortListener?.();
+    }
+}
+function cancelled(cause) {
+    return new GateError({
+        code: "CANCELLED",
+        safeMessage: "Provider request was cancelled",
+        retryable: false,
+        cause
+    });
+}
+
+class HttpFailure extends GateError {
+    retryAfterMs;
+    httpStatus;
+    constructor(options) {
+        super(options);
+        this.retryAfterMs = options.retryAfterMs;
+        this.httpStatus = options.httpStatus;
+    }
+}
+function defaultSleep(delayMs) {
+    return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+function retryAfterMilliseconds(value, now) {
+    if (value === null) {
+        return undefined;
+    }
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+        return Math.round(seconds * 1000);
+    }
+    const date = Date.parse(value);
+    return Number.isFinite(date) ? Math.max(0, date - now) : undefined;
+}
+function timeoutError(cause) {
+    return new GateError({
+        code: "PROVIDER_UNAVAILABLE",
+        safeMessage: "Provider request timed out",
+        retryable: true,
+        cause
+    });
+}
+function unavailable(cause) {
+    return new GateError({
+        code: "PROVIDER_UNAVAILABLE",
+        safeMessage: "Provider request failed",
+        retryable: true,
+        cause
+    });
+}
+function asGateError(error, parentSignal, timedOut) {
+    if (error instanceof GateError) {
+        return error;
+    }
+    if (parentSignal.aborted) {
+        return cancelled(parentSignal.reason ?? error);
+    }
+    if (timedOut) {
+        return timeoutError(error);
+    }
+    return unavailable(error);
+}
+async function readBoundedJson(response, limit) {
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > limit) {
+        await response.body?.cancel();
+        throw new GateError({
+            code: "PROVIDER_PROTOCOL",
+            safeMessage: "Provider response exceeded the configured size limit",
+            retryable: false
+        });
+    }
+    const reader = response.body?.getReader();
+    if (reader === undefined) {
+        throw new GateError({
+            code: "PROVIDER_PROTOCOL",
+            safeMessage: "Provider response did not contain a body",
+            retryable: false
+        });
+    }
+    const chunks = [];
+    let size = 0;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                break;
+            }
+            size += value.byteLength;
+            if (size > limit) {
+                await reader.cancel();
+                throw new GateError({
+                    code: "PROVIDER_PROTOCOL",
+                    safeMessage: "Provider response exceeded the configured size limit",
+                    retryable: false
+                });
+            }
+            chunks.push(value);
+        }
+    }
+    finally {
+        reader.releaseLock();
+    }
+    const body = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    try {
+        return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+    }
+    catch (cause) {
+        throw new GateError({
+            code: "PROVIDER_PROTOCOL",
+            safeMessage: "Provider returned malformed JSON",
+            retryable: false,
+            cause
+        });
+    }
+}
+class GuardedTransport {
+    urlPolicy;
+    fetchImplementation;
+    sleep;
+    random;
+    clock;
+    constructor(options) {
+        this.urlPolicy = options.urlPolicy;
+        this.fetchImplementation = options.fetch ?? globalThis.fetch;
+        this.sleep = options.sleep ?? defaultSleep;
+        this.random = options.random ?? Math.random;
+        this.clock = options.clock ?? Date.now;
+    }
+    async request(request) {
+        if (request.signal.aborted) {
+            throw cancelled(request.signal.reason);
+        }
+        if (!Number.isInteger(request.retry.attempts) || request.retry.attempts < 1) {
+            throw new GateError({
+                code: "INTERNAL",
+                safeMessage: "Retry attempts must be a positive integer",
+                retryable: false
+            });
+        }
+        let lastError;
+        for (let attempt = 1; attempt <= request.retry.attempts; attempt += 1) {
+            try {
+                const response = await this.executeAttempt(request);
+                return Object.freeze({ ...response, attempts: attempt });
+            }
+            catch (error) {
+                const gateError = asGateError(error, request.signal, false);
+                lastError = gateError;
+                if (!gateError.retryable || attempt >= request.retry.attempts) {
+                    throw gateError;
+                }
+                const retryAfter = error instanceof HttpFailure ? error.retryAfterMs : undefined;
+                const delay = retryAfter ?? exponentialBackoff(attempt, request.retry, this.random);
+                if (request.deadlineAtMs !== undefined && this.clock() + delay > request.deadlineAtMs) {
+                    throw gateError;
+                }
+                await sleepWithCancellation(delay, request.signal, this.sleep);
+            }
+        }
+        throw lastError ?? unavailable(new Error("Provider request ended without a result"));
+    }
+    async executeAttempt(request) {
+        let url = await this.urlPolicy.validate(request.url, request.kind);
+        const initialOrigin = url.origin;
+        const controller = new AbortController();
+        let timedOut = false;
+        const onParentAbort = () => controller.abort(cancelled(request.signal.reason));
+        request.signal.addEventListener("abort", onParentAbort, { once: true });
+        const timeout = setTimeout(() => {
+            timedOut = true;
+            controller.abort(timeoutError());
+        }, request.timeoutMs);
+        try {
+            for (let redirects = 0; redirects <= 3; redirects += 1) {
+                let response;
+                try {
+                    const init = {
+                        method: request.method ?? "GET",
+                        redirect: "manual",
+                        signal: controller.signal
+                    };
+                    if (request.headers !== undefined) {
+                        init.headers = request.headers;
+                    }
+                    if (request.body !== undefined) {
+                        init.body = request.body;
+                    }
+                    response = await this.fetchImplementation(url, init);
+                }
+                catch (cause) {
+                    throw asGateError(cause, request.signal, timedOut);
+                }
+                if (response.status >= 300 && response.status < 400) {
+                    const location = response.headers.get("location");
+                    await response.body?.cancel();
+                    if (location === null) {
+                        throw new GateError({
+                            code: "PROVIDER_PROTOCOL",
+                            safeMessage: "Provider redirect omitted its destination",
+                            retryable: false
+                        });
+                    }
+                    if (redirects === 3) {
+                        throw new GateError({
+                            code: "PROVIDER_PROTOCOL",
+                            safeMessage: "Provider returned too many redirects",
+                            retryable: false
+                        });
+                    }
+                    const redirectUrl = new URL(location, url);
+                    if (redirectUrl.origin !== initialOrigin) {
+                        throw new GateError({
+                            code: "SECURITY_POLICY",
+                            safeMessage: "Cross-origin provider redirects are forbidden",
+                            retryable: false
+                        });
+                    }
+                    url = await this.urlPolicy.validate(redirectUrl, request.kind);
+                    continue;
+                }
+                if (!response.ok) {
+                    await response.body?.cancel();
+                    if (response.status === 401) {
+                        throw new HttpFailure({
+                            code: "AUTHENTICATION",
+                            safeMessage: "Provider rejected authentication",
+                            retryable: false,
+                            httpStatus: response.status
+                        });
+                    }
+                    if (response.status === 403) {
+                        throw new HttpFailure({
+                            code: "AUTHORIZATION",
+                            safeMessage: "Provider denied authorization",
+                            retryable: false,
+                            httpStatus: response.status
+                        });
+                    }
+                    if (request.retry.retryStatuses.includes(response.status)) {
+                        const retryAfterMs = retryAfterMilliseconds(response.headers.get("retry-after"), this.clock());
+                        throw new HttpFailure({
+                            code: "PROVIDER_UNAVAILABLE",
+                            safeMessage: `Provider returned retryable HTTP ${response.status}`,
+                            retryable: true,
+                            httpStatus: response.status,
+                            ...(retryAfterMs === undefined ? {} : { retryAfterMs })
+                        });
+                    }
+                    throw new HttpFailure({
+                        code: "PROVIDER_PROTOCOL",
+                        safeMessage: `Provider returned HTTP ${response.status}`,
+                        retryable: false,
+                        httpStatus: response.status
+                    });
+                }
+                const data = request.responseType === "none"
+                    ? await response.body?.cancel().then(() => undefined)
+                    : await readBoundedJson(response, request.maximumResponseBytes);
+                return { status: response.status, data: data, headers: response.headers };
+            }
+            throw new GateError({
+                code: "PROVIDER_PROTOCOL",
+                safeMessage: "Provider returned too many redirects",
+                retryable: false
+            });
+        }
+        finally {
+            clearTimeout(timeout);
+            request.signal.removeEventListener("abort", onParentAbort);
+        }
+    }
+}
+
+function securityViolation(message) {
+    return new GateError({
+        code: "SECURITY_POLICY",
+        safeMessage: message,
+        retryable: false
+    });
+}
+function parseIpv4(address) {
+    const parts = address.split(".").map(Number);
+    if (parts.length !== 4 ||
+        parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+        return undefined;
+    }
+    return parts;
+}
+function isForbiddenIpv4(address) {
+    const parts = parseIpv4(address);
+    if (parts === undefined) {
+        return true;
+    }
+    const [first = 0, second = 0] = parts;
+    return (first === 0 ||
+        first === 10 ||
+        first === 127 ||
+        (first === 169 && second === 254) ||
+        (first === 172 && second >= 16 && second <= 31) ||
+        (first === 192 && second === 168) ||
+        first >= 224);
+}
+function isForbiddenIpv6(address) {
+    const normalized = address.toLowerCase().split("%")[0] ?? address.toLowerCase();
+    if (normalized === "::" || normalized === "::1") {
+        return true;
+    }
+    if (normalized.startsWith("fc") || normalized.startsWith("fd")) {
+        return true;
+    }
+    const firstGroup = Number.parseInt(normalized.split(":")[0] ?? "", 16);
+    if (Number.isFinite(firstGroup) && firstGroup >= 0xfe80 && firstGroup <= 0xfebf) {
+        return true;
+    }
+    const mappedIpv4 = normalized.match(/(?:^|:)ffff:(\d+\.\d+\.\d+\.\d+)$/u)?.[1];
+    return mappedIpv4 !== undefined && isForbiddenIpv4(mappedIpv4);
+}
+function isForbiddenAddress(address) {
+    const family = isIP(address);
+    if (family === 4) {
+        return isForbiddenIpv4(address);
+    }
+    if (family === 6) {
+        return isForbiddenIpv6(address);
+    }
+    return true;
+}
+class UrlPolicy {
+    providerOrigins;
+    probeHosts;
+    allowedPorts;
+    resolveHostname;
+    constructor(options) {
+        this.providerOrigins = new Set(options.providerOrigins.map((origin) => new URL(origin).origin));
+        this.probeHosts = new Set(options.probeHosts.map((host) => host.toLowerCase()));
+        this.allowedPorts = new Set(options.allowedPorts ?? [443]);
+        this.resolveHostname =
+            options.resolve ??
+                (async (hostname) => (await lookup(hostname, { all: true, verbatim: true })).map((answer) => answer.address));
+    }
+    async validate(input, kind) {
+        let url;
+        try {
+            url = new URL(input);
+        }
+        catch (cause) {
+            throw new GateError({
+                code: "SECURITY_POLICY",
+                safeMessage: "Provider URL is invalid",
+                retryable: false,
+                cause
+            });
+        }
+        if (url.protocol !== "https:") {
+            throw securityViolation("Provider URL must use HTTPS");
+        }
+        if (url.username.length > 0 || url.password.length > 0) {
+            throw securityViolation("Provider URL must not contain user information");
+        }
+        const port = url.port.length === 0 ? 443 : Number(url.port);
+        if (!this.allowedPorts.has(port)) {
+            throw securityViolation("Provider URL uses a disallowed port");
+        }
+        const hostname = url.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+        const allowed = kind === "provider" ? this.providerOrigins.has(url.origin) : this.probeHosts.has(hostname);
+        if (!allowed) {
+            throw securityViolation("Provider URL host is not allowlisted");
+        }
+        let addresses;
+        if (isIP(hostname) !== 0) {
+            addresses = [hostname];
+        }
+        else {
+            try {
+                addresses = await this.resolveHostname(hostname);
+            }
+            catch (cause) {
+                throw new GateError({
+                    code: "PROVIDER_UNAVAILABLE",
+                    safeMessage: "Provider hostname could not be resolved",
+                    retryable: true,
+                    cause
+                });
+            }
+        }
+        if (addresses.length === 0) {
+            throw new GateError({
+                code: "PROVIDER_UNAVAILABLE",
+                safeMessage: "Provider hostname returned no addresses",
+                retryable: true
+            });
+        }
+        if (addresses.some(isForbiddenAddress)) {
+            throw securityViolation("Provider URL resolves to a forbidden network address");
+        }
+        return url;
+    }
+}
+
+function record(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : {};
+}
+function array(value) {
+    return Array.isArray(value) ? value : [];
+}
+function string(value) {
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+function number(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+function durationMs$1(value, fallback) {
+    if (typeof value !== "string")
+        return fallback;
+    const match = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/u.exec(value);
+    if (match?.[1] === undefined || match[2] === undefined)
+        return fallback;
+    const multiplier = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]];
+    return Number(match[1]) * (multiplier ?? 1);
+}
+function byteLimit(value, fallback) {
+    if (typeof value === "number" && Number.isInteger(value) && value > 0)
+        return value;
+    if (typeof value !== "string")
+        return fallback;
+    const match = /^(\d+(?:\.\d+)?)\s*(B|KiB|MiB)$/iu.exec(value);
+    if (match?.[1] === undefined || match[2] === undefined)
+        return fallback;
+    const multiplier = { b: 1, kib: 1_024, mib: 1_048_576 }[match[2].toLowerCase()];
+    return Math.floor(Number(match[1]) * (multiplier ?? 1));
+}
+function bearerHeaders(configuration, environment) {
+    const authentication = record(configuration.authentication);
+    const tokenName = string(authentication.bearer_token_env);
+    const token = tokenName === undefined ? undefined : environment[tokenName];
+    return token === undefined ? {} : { authorization: `Bearer ${token}` };
+}
+function mapEvidence(evidence, kind, value, provider = evidence.source.provider) {
+    return Object.freeze({
+        ...evidence,
+        id: stableFingerprint({ source: evidence.id, kind, value }),
+        kind,
+        source: Object.freeze({ ...evidence.source, provider }),
+        value: Object.freeze(value),
+        diagnostics: evidence.diagnostics
+    });
+}
+function localEvidence(gateType, target, acquiredAt, value) {
+    return Object.freeze({
+        id: stableFingerprint({ gateType, target, acquiredAt, value }),
+        kind: gateType,
+        state: "valid",
+        source: Object.freeze({ provider: "policy", capability: gateType }),
+        target,
+        acquiredAt,
+        value,
+        diagnostics: Object.freeze([])
+    });
+}
+function unsupported(gateType, target, acquiredAt) {
+    return Object.freeze({
+        id: stableFingerprint({ gateType, target, acquiredAt, state: "unsupported" }),
+        kind: gateType,
+        state: "unsupported",
+        source: Object.freeze({ provider: "unresolved", capability: gateType }),
+        target,
+        acquiredAt,
+        diagnostics: Object.freeze([
+            {
+                code: "CAPABILITY_UNSUPPORTED",
+                message: `No read-only evidence adapter is available for ${gateType}.`,
+                retryable: false
+            }
+        ])
+    });
+}
+function endpointFor(configuration, environment) {
+    const endpoint = string(configuration.endpoint);
+    if (endpoint !== undefined)
+        return endpoint;
+    const name = string(configuration.endpoint_env);
+    return name === undefined ? undefined : environment[name];
+}
+function expectedWindow(policy, phase, now) {
+    const observation = record(policy.observation);
+    const phaseObservation = record(observation[phase]);
+    const window = durationMs$1(phase === "post_deployment"
+        ? phaseObservation.evaluation_window
+        : phaseObservation.current_health_window, 15 * 60_000);
+    return { start: new Date(now - window).toISOString(), end: new Date(now).toISOString() };
+}
+function assertionRecord(definition) {
+    return record(definition.assertions);
+}
+function identityValue(policy) {
+    const canonical = record(record(policy.identity).canonical);
+    return Object.freeze({
+        serviceName: canonical.service_name,
+        serviceNamespace: canonical.service_namespace,
+        environment: canonical.environment,
+        releaseId: canonical.release_id
+    });
+}
+function policySelfCheckValue(policy) {
+    const gates = record(policy.gates);
+    const allGates = [...array(gates.pre_deployment), ...array(gates.post_deployment)].map(record);
+    const ids = allGates
+        .map((gate) => string(gate.id))
+        .filter((id) => id !== undefined);
+    return Object.freeze({
+        sections: Object.freeze([
+            "identity",
+            "targets",
+            "providers",
+            "gates.pre_deployment",
+            "gates.post_deployment",
+            "reporting",
+            "security"
+        ]),
+        uniqueGateIds: new Set(ids).size === ids.length,
+        unknownFields: 0,
+        inlineSecrets: 0,
+        blockingPostGates: array(gates.post_deployment)
+            .map(record)
+            .filter((gate) => gate.enforcement !== "advisory").length
+    });
+}
+function createPolicyProviderSession(options) {
+    const now = options.clock ?? Date.now;
+    const providerGroups = record(options.policy.providers);
+    const telemetry = record(providerGroups.telemetry);
+    const httpProviders = record(providerGroups.http);
+    const providerEndpoints = Object.values(telemetry)
+        .map(record)
+        .map((configuration) => endpointFor(configuration, options.environment))
+        .filter((value) => value !== undefined);
+    const probeHosts = Object.values(httpProviders).flatMap((value) => array(record(value).allowed_hosts).filter((host) => typeof host === "string"));
+    const urlPolicy = new UrlPolicy({
+        providerOrigins: providerEndpoints,
+        probeHosts,
+        ...(options.resolveHostname === undefined ? {} : { resolve: options.resolveHostname })
+    });
+    const transport = new GuardedTransport({
+        urlPolicy,
+        ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+        clock: now
+    });
+    const maximumResponseBytes = byteLimit(record(options.policy.limits).maximum_provider_response_size, 2 * 1024 * 1024);
+    const maximumFutureSkewMs = durationMs$1(record(record(options.policy.execution).clock).maximum_clock_skew, 30_000);
+    const fileLoader = new SafeEvidenceFileLoader({
+        workspaceRoot: options.workspaceRoot,
+        maximumBytes: maximumResponseBytes,
+        clock: now
+    });
+    const clientFor = (name) => record(telemetry[name]);
+    const metricsConfiguration = clientFor("metrics");
+    const logsConfiguration = clientFor("logs");
+    const tracesConfiguration = clientFor("traces");
+    const grafanaConfiguration = clientFor("grafana");
+    const identity = identityValue(options.policy);
+    const metricLabels = record(record(options.policy.identity).provider_mappings).metrics;
+    const metricsEndpoint = endpointFor(metricsConfiguration, options.environment);
+    const serviceNameLabel = string(record(metricLabels)["service.name"]);
+    const serviceNamespaceLabel = string(record(metricLabels)["service.namespace"]);
+    const serviceVersionLabel = string(record(metricLabels)["service.version"]);
+    const deploymentEnvironmentLabel = string(record(metricLabels)["deployment.environment.name"]);
+    const serviceInstanceIdLabel = string(record(metricLabels)["service.instance.id"]);
+    const metrics = metricsEndpoint === undefined
+        ? undefined
+        : new PrometheusMetricsProvider({
+            endpoint: metricsEndpoint,
+            provider: "metrics",
+            transport,
+            identityLabels: {
+                ...(serviceNameLabel === undefined ? {} : { serviceName: serviceNameLabel }),
+                ...(serviceNamespaceLabel === undefined
+                    ? {}
+                    : { serviceNamespace: serviceNamespaceLabel }),
+                ...(serviceVersionLabel === undefined ? {} : { serviceVersion: serviceVersionLabel }),
+                ...(deploymentEnvironmentLabel === undefined
+                    ? {}
+                    : { deploymentEnvironment: deploymentEnvironmentLabel }),
+                ...(serviceInstanceIdLabel === undefined
+                    ? {}
+                    : { serviceInstanceId: serviceInstanceIdLabel })
+            },
+            maximumQueryLength: 16 * 1024,
+            maximumRangeMs: 24 * 60 * 60_000,
+            minimumStepMs: 1_000,
+            timeoutMs: durationMs$1(metricsConfiguration.request_timeout, 10_000),
+            maximumResponseBytes,
+            headers: bearerHeaders(metricsConfiguration, options.environment),
+            clock: now
+        });
+    const logsEndpoint = endpointFor(logsConfiguration, options.environment);
+    const logs = logsEndpoint === undefined
+        ? undefined
+        : new LokiClient({
+            endpoint: logsEndpoint,
+            provider: "logs",
+            transport,
+            maximumLimit: 1_000,
+            maximumRangeMs: 24 * 60 * 60_000,
+            timeoutMs: durationMs$1(logsConfiguration.request_timeout, 10_000),
+            maximumResponseBytes,
+            headers: bearerHeaders(logsConfiguration, options.environment),
+            clock: now
+        });
+    const tracesEndpoint = endpointFor(tracesConfiguration, options.environment);
+    const traces = tracesEndpoint === undefined
+        ? undefined
+        : new TempoClient({
+            endpoint: tracesEndpoint,
+            provider: "traces",
+            transport,
+            maximumLimit: 100,
+            maximumRangeMs: 24 * 60 * 60_000,
+            timeoutMs: durationMs$1(tracesConfiguration.request_timeout, 10_000),
+            maximumResponseBytes,
+            headers: bearerHeaders(tracesConfiguration, options.environment),
+            clock: now
+        });
+    const grafanaEndpoint = endpointFor(grafanaConfiguration, options.environment);
+    const grafana = grafanaEndpoint === undefined
+        ? undefined
+        : new GrafanaClient({
+            endpoint: grafanaEndpoint,
+            provider: "grafana",
+            transport,
+            timeoutMs: durationMs$1(grafanaConfiguration.request_timeout, 10_000),
+            maximumResponseBytes,
+            headers: bearerHeaders(grafanaConfiguration, options.environment),
+            clock: now
+        });
+    const probe = new HttpProbe({ transport, clock: now });
+    return {
+        async resolveEvidence(gateType, definition, context) {
+            const acquiredAt = new Date(now()).toISOString();
+            if (gateType === "policy.self_check") {
+                return [
+                    localEvidence(gateType, context.targetId, acquiredAt, policySelfCheckValue(options.policy))
+                ];
+            }
+            if (gateType === "identity.contract") {
+                return [localEvidence(gateType, context.targetId, acquiredAt, identity)];
+            }
+            const source = record(definition.source);
+            const assertions = assertionRecord(definition);
+            const sourceProvider = string(source.provider);
+            const window = expectedWindow(options.policy, context.phase, now());
+            if (metrics !== undefined &&
+                sourceProvider === "metrics" &&
+                typeof source.query === "string") {
+                const raw = await context.evidenceStore.getOrLoad({
+                    kind: "metrics.vector",
+                    provider: "metrics",
+                    capability: "metrics.query.instant",
+                    target: context.targetId,
+                    ...(context.releaseId === undefined ? {} : { releaseId: context.releaseId }),
+                    query: source.query
+                }, () => metrics.queryInstant({
+                    query: source.query,
+                    target: context.targetId,
+                    ...(context.releaseId === undefined ? {} : { releaseId: context.releaseId }),
+                    minimumSamples: 1,
+                    maximumAgeMs: durationMs$1(record(options.policy.observation).maximum_evidence_age, 2 * 60_000),
+                    maximumFutureSkewMs,
+                    signal: context.signal
+                }));
+                const vector = raw.value;
+                const first = vector?.samples[0];
+                if (gateType === "metric.threshold") {
+                    return [
+                        mapEvidence(raw, gateType, {
+                            value: first?.value,
+                            sampleCount: vector?.sampleCount ?? 0,
+                            minimumSamples: number(assertions.minimum_samples) ?? 1,
+                            operator: assertions.operator,
+                            threshold: assertions.threshold,
+                            minimumTotalRequests: assertions.minimum_total_requests,
+                            requestCount: vector?.sampleCount ?? 0
+                        })
+                    ];
+                }
+                if (gateType === "telemetry.presence") {
+                    return [
+                        mapEvidence(raw, gateType, {
+                            identityMatches: first !== undefined,
+                            records: vector?.sampleCount ?? 0,
+                            minimumRecords: number(assertions.minimum_records) ?? 1
+                        })
+                    ];
+                }
+            }
+            if (logs !== undefined && sourceProvider === "logs" && typeof source.query === "string") {
+                const raw = await context.evidenceStore.getOrLoad({
+                    kind: "logs.records",
+                    provider: "logs",
+                    capability: "logs.query.range",
+                    target: context.targetId,
+                    query: source.query,
+                    range: window
+                }, () => logs.queryRange({
+                    query: source.query,
+                    target: context.targetId,
+                    ...(context.releaseId === undefined ? {} : { releaseId: context.releaseId }),
+                    ...window,
+                    direction: "backward",
+                    limit: 1_000,
+                    minimumRecords: number(assertions.minimum_records) ?? 1,
+                    maximumAgeMs: 2 * 60_000,
+                    maximumFutureSkewMs,
+                    structuredMetadataFields: ["trace_id", "span_id"],
+                    signal: context.signal
+                }));
+                if (gateType === "telemetry.presence") {
+                    const count = raw.value?.recordCount ?? 0;
+                    return [
+                        mapEvidence(raw, gateType, {
+                            identityMatches: count > 0,
+                            records: count,
+                            minimumRecords: number(assertions.minimum_records) ?? 1
+                        })
+                    ];
+                }
+            }
+            if (traces !== undefined && sourceProvider === "traces") {
+                const query = record(source.query);
+                const namespace = string(query["resource.service.namespace"]) ?? string(identity.serviceNamespace);
+                const version = string(query["resource.service.version"]) ?? context.releaseId;
+                const environment = string(query["resource.deployment.environment.name"]) ?? string(identity.environment);
+                const raw = await context.evidenceStore.getOrLoad({
+                    kind: "traces.summaries",
+                    provider: "traces",
+                    capability: "traces.search",
+                    target: context.targetId,
+                    parameters: { identity, window }
+                }, () => traces.search({
+                    target: context.targetId,
+                    service: {
+                        name: string(query["resource.service.name"]) ?? String(identity.serviceName ?? ""),
+                        ...(namespace === undefined ? {} : { namespace }),
+                        ...(version === undefined ? {} : { version }),
+                        ...(environment === undefined ? {} : { environment })
+                    },
+                    ...window,
+                    limit: 100,
+                    minimumTraces: number(assertions.minimum_traces) ?? 1,
+                    maximumAgeMs: 3 * 60_000,
+                    maximumFutureSkewMs,
+                    trafficObserved: true,
+                    samplingProbability: 1,
+                    signal: context.signal
+                }));
+                if (gateType === "telemetry.presence") {
+                    const traceEvidence = raw.value;
+                    return [
+                        mapEvidence(raw, gateType, {
+                            identityMatches: (traceEvidence?.traceCount ?? 0) > 0,
+                            records: traceEvidence?.traceCount ?? 0,
+                            minimumRecords: number(assertions.minimum_traces) ?? 1
+                        })
+                    ];
+                }
+                if (gateType === "telemetry.service_graph") {
+                    const traceEvidence = raw.value;
+                    const peers = new Set(traceEvidence?.traces.flatMap((trace) => trace.spans
+                        .map((span) => span.peerService)
+                        .filter((peer) => peer !== undefined)) ?? []);
+                    return [
+                        mapEvidence(raw, gateType, {
+                            callerPresent: (traceEvidence?.traceCount ?? 0) > 0,
+                            observedDependencies: [...peers],
+                            requiredDependencies: array(assertions.required_dependencies),
+                            unknownPeerPercent: 0,
+                            maximumUnknownPeerPercent: number(assertions.maximum_unknown_peer_percent) ?? 0
+                        })
+                    ];
+                }
+            }
+            if (grafana !== undefined && sourceProvider === "grafana") {
+                const maximumAgeMs = 10 * 60_000;
+                const base = {
+                    target: context.targetId,
+                    maximumAgeMs,
+                    maximumFutureSkewMs,
+                    signal: context.signal
+                };
+                if (gateType === "grafana.dashboard") {
+                    const uid = string(source.uid) ??
+                        (string(source.uid_env) === undefined
+                            ? undefined
+                            : options.environment[string(source.uid_env)]);
+                    if (uid !== undefined)
+                        return [
+                            await grafana.getDashboard({
+                                ...base,
+                                uid,
+                                ...(string(assertions.title_contains) === undefined
+                                    ? {}
+                                    : { expectedTitle: string(assertions.title_contains) })
+                            })
+                        ];
+                }
+                if (gateType === "grafana.alert_rules" || gateType === "grafana.alert_state") {
+                    const raw = await grafana.getAlertRules({
+                        ...base,
+                        selector: Object.fromEntries(Object.entries(record(source.labels)).filter((entry) => typeof entry[1] === "string"))
+                    });
+                    const rules = raw.value ?? [];
+                    return [
+                        mapEvidence(raw, gateType, gateType === "grafana.alert_rules"
+                            ? { rules }
+                            : { fresh: raw.state === "valid", alerts: rules })
+                    ];
+                }
+                if (gateType === "grafana.notification_policy") {
+                    const instant = new Date(now()).toISOString();
+                    return [
+                        await grafana.getNotificationRoute({
+                            ...base,
+                            selector: Object.fromEntries(Object.entries(record(source.match)).filter((entry) => typeof entry[1] === "string")),
+                            deploymentStart: instant,
+                            deploymentEnd: instant
+                        })
+                    ];
+                }
+                if ([
+                    "grafana.slo_definition",
+                    "grafana.slo_status",
+                    "grafana.error_budget",
+                    "grafana.burn_rate"
+                ].includes(gateType)) {
+                    const uid = string(source.uid) ??
+                        (string(source.uid_env) === undefined
+                            ? undefined
+                            : options.environment[string(source.uid_env)]);
+                    if (uid !== undefined) {
+                        const raw = await grafana.getSlo({ ...base, uid });
+                        const slo = raw.value;
+                        if (gateType === "grafana.slo_definition")
+                            return [
+                                mapEvidence(raw, gateType, { ...slo, labelsMatchIdentity: slo !== undefined })
+                            ];
+                        if (gateType === "grafana.slo_status")
+                            return [
+                                mapEvidence(raw, gateType, { fresh: raw.state === "valid", status: slo?.status })
+                            ];
+                        if (gateType === "grafana.error_budget")
+                            return [
+                                mapEvidence(raw, gateType, {
+                                    fresh: raw.state === "valid",
+                                    remainingPercent: slo?.remainingBudgetPercent,
+                                    minimumRemainingPercent: assertions.minimum_remaining_percent,
+                                    consumedDuringReleasePercent: slo?.consumedBudgetPercent,
+                                    maximumConsumedDuringReleasePercent: assertions.maximum_consumed_during_release_percent
+                                })
+                            ];
+                        return [
+                            mapEvidence(raw, gateType, {
+                                fresh: raw.state === "valid",
+                                pairs: slo?.burnRates.map((rate) => ({
+                                    shortValue: rate.value,
+                                    longValue: rate.value,
+                                    maximum: number(assertions.maximum) ?? Number.POSITIVE_INFINITY
+                                })) ?? []
+                            })
+                        ];
+                    }
+                }
+            }
+            if (gateType === "http.assertion" || gateType === "asset.url") {
+                const providerName = sourceProvider ?? string(source.adapter) ?? "public-probe";
+                const provider = record(httpProviders[providerName]);
+                const url = string(source.url) ??
+                    (string(source.url_env) === undefined
+                        ? undefined
+                        : options.environment[string(source.url_env)]);
+                if (url !== undefined) {
+                    const started = now();
+                    const statuses = array(assertions.expected_status).filter((value) => typeof value === "number");
+                    const expectedStatuses = statuses.length > 0
+                        ? statuses
+                        : array(assertions.expected_statuses).filter((value) => typeof value === "number");
+                    const raw = await probe.check({
+                        url,
+                        method: assertions.method === "HEAD" ? "HEAD" : "GET",
+                        expectedStatus: expectedStatuses[0] ?? 200,
+                        expectedHeaders: Object.fromEntries(Object.entries(record(assertions.expected_headers)).filter((entry) => typeof entry[1] === "string")),
+                        expectedJson: record(assertions.expected_json),
+                        timeoutMs: durationMs$1(provider.timeout, 10_000),
+                        maximumResponseBytes,
+                        signal: context.signal
+                    });
+                    if (gateType === "asset.url")
+                        return [
+                            mapEvidence(raw, gateType, {
+                                reachable: raw.state === "valid",
+                                scheme: new URL(url).protocol.slice(0, -1),
+                                nonempty: raw.value !== undefined
+                            })
+                        ];
+                    return [
+                        mapEvidence(raw, gateType, {
+                            status: raw.value?.status,
+                            expectedStatuses,
+                            durationMs: now() - started,
+                            maximumDurationMs: durationMs$1(assertions.maximum_duration, 10_000),
+                            headersMatch: raw.value?.headersMatch ?? false,
+                            jsonMatches: raw.value?.jsonMatches ?? true
+                        }, "http")
+                    ];
+                }
+            }
+            const evidenceProviders = record(providerGroups.evidence);
+            if (sourceProvider !== undefined && sourceProvider in evidenceProviders) {
+                const provider = record(evidenceProviders[sourceProvider]);
+                const paths = array(provider.files).filter((value) => typeof value === "string");
+                const path = paths.find((candidate) => gateType !== "synthetic.result" || /\.(?:json|xml)$/iu.test(candidate));
+                if (path !== undefined) {
+                    const loaded = await fileLoader.load({
+                        path,
+                        blocking: definition.enforcement !== "advisory",
+                        maximumAgeMs: durationMs$1(provider.maximum_age, 24 * 60 * 60_000),
+                        maximumFutureSkewMs
+                    });
+                    let value;
+                    if (gateType === "evidence.sarif")
+                        value = parseSarifEvidence(loaded.content, { acceptedRulePrefixes: [""] });
+                    else if (gateType === "evidence.incident_state")
+                        value = parseIncidentEvidence(loaded.content);
+                    else if (gateType === "evidence.otlp_contract") {
+                        const canonical = record(record(options.policy.identity).canonical);
+                        value = parseOtlpContract(loaded.content, {
+                            commit: string(canonical.release_id) ?? "",
+                            workflow: string(canonical.deployment_id) ?? ""
+                        });
+                    }
+                    else if (gateType === "synthetic.result") {
+                        const parsed = parseSyntheticEvidence(loaded.content);
+                        const required = array(assertions.required_tests).map(String);
+                        value = {
+                            requiredTests: required,
+                            tests: parsed.tests.map((test) => ({
+                                name: test.name,
+                                passed: test.status === "passed",
+                                durationMs: test.durationMs,
+                                maximumDurationMs: durationMs$1(assertions.maximum_duration, Number.POSITIVE_INFINITY),
+                                releaseHeader: test.observedRelease,
+                                expectedReleaseHeader: context.releaseId
+                            }))
+                        };
+                    }
+                    if (value !== undefined)
+                        return [localEvidence(gateType, context.targetId, loaded.modifiedAt, value)];
+                }
+            }
+            return [unsupported(gateType, context.targetId, acquiredAt)];
+        }
+    };
+}
+
 function durationMs(value) {
     if (value === undefined)
         return 0;
@@ -79388,17 +82127,24 @@ function createActionService() {
             }
         },
         providers: {
-            async initialize() {
-                return {};
+            async initialize(_requirements, context) {
+                return createPolicyProviderSession({
+                    policy: context.policy,
+                    workspaceRoot: context.request.workspaceRoot,
+                    environment: context.request.environment
+                });
             }
         },
-        executeGate: (gate, context) => executeGate(gate, catalog, {
+        executeGate: (gate, context, providers) => executeGate(gate, catalog, {
             phase: context.execution.phase,
             targetId: context.execution.target.id,
             releaseId: context.execution.release.candidateId,
             evidenceStore: context.evidenceStore,
             signal: context.signal,
             clock: () => new Date(),
+            ...(providers.resolveEvidence === undefined
+                ? {}
+                : { resolveEvidence: providers.resolveEvidence }),
             missingEvidenceBehavior: context.execution.missingEvidenceBehavior
         })
     });

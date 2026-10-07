@@ -13,6 +13,7 @@ import {
   createBuiltInGateCatalog,
   executeGate as executeCatalogGate
 } from "@observability-gate/gates";
+import { createPolicyProviderSession } from "@observability-gate/providers/session";
 
 function durationMs(value: string | undefined): number {
   if (value === undefined) return 0;
@@ -83,11 +84,15 @@ export function createActionService() {
       }
     },
     providers: {
-      async initialize() {
-        return {};
+      async initialize(_requirements, context) {
+        return createPolicyProviderSession({
+          policy: context.policy,
+          workspaceRoot: context.request.workspaceRoot,
+          environment: context.request.environment
+        });
       }
     },
-    executeGate: (gate, context) =>
+    executeGate: (gate, context, providers) =>
       executeCatalogGate(gate, catalog, {
         phase: context.execution.phase,
         targetId: context.execution.target.id,
@@ -95,6 +100,9 @@ export function createActionService() {
         evidenceStore: context.evidenceStore,
         signal: context.signal,
         clock: () => new Date(),
+        ...(providers.resolveEvidence === undefined
+          ? {}
+          : { resolveEvidence: providers.resolveEvidence }),
         missingEvidenceBehavior: context.execution.missingEvidenceBehavior
       })
   });

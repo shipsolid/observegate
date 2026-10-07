@@ -1,0 +1,96 @@
+name: End-to-end
+
+on:
+  pull_request:
+    paths:
+      - "action.yml"
+      - "docker/**"
+      - "packages/**"
+      - "tests/end-to-end/**"
+      - "tests/failure-injection/**"
+      - "tests/integration/**"
+      - "tests/security/**"
+      - ".github/workflows/e2e.yml"
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      azure_live:
+        description: Run protected read-only Azure compatibility checks
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  release-scenarios:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e
+      - run: npm run test:security
+
+  kind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install kind with checksum verification
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error --output kind https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          curl --fail --location --silent --show-error --output kind.sha256sum https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64.sha256sum
+          sha256sum --check kind.sha256sum
+          chmod +x kind
+          sudo install kind /usr/local/bin/kind
+      - name: Create cluster and load sample image
+        shell: bash
+        run: |
+          kind create cluster --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+          docker build --tag observegate/e2e-service:local docker/e2e-service
+          kind load docker-image observegate/e2e-service:local
+      - name: Run kind integration
+        run: npm test -- tests/integration/kubernetes-kind.test.ts
+        env:
+          OBSERVEGATE_KIND: "1"
+
+  azure-read-only:
+    if: github.event_name == 'workflow_dispatch' && inputs.azure_live
+    runs-on: ubuntu-latest
+    environment: azure-read-only-e2e
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Run Azure live read-only compatibility
+        run: npm test -- tests/integration/azure-live.test.ts
+        env:
+          OBSERVEGATE_AZURE_LIVE: "1"
+          AZURE_RUNTIME_TYPE: ${{ vars.AZURE_RUNTIME_TYPE }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_CONTAINER_APP: ${{ vars.AZURE_CONTAINER_APP }}
+          AZURE_CONTAINER_APP_REVISION: ${{ vars.AZURE_CONTAINER_APP_REVISION }}
+          AZURE_VM_NAME: ${{ vars.AZURE_VM_NAME }}

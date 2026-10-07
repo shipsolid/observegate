@@ -16,6 +16,7 @@ import {
   createBuiltInGateCatalog,
   executeGate as executeCatalogGate
 } from "@observability-gate/gates";
+import { createPolicyProviderSession } from "@observability-gate/providers/session";
 import { catalogCommand } from "./commands/catalog.js";
 import { explainCommand } from "./commands/explain.js";
 import { planCommand } from "./commands/plan.js";
@@ -109,11 +110,15 @@ function createDefaultService(catalog = createBuiltInGateCatalog()): CliService 
       }
     },
     providers: {
-      async initialize() {
-        return {};
+      async initialize(_requirements, context) {
+        return createPolicyProviderSession({
+          policy: context.policy,
+          workspaceRoot: context.request.workspaceRoot,
+          environment: context.request.environment
+        });
       }
     },
-    executeGate: (gate, context) =>
+    executeGate: (gate, context, providers) =>
       executeCatalogGate(gate, catalog, {
         phase: context.execution.phase,
         targetId: context.execution.target.id,
@@ -121,6 +126,9 @@ function createDefaultService(catalog = createBuiltInGateCatalog()): CliService 
         evidenceStore: context.evidenceStore,
         signal: context.signal,
         clock: () => new Date(),
+        ...(providers.resolveEvidence === undefined
+          ? {}
+          : { resolveEvidence: providers.resolveEvidence }),
         missingEvidenceBehavior: context.execution.missingEvidenceBehavior
       })
   });
