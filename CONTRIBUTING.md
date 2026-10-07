@@ -93,4 +93,8 @@ git diff --exit-code
 
 Changes to the checked-in Action must leave `dist/index.js` and its source map current. Release
 artifacts are built only by the manually approved release workflow from an existing tag and draft
-release.
+release. Before releasing, enable immutable releases for the repository and configure the protected
+`release` environment with a `RELEASE_SETTINGS_TOKEN` secret. That fine-grained token needs only
+repository Administration read permission and is used solely to verify the immutable-release
+setting; publication uses the workflow's short-lived token. Release tags must be annotated semantic
+version tags matching `package.json`.

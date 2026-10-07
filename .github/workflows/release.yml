@@ -15,34 +15,36 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
 jobs:
-  release:
+  build:
     if: inputs.confirm == 'publish'
     runs-on: ubuntu-latest
-    environment: release
     permissions:
-      artifact-metadata: write
-      attestations: write
-      contents: write
-      id-token: write
+      contents: read
     steps:
-      - name: Check out tagged source
+      - name: Check out tagged source without credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+          ref: refs/tags/${{ inputs.release_tag }}
 
-      - name: Verify immutable release input
+      - name: Verify annotated release tag and draft
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "${GITHUB_REF_TYPE}" = "tag"
-          test "${GITHUB_REF_NAME}" = "${RELEASE_TAG}"
-          test "$(git rev-list -n 1 "${RELEASE_TAG}")" = "${GITHUB_SHA}"
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          test "$(git cat-file -t "refs/tags/${RELEASE_TAG}")" = "tag"
           test "${RELEASE_TAG}" = "v$(node --print "require('./package.json').version")"
-          gh release view "${RELEASE_TAG}" --json isDraft --jq '.isDraft' | grep --fixed-strings true
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.draft')" = "true"
+          echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "${GITHUB_ENV}"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -66,7 +68,7 @@ jobs:
           npm run verify:read-only
           git diff --exit-code
 
-      - name: Build reproducible release artifacts
+      - name: Build reproducible CLI archive
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -86,7 +88,35 @@ jobs:
             --file="dist/observegate-cli-${RELEASE_TAG}.tar.gz" \
             --directory=dist/cli \
             .
-          npm sbom --omit=dev --sbom-format=cyclonedx > "dist/observegate-${RELEASE_TAG}.cdx.json"
+
+      - name: Generate CLI artifact SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        env:
+          SYFT_CHECK_FOR_APP_UPDATE: "false"
+          SYFT_SOURCE_NAME: "@shipsolid/observegate"
+          SYFT_SOURCE_VERSION: ${{ env.RELEASE_VERSION }}
+        with:
+          path: dist/cli
+          format: cyclonedx-json
+          output-file: dist/observegate-${{ inputs.release_tag }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Verify SBOM and finalize artifact metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          node --experimental-strip-types scripts/verify-sbom.ts \
+            "dist/observegate-${RELEASE_TAG}.cdx.json" \
+            dist/cli/package.json
+          TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          {
+            echo "tag=${RELEASE_TAG}"
+            echo "version=${RELEASE_TAG#v}"
+            echo "commit=${TAG_COMMIT}"
+          } > dist/release-metadata.txt
           (
             cd dist
             sha256sum \
@@ -95,18 +125,7 @@ jobs:
               > "observegate-${RELEASE_TAG}.sha256"
           )
 
-      - name: Attest build provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: dist/observegate-cli-${{ inputs.release_tag }}.tar.gz
-
-      - name: Attest SBOM
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: dist/observegate-cli-${{ inputs.release_tag }}.tar.gz
-          sbom-path: dist/observegate-${{ inputs.release_tag }}.cdx.json
-
-      - name: Preserve workflow artifacts
+      - name: Preserve exact release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: observegate-${{ inputs.release_tag }}
@@ -116,16 +135,74 @@ jobs:
             dist/observegate-cli-${{ inputs.release_tag }}.tar.gz
             dist/observegate-${{ inputs.release_tag }}.cdx.json
             dist/observegate-${{ inputs.release_tag }}.sha256
+            dist/release-metadata.txt
 
-      - name: Upload assets and publish draft release
+  publish:
+    if: inputs.confirm == 'publish'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Download verified build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: observegate-${{ inputs.release_tag }}
+          path: release
+
+      - name: Verify artifact handoff and immutable release preconditions
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SETTINGS_TOKEN: ${{ secrets.RELEASE_SETTINGS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "${SETTINGS_TOKEN}"
+          test "$(sed -n 's/^tag=//p' release/release-metadata.txt)" = "${RELEASE_TAG}"
+          test "$(sed -n 's/^version=//p' release/release-metadata.txt)" = "${RELEASE_TAG#v}"
+          TAG_TYPE="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.type')"
+          TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
+          test "${TAG_TYPE}" = "tag"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT}" --jq '.object.type')" = "commit"
+          REMOTE_COMMIT="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT}" --jq '.object.sha')"
+          test "$(sed -n 's/^commit=//p' release/release-metadata.txt)" = "${REMOTE_COMMIT}"
+          (cd release && sha256sum --check "observegate-${RELEASE_TAG}.sha256")
+          test "$(GH_TOKEN="${SETTINGS_TOKEN}" gh api \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+            --jq '.enabled')" = "true"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.draft')" = "true"
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/observegate-cli-${{ inputs.release_tag }}.tar.gz
+
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/observegate-cli-${{ inputs.release_tag }}.tar.gz
+          sbom-path: release/observegate-${{ inputs.release_tag }}.cdx.json
+
+      - name: Upload assets and publish immutable release
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "${RELEASE_TAG}" \
-            "dist/observegate-cli-${RELEASE_TAG}.tar.gz" \
-            "dist/observegate-${RELEASE_TAG}.cdx.json" \
-            "dist/observegate-${RELEASE_TAG}.sha256"
+          gh release upload "${RELEASE_TAG}" --clobber \
+            "release/observegate-cli-${RELEASE_TAG}.tar.gz" \
+            "release/observegate-${RELEASE_TAG}.cdx.json" \
+            "release/observegate-${RELEASE_TAG}.sha256"
           gh release edit "${RELEASE_TAG}" --draft=false
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.immutable')" = "true"
+          gh release verify "${RELEASE_TAG}"
+          gh release verify-asset "${RELEASE_TAG}" "release/observegate-cli-${RELEASE_TAG}.tar.gz"
+          gh release verify-asset "${RELEASE_TAG}" "release/observegate-${RELEASE_TAG}.cdx.json"
+          gh release verify-asset "${RELEASE_TAG}" "release/observegate-${RELEASE_TAG}.sha256"
