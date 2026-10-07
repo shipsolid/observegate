@@ -1,10 +1,10 @@
-import { mkdir, open, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { GateError, type ExecutionResult } from "@observability-gate/core";
-import { renderJson } from "./json.js";
-import { renderJunit } from "./junit.js";
-import { renderMarkdown } from "./markdown.js";
-import { renderSarif } from "./sarif.js";
+import { jsonReportChunks } from "./json.js";
+import { junitReportChunks } from "./junit.js";
+import { markdownReportChunks } from "./markdown.js";
+import { sarifReportChunks } from "./sarif.js";
 
 export type ReportFormat = "json" | "markdown" | "junit" | "sarif";
 
@@ -27,11 +27,11 @@ const fileNames: Readonly<Record<ReportFormat, string>> = {
   sarif: "observability-gate.sarif"
 };
 
-const renderers: Readonly<Record<ReportFormat, (result: ExecutionResult) => string>> = {
-  json: renderJson,
-  markdown: renderMarkdown,
-  junit: renderJunit,
-  sarif: renderSarif
+const renderers: Readonly<Record<ReportFormat, (result: ExecutionResult) => Iterable<string>>> = {
+  json: jsonReportChunks,
+  markdown: markdownReportChunks,
+  junit: junitReportChunks,
+  sarif: sarifReportChunks
 };
 
 function checkCancellation(signal: AbortSignal): void {
@@ -44,18 +44,52 @@ function checkCancellation(signal: AbortSignal): void {
   }
 }
 
-async function stageWrite(path: string, content: string, signal: AbortSignal): Promise<string> {
+async function stageWrite(
+  path: string,
+  chunks: Iterable<string>,
+  maximumBytes: number,
+  signal: AbortSignal
+): Promise<{ readonly temporary: string; readonly bytes: number }> {
   const temporaryPath = `${path}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
     checkCancellation(signal);
     const handle = await open(temporaryPath, "wx", 0o600);
+    let bytes = 0;
+    let pending = "";
+    let pendingBytes = 0;
     try {
-      await handle.writeFile(content, "utf8");
+      for (const raw of chunks) {
+        for (let offset = 0; offset < raw.length;) {
+          let end = Math.min(raw.length, offset + 16 * 1024);
+          const last = raw.charCodeAt(end - 1);
+          if (end < raw.length && last >= 0xd800 && last <= 0xdbff) end += 1;
+          const chunk = raw.slice(offset, end);
+          const chunkBytes = Buffer.byteLength(chunk, "utf8");
+          bytes += chunkBytes;
+          if (bytes > maximumBytes) {
+            throw new GateError({
+              code: "REPORTING",
+              safeMessage: "The report set exceeds the configured total size limit.",
+              retryable: false
+            });
+          }
+          pending += chunk;
+          pendingBytes += chunkBytes;
+          if (pendingBytes >= 64 * 1024) {
+            await handle.writeFile(pending, "utf8");
+            pending = "";
+            pendingBytes = 0;
+            checkCancellation(signal);
+          }
+          offset = end;
+        }
+      }
+      if (pendingBytes > 0) await handle.writeFile(pending, "utf8");
       await handle.sync();
     } finally {
       await handle.close();
     }
-    return temporaryPath;
+    return { temporary: temporaryPath, bytes };
   } catch (error) {
     await rm(temporaryPath, { force: true });
     throw error;
@@ -73,28 +107,60 @@ export async function writeReports(
     readonly path: string;
     readonly temporary: string;
   }[] = [];
+  const backups: { readonly path: string; readonly backup: string }[] = [];
+  const installed: string[] = [];
   let totalBytes = 0;
   try {
     for (const format of options.formats) {
       checkCancellation(options.signal);
-      const content = renderers[format](result);
-      totalBytes += Buffer.byteLength(content, "utf8");
-      if (totalBytes > options.maximumTotalBytes) {
-        throw new GateError({
-          code: "REPORTING",
-          safeMessage: "The report set exceeds the configured total size limit.",
-          retryable: false
-        });
-      }
       const path = join(options.directory, fileNames[format]);
-      staged.push({ format, path, temporary: await stageWrite(path, content, options.signal) });
+      const report = await stageWrite(
+        path,
+        renderers[format](result),
+        options.maximumTotalBytes - totalBytes,
+        options.signal
+      );
+      totalBytes += report.bytes;
+      staged.push({ format, path, temporary: report.temporary });
     }
     checkCancellation(options.signal);
-    for (const report of staged) await rename(report.temporary, report.path);
+    for (const report of staged) {
+      try {
+        const status = await lstat(report.path);
+        if (!status.isFile()) {
+          throw new GateError({
+            code: "REPORTING",
+            safeMessage: "A report destination is not a regular file.",
+            retryable: false
+          });
+        }
+        const backup = `${report.path}.backup-${process.pid}-${crypto.randomUUID()}`;
+        await rename(report.path, backup);
+        backups.push({ path: report.path, backup });
+      } catch (error) {
+        if (!(
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ENOENT"
+        )) {
+          throw error;
+        }
+      }
+    }
+    for (const report of staged) {
+      await rename(report.temporary, report.path);
+      installed.push(report.path);
+    }
   } catch (error) {
+    await Promise.all(installed.map((path) => rm(path, { force: true })));
+    for (const { path, backup } of backups.toReversed()) {
+      await rename(backup, path);
+    }
     await Promise.all(staged.map((report) => rm(report.temporary, { force: true })));
     throw error;
   }
+  await Promise.allSettled(backups.map(({ backup }) => rm(backup, { force: true })));
   const paths: Partial<Record<ReportFormat, string>> = {};
   for (const report of staged) paths[report.format] = report.path;
   return Object.freeze({ paths: Object.freeze(paths), totalBytes });

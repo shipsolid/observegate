@@ -1,12 +1,9 @@
-import type { ExecutionResult, GateResult } from "../../../packages/core/src/index.ts";
-import { parseByteSize } from "../../../packages/core/src/index.ts";
-import { GuardedTransport } from "../../../packages/providers/src/transport/guarded-fetch.ts";
-import { UrlPolicy } from "../../../packages/providers/src/transport/url-policy.ts";
-import { writeReports } from "../../../packages/reporters/src/files.ts";
-import { renderJson } from "../../../packages/reporters/src/json.ts";
-import { renderJunit } from "../../../packages/reporters/src/junit.ts";
-import { renderMarkdown } from "../../../packages/reporters/src/markdown.ts";
-import { renderSarif } from "../../../packages/reporters/src/sarif.ts";
+import { rm } from "node:fs/promises";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
+import { parseByteSize, type ExecutionResult, type GateResult } from "@observability-gate/core";
+import { GuardedTransport, UrlPolicy } from "@observability-gate/providers";
+import { writeReports } from "@observability-gate/reporters";
 
 const gateCount = 200;
 const assertionsPerGate = 12;
@@ -55,38 +52,60 @@ function gate(index: number, retainedEvidence: { readonly data: string }): GateR
   };
 }
 
-function responseBody(bytes: number): string {
-  const empty = JSON.stringify({ data: "" });
-  return JSON.stringify({ data: "e".repeat(bytes - Buffer.byteLength(empty)) });
+function responseBody(bytes: number): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode('{"data":"');
+  const suffix = encoder.encode('"}');
+  let remaining = bytes - prefix.byteLength - suffix.byteLength;
+  let prefixPending = true;
+  return new ReadableStream({
+    pull(controller) {
+      if (prefixPending) {
+        prefixPending = false;
+        controller.enqueue(prefix);
+        return;
+      }
+      if (remaining > 0) {
+        const size = Math.min(64 * 1024, remaining);
+        remaining -= size;
+        controller.enqueue(encoder.encode("e".repeat(size)));
+        return;
+      }
+      controller.enqueue(suffix);
+      controller.close();
+    }
+  });
 }
 
 function errorCode(error: unknown): unknown {
   return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
 }
 
-function renderedReportBytes(result: ExecutionResult): number {
-  let total = 0;
-  for (const render of [renderJson, renderMarkdown, renderJunit, renderSarif]) {
-    total += Buffer.byteLength(render(result));
-  }
-  return total;
-}
-
-function withExactReportSetSize(result: ExecutionResult, bytes: number): ExecutionResult {
+async function withExactReportSetSize(
+  result: ExecutionResult,
+  bytes: number,
+  directory: string,
+  signal: AbortSignal
+): Promise<ExecutionResult> {
   const base = { ...result, configurationFingerprint: "", links: { padding: "" } };
-  const baseBytes = renderedReportBytes(base);
+  const calibrationDirectory = `${directory}/calibration`;
+  const baseBytes = (
+    await writeReports(base, {
+      directory: calibrationDirectory,
+      formats: reportFormats,
+      maximumTotalBytes: Number.MAX_SAFE_INTEGER,
+      signal
+    })
+  ).totalBytes;
+  await rm(calibrationDirectory, { recursive: true });
   if (baseBytes > bytes)
     throw new Error("The 200-gate report exceeds the configured fixture size.");
   const remaining = bytes - baseBytes;
-  const padded = {
+  return {
     ...base,
     configurationFingerprint: "f".repeat(remaining % 2),
     links: { padding: "x".repeat(Math.floor(remaining / 2)) }
   };
-  if (renderedReportBytes(padded) !== bytes) {
-    throw new Error("The production report set could not be calibrated to its configured limit.");
-  }
-  return padded;
 }
 
 export interface MemoryScenarioMetrics {
@@ -94,6 +113,7 @@ export interface MemoryScenarioMetrics {
   readonly responseBytes: number;
   readonly reportBytes: number;
   readonly retainedHeapBytes: number;
+  readonly peakRssGrowthBytes: number;
   readonly maximumProviderResponseBytes: number;
   readonly maximumReportBytes: number;
   readonly providerRejectedOverLimit: boolean;
@@ -108,15 +128,15 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
   const maximumReportBytes = parseByteSize(configuredLimits.maximum_report_size, 1);
   collectGarbage();
   const baselineHeapBytes = process.memoryUsage().heapUsed;
-  let body = responseBody(maximumProviderResponseBytes);
-  const responseBytes = Buffer.byteLength(body);
+  const baselinePeakRssBytes = process.resourceUsage().maxRSS * 1024;
+  let responseBytes = maximumProviderResponseBytes;
   const transport = new GuardedTransport({
     urlPolicy: new UrlPolicy({
       providerOrigins: ["https://metrics.example.com"],
       probeHosts: [],
       resolve: async () => ["93.184.216.34"]
     }),
-    fetch: async () => new Response(body, { status: 200 })
+    fetch: async () => new Response(responseBody(responseBytes), { status: 200 })
   });
   const request = {
     url: "https://metrics.example.com/api/v1/query",
@@ -132,16 +152,17 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
     signal: new AbortController().signal,
     responseType: "json" as const
   };
-  const accepted = await transport.request<{ readonly data: string }>(request);
-
-  body = responseBody(maximumProviderResponseBytes + 1);
+  responseBytes = maximumProviderResponseBytes + 1;
   let providerRejectedOverLimit = false;
   try {
     await transport.request(request);
   } catch (error) {
     providerRejectedOverLimit = errorCode(error) === "PROVIDER_PROTOCOL";
   }
-  body = "";
+  collectGarbage();
+  responseBytes = maximumProviderResponseBytes;
+  let accepted: { readonly data: { readonly data: string }; readonly status: number } | undefined =
+    await transport.request<{ readonly data: string }>(request);
 
   const execution: ExecutionResult = {
     decision: "pass",
@@ -155,13 +176,22 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
     diagnostics: [],
     links: {}
   };
-  const exactLimitExecution = withExactReportSetSize(execution, maximumReportBytes);
+  accepted = undefined;
+  collectGarbage();
+  const exactLimitExecution = await withExactReportSetSize(
+    execution,
+    maximumReportBytes,
+    directory,
+    request.signal
+  );
+  collectGarbage();
   const publication = await writeReports(exactLimitExecution, {
     directory: `${directory}/accepted`,
     formats: reportFormats,
     maximumTotalBytes: maximumReportBytes,
     signal: request.signal
   });
+  collectGarbage();
 
   let reporterRejectedOverLimit = false;
   try {
@@ -180,6 +210,10 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
   } catch (error) {
     reporterRejectedOverLimit = errorCode(error) === "REPORTING";
   }
+  const peakRssGrowthBytes = Math.max(
+    0,
+    process.resourceUsage().maxRSS * 1024 - baselinePeakRssBytes
+  );
   collectGarbage();
 
   return {
@@ -187,11 +221,10 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
     responseBytes,
     reportBytes: publication.totalBytes,
     retainedHeapBytes: Math.max(0, process.memoryUsage().heapUsed - baselineHeapBytes),
+    peakRssGrowthBytes,
     maximumProviderResponseBytes,
     maximumReportBytes,
     providerRejectedOverLimit,
     reporterRejectedOverLimit
   };
 }
-import { setFlagsFromString } from "node:v8";
-import { runInNewContext } from "node:vm";

@@ -1,4 +1,5 @@
 import type { AssertionResult, ExecutionResult, GateResult } from "@observability-gate/core";
+import { collectChunks } from "./chunks.js";
 
 function display(value: unknown): string {
   if (typeof value === "string") return value;
@@ -47,8 +48,15 @@ function gateSection(gate: GateResult): string[] {
   return lines;
 }
 
-export function renderMarkdown(result: ExecutionResult): string {
-  const lines = [
+function* lines(values: Iterable<string>): Iterable<string> {
+  for (const value of values) {
+    yield value;
+    yield "\n";
+  }
+}
+
+export function* markdownReportChunks(result: ExecutionResult): Iterable<string> {
+  yield* lines([
     "# Observability Gate",
     "",
     `**Decision:** ${result.decision}`,
@@ -63,15 +71,24 @@ export function renderMarkdown(result: ExecutionResult): string {
     "",
     "## Gates",
     ""
-  ];
+  ]);
   const ordered = result.gates
     .map((gate, index) => ({ gate, index }))
     .sort((left, right) => priority(left.gate) - priority(right.gate) || left.index - right.index);
-  for (const { gate } of ordered) lines.push(...gateSection(gate));
+  for (const { gate } of ordered) yield* lines(gateSection(gate));
 
-  lines.push("## Links", "");
+  yield* lines(["## Links", ""]);
   const links = Object.entries(result.links).sort(([left], [right]) => left.localeCompare(right));
-  if (links.length === 0) lines.push("No links configured.");
-  else for (const [name, url] of links) lines.push(`- [${name}](${url})`);
-  return `${lines.join("\n")}\n`;
+  if (links.length === 0) yield* lines(["No links configured."]);
+  else {
+    for (const [name, url] of links) {
+      yield `- [${name}](`;
+      yield url;
+      yield ")\n";
+    }
+  }
+}
+
+export function renderMarkdown(result: ExecutionResult): string {
+  return collectChunks(markdownReportChunks(result));
 }

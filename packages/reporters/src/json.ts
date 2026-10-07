@@ -5,6 +5,7 @@ import type {
   ExecutionResult,
   GateResult
 } from "@observability-gate/core";
+import { collectChunks, jsonChunks } from "./chunks.js";
 
 function assertionDto(assertion: AssertionResult): Readonly<Record<string, unknown>> {
   return {
@@ -101,5 +102,10 @@ export function executionReportDto(result: ExecutionResult): Readonly<Record<str
 }
 
 export function renderJson(result: ExecutionResult): string {
-  return `${JSON.stringify(executionReportDto(result), null, 2)}\n`;
+  return collectChunks(jsonReportChunks(result));
+}
+
+export function* jsonReportChunks(result: ExecutionResult): Iterable<string> {
+  yield* jsonChunks(executionReportDto(result));
+  yield "\n";
 }

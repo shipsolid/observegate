@@ -105,6 +105,42 @@ describe("GuardedTransport", () => {
     });
   });
 
+  it("decodes multibyte JSON characters split across response chunks", async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify({ status: "ready ☃" }));
+    const split = bytes.indexOf(0xe2) + 1;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, split));
+        controller.enqueue(bytes.slice(split));
+        controller.close();
+      }
+    });
+    const transport = new GuardedTransport({
+      urlPolicy: policy(),
+      fetch: fetchSequence([new Response(body, { status: 200 })]).fetch
+    });
+
+    await expect(request(transport)).resolves.toMatchObject({
+      data: { status: "ready ☃" }
+    });
+  });
+
+  it("rejects malformed UTF-8 response chunks", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Uint8Array.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xc3]));
+        controller.enqueue(Uint8Array.from([0x28, 0x22, 0x7d]));
+        controller.close();
+      }
+    });
+    const transport = new GuardedTransport({
+      urlPolicy: policy(),
+      fetch: fetchSequence([new Response(body, { status: 200 })]).fetch
+    });
+
+    await expect(request(transport)).rejects.toMatchObject({ code: "PROVIDER_PROTOCOL" });
+  });
+
   it("honors Retry-After for 429 and retries 502, 503, and 504", async () => {
     const responses = [
       new Response("busy", { status: 429, headers: { "retry-after": "0" } }),

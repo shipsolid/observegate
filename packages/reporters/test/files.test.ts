@@ -1,9 +1,31 @@
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutionResult } from "@observability-gate/core";
 import { renderJson, writeReports } from "../src/index.js";
+
+const fileSystem = vi.hoisted(() => ({ failMarkdownInstall: false }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...original,
+    async rename(
+      oldPath: Parameters<typeof original.rename>[0],
+      newPath: Parameters<typeof original.rename>[1]
+    ) {
+      if (
+        fileSystem.failMarkdownInstall &&
+        String(oldPath).includes("observability-gate.md.tmp-")
+      ) {
+        fileSystem.failMarkdownInstall = false;
+        throw Object.assign(new Error("injected rename failure"), { code: "EACCES" });
+      }
+      await original.rename(oldPath, newPath);
+    }
+  };
+});
 
 async function fixture(): Promise<ExecutionResult> {
   return JSON.parse(
@@ -12,6 +34,10 @@ async function fixture(): Promise<ExecutionResult> {
 }
 
 describe("writeReports", () => {
+  beforeEach(() => {
+    fileSystem.failMarkdownInstall = false;
+  });
+
   it("atomically writes every requested projection", async () => {
     const directory = await mkdtemp(join(tmpdir(), "observegate-reports-"));
     const publication = await writeReports(await fixture(), {
@@ -53,5 +79,28 @@ describe("writeReports", () => {
       })
     ).rejects.toMatchObject({ code: "REPORTING" });
     expect(await readdir(directory)).toEqual([]);
+  });
+
+  it("restores the prior report set when a later install rename fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "observegate-reports-"));
+    await writeFile(join(directory, "observability-gate.json"), "old json", "utf8");
+    await writeFile(join(directory, "observability-gate.md"), "old markdown", "utf8");
+    fileSystem.failMarkdownInstall = true;
+
+    await expect(
+      writeReports(await fixture(), {
+        directory,
+        formats: ["json", "markdown"],
+        maximumTotalBytes: 1_000_000,
+        signal: new AbortController().signal
+      })
+    ).rejects.toThrow("injected rename failure");
+
+    expect(await readFile(join(directory, "observability-gate.json"), "utf8")).toBe("old json");
+    expect(await readFile(join(directory, "observability-gate.md"), "utf8")).toBe("old markdown");
+    expect((await readdir(directory)).sort()).toEqual([
+      "observability-gate.json",
+      "observability-gate.md"
+    ]);
   });
 });

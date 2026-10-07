@@ -1,4 +1,5 @@
 import type { Diagnostic, ExecutionResult } from "@observability-gate/core";
+import { collectChunks, jsonChunks } from "./chunks.js";
 
 interface LocatedDiagnostic {
   readonly gateId: string;
@@ -8,7 +9,7 @@ interface LocatedDiagnostic {
   };
 }
 
-export function renderSarif(result: ExecutionResult): string {
+function sarifReportDto(result: ExecutionResult): Readonly<Record<string, unknown>> {
   const findings: LocatedDiagnostic[] = result.gates.flatMap((gate) =>
     gate.diagnostics
       .filter(
@@ -25,7 +26,7 @@ export function renderSarif(result: ExecutionResult): string {
       }))
   );
   const rules = [...new Set(findings.map((finding) => finding.gateId))].map((id) => ({ id }));
-  const sarif = {
+  return {
     version: "2.1.0",
     $schema: "https://json.schemastore.org/sarif-2.1.0.json",
     runs: [
@@ -54,5 +55,13 @@ export function renderSarif(result: ExecutionResult): string {
       }
     ]
   };
-  return `${JSON.stringify(sarif, null, 2)}\n`;
+}
+
+export function* sarifReportChunks(result: ExecutionResult): Iterable<string> {
+  yield* jsonChunks(sarifReportDto(result));
+  yield "\n";
+}
+
+export function renderSarif(result: ExecutionResult): string {
+  return collectChunks(sarifReportChunks(result));
 }

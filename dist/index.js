@@ -1,4 +1,4 @@
-import { mkdir, rename, rm, open as open$1, realpath, stat, readFile, lstat } from 'node:fs/promises';
+import { mkdir, lstat, rename, rm, open as open$1, realpath, stat, readFile } from 'node:fs/promises';
 import { join, isAbsolute, resolve, relative, sep as sep$1, extname } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import require$$0$4 from 'node:util';
@@ -745,6 +745,65 @@ function parseByteSize(value, fallback) {
     return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : fallback;
 }
 
+const stringChunkSize = 16 * 1024;
+function* quotedStringChunks(value) {
+    yield '"';
+    for (let offset = 0; offset < value.length;) {
+        let end = Math.min(value.length, offset + stringChunkSize);
+        const last = value.charCodeAt(end - 1);
+        if (end < value.length && last >= 0xd800 && last <= 0xdbff)
+            end += 1;
+        const encoded = JSON.stringify(value.slice(offset, end));
+        yield encoded.slice(1, -1);
+        offset = end;
+    }
+    yield '"';
+}
+function* jsonChunks(value, depth = 0) {
+    if (typeof value === "string") {
+        yield* quotedStringChunks(value);
+        return;
+    }
+    if (value === null || typeof value !== "object") {
+        yield JSON.stringify(value) ?? "null";
+        return;
+    }
+    const indent = " ".repeat(depth);
+    const childIndent = `${indent}  `;
+    if (Array.isArray(value)) {
+        if (value.length === 0) {
+            yield "[]";
+            return;
+        }
+        yield "[\n";
+        for (let index = 0; index < value.length; index += 1) {
+            yield childIndent;
+            yield* jsonChunks(value[index], depth + 2);
+            yield index === value.length - 1 ? "\n" : ",\n";
+        }
+        yield `${indent}]`;
+        return;
+    }
+    const entries = Object.entries(value).filter(([, item]) => item !== undefined);
+    if (entries.length === 0) {
+        yield "{}";
+        return;
+    }
+    yield "{\n";
+    for (let index = 0; index < entries.length; index += 1) {
+        const [key, item] = entries[index];
+        yield childIndent;
+        yield* quotedStringChunks(key);
+        yield ": ";
+        yield* jsonChunks(item, depth + 2);
+        yield index === entries.length - 1 ? "\n" : ",\n";
+    }
+    yield `${indent}}`;
+}
+function collectChunks(chunks) {
+    return [...chunks].join("");
+}
+
 function assertionDto(assertion) {
     return {
         assertion: assertion.assertion,
@@ -832,8 +891,9 @@ function executionReportDto(result) {
         links: Object.fromEntries(Object.entries(result.links).sort(([left], [right]) => left.localeCompare(right)))
     };
 }
-function renderJson(result) {
-    return `${JSON.stringify(executionReportDto(result), null, 2)}\n`;
+function* jsonReportChunks(result) {
+    yield* jsonChunks(executionReportDto(result));
+    yield "\n";
 }
 
 function escapeXml(value) {
@@ -856,25 +916,24 @@ function isFailure(gate) {
 function isSkipped(gate) {
     return gate.status === "skipped" || (gate.enforcement === "advisory" && gate.status !== "passed");
 }
-function renderJunit(result) {
+function* junitReportChunks(result) {
     const failures = result.gates.filter(isFailure).length;
     const skipped = result.gates.filter(isSkipped).length;
-    const lines = [
+    yield `${[
         '<?xml version="1.0" encoding="UTF-8"?>',
         `<testsuite name="Observability Gate" tests="${result.gates.length}" failures="${failures}" skipped="${skipped}" time="${(Date.parse(result.completedAt) - Date.parse(result.startedAt)) / 1_000}">`
-    ];
+    ].join("\n")}\n`;
     for (const gate of result.gates) {
-        lines.push(`  <testcase classname="${escapeXml(gate.type)}" name="${escapeXml(gate.id)}" time="${gate.durationMs / 1_000}">`);
+        yield `  <testcase classname="${escapeXml(gate.type)}" name="${escapeXml(gate.id)}" time="${gate.durationMs / 1_000}">\n`;
         if (isFailure(gate)) {
-            lines.push(`    <failure message="${escapeXml(message(gate))}">${escapeXml(gate.status)}</failure>`);
+            yield `    <failure message="${escapeXml(message(gate))}">${escapeXml(gate.status)}</failure>\n`;
         }
         else if (isSkipped(gate)) {
-            lines.push(`    <skipped message="${escapeXml(message(gate))}"/>`);
+            yield `    <skipped message="${escapeXml(message(gate))}"/>\n`;
         }
-        lines.push("  </testcase>");
+        yield "  </testcase>\n";
     }
-    lines.push("</testsuite>");
-    return `${lines.join("\n")}\n`;
+    yield "</testsuite>\n";
 }
 
 function display(value) {
@@ -924,8 +983,14 @@ function gateSection(gate) {
     lines.push("");
     return lines;
 }
-function renderMarkdown(result) {
-    const lines = [
+function* lines(values) {
+    for (const value of values) {
+        yield value;
+        yield "\n";
+    }
+}
+function* markdownReportChunks(result) {
+    yield* lines([
         "# Observability Gate",
         "",
         `**Decision:** ${result.decision}`,
@@ -940,23 +1005,29 @@ function renderMarkdown(result) {
         "",
         "## Gates",
         ""
-    ];
+    ]);
     const ordered = result.gates
         .map((gate, index) => ({ gate, index }))
         .sort((left, right) => priority(left.gate) - priority(right.gate) || left.index - right.index);
     for (const { gate } of ordered)
-        lines.push(...gateSection(gate));
-    lines.push("## Links", "");
+        yield* lines(gateSection(gate));
+    yield* lines(["## Links", ""]);
     const links = Object.entries(result.links).sort(([left], [right]) => left.localeCompare(right));
     if (links.length === 0)
-        lines.push("No links configured.");
-    else
-        for (const [name, url] of links)
-            lines.push(`- [${name}](${url})`);
-    return `${lines.join("\n")}\n`;
+        yield* lines(["No links configured."]);
+    else {
+        for (const [name, url] of links) {
+            yield `- [${name}](`;
+            yield url;
+            yield ")\n";
+        }
+    }
+}
+function renderMarkdown(result) {
+    return collectChunks(markdownReportChunks(result));
 }
 
-function renderSarif(result) {
+function sarifReportDto(result) {
     const findings = result.gates.flatMap((gate) => gate.diagnostics
         .filter((item) => item.artifactLocation !== undefined)
         .map((item) => ({
@@ -965,7 +1036,7 @@ function renderSarif(result) {
         diagnostic: item
     })));
     const rules = [...new Set(findings.map((finding) => finding.gateId))].map((id) => ({ id }));
-    const sarif = {
+    return {
         version: "2.1.0",
         $schema: "https://json.schemastore.org/sarif-2.1.0.json",
         runs: [
@@ -994,7 +1065,10 @@ function renderSarif(result) {
             }
         ]
     };
-    return `${JSON.stringify(sarif, null, 2)}\n`;
+}
+function* sarifReportChunks(result) {
+    yield* jsonChunks(sarifReportDto(result));
+    yield "\n";
 }
 
 const fileNames = {
@@ -1004,10 +1078,10 @@ const fileNames = {
     sarif: "observability-gate.sarif"
 };
 const renderers = {
-    json: renderJson,
-    markdown: renderMarkdown,
-    junit: renderJunit,
-    sarif: renderSarif
+    json: jsonReportChunks,
+    markdown: markdownReportChunks,
+    junit: junitReportChunks,
+    sarif: sarifReportChunks
 };
 function checkCancellation(signal) {
     if (signal.aborted) {
@@ -1018,19 +1092,50 @@ function checkCancellation(signal) {
         });
     }
 }
-async function stageWrite(path, content, signal) {
+async function stageWrite(path, chunks, maximumBytes, signal) {
     const temporaryPath = `${path}.tmp-${process.pid}-${crypto.randomUUID()}`;
     try {
         checkCancellation(signal);
         const handle = await open$1(temporaryPath, "wx", 0o600);
+        let bytes = 0;
+        let pending = "";
+        let pendingBytes = 0;
         try {
-            await handle.writeFile(content, "utf8");
+            for (const raw of chunks) {
+                for (let offset = 0; offset < raw.length;) {
+                    let end = Math.min(raw.length, offset + 16 * 1024);
+                    const last = raw.charCodeAt(end - 1);
+                    if (end < raw.length && last >= 0xd800 && last <= 0xdbff)
+                        end += 1;
+                    const chunk = raw.slice(offset, end);
+                    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+                    bytes += chunkBytes;
+                    if (bytes > maximumBytes) {
+                        throw new GateError({
+                            code: "REPORTING",
+                            safeMessage: "The report set exceeds the configured total size limit.",
+                            retryable: false
+                        });
+                    }
+                    pending += chunk;
+                    pendingBytes += chunkBytes;
+                    if (pendingBytes >= 64 * 1024) {
+                        await handle.writeFile(pending, "utf8");
+                        pending = "";
+                        pendingBytes = 0;
+                        checkCancellation(signal);
+                    }
+                    offset = end;
+                }
+            }
+            if (pendingBytes > 0)
+                await handle.writeFile(pending, "utf8");
             await handle.sync();
         }
         finally {
             await handle.close();
         }
-        return temporaryPath;
+        return { temporary: temporaryPath, bytes };
     }
     catch (error) {
         await rm(temporaryPath, { force: true });
@@ -1041,30 +1146,55 @@ async function writeReports(result, options) {
     checkCancellation(options.signal);
     await mkdir(options.directory, { recursive: true });
     const staged = [];
+    const backups = [];
+    const installed = [];
     let totalBytes = 0;
     try {
         for (const format of options.formats) {
             checkCancellation(options.signal);
-            const content = renderers[format](result);
-            totalBytes += Buffer.byteLength(content, "utf8");
-            if (totalBytes > options.maximumTotalBytes) {
-                throw new GateError({
-                    code: "REPORTING",
-                    safeMessage: "The report set exceeds the configured total size limit.",
-                    retryable: false
-                });
-            }
             const path = join(options.directory, fileNames[format]);
-            staged.push({ format, path, temporary: await stageWrite(path, content, options.signal) });
+            const report = await stageWrite(path, renderers[format](result), options.maximumTotalBytes - totalBytes, options.signal);
+            totalBytes += report.bytes;
+            staged.push({ format, path, temporary: report.temporary });
         }
         checkCancellation(options.signal);
-        for (const report of staged)
+        for (const report of staged) {
+            try {
+                const status = await lstat(report.path);
+                if (!status.isFile()) {
+                    throw new GateError({
+                        code: "REPORTING",
+                        safeMessage: "A report destination is not a regular file.",
+                        retryable: false
+                    });
+                }
+                const backup = `${report.path}.backup-${process.pid}-${crypto.randomUUID()}`;
+                await rename(report.path, backup);
+                backups.push({ path: report.path, backup });
+            }
+            catch (error) {
+                if (!(typeof error === "object" &&
+                    error !== null &&
+                    "code" in error &&
+                    error.code === "ENOENT")) {
+                    throw error;
+                }
+            }
+        }
+        for (const report of staged) {
             await rename(report.temporary, report.path);
+            installed.push(report.path);
+        }
     }
     catch (error) {
+        await Promise.all(installed.map((path) => rm(path, { force: true })));
+        for (const { path, backup } of backups.toReversed()) {
+            await rename(backup, path);
+        }
         await Promise.all(staged.map((report) => rm(report.temporary, { force: true })));
         throw error;
     }
+    await Promise.allSettled(backups.map(({ backup }) => rm(backup, { force: true })));
     const paths = {};
     for (const report of staged)
         paths[report.format] = report.path;
@@ -52600,7 +52730,8 @@ async function readBoundedJson(response, limit) {
             retryable: false
         });
     }
-    const chunks = [];
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let text = "";
     let size = 0;
     try {
         while (true) {
@@ -52617,20 +52748,25 @@ async function readBoundedJson(response, limit) {
                     retryable: false
                 });
             }
-            chunks.push(value);
+            text += decoder.decode(value, { stream: true });
         }
+        text += decoder.decode();
+    }
+    catch (cause) {
+        if (cause instanceof GateError)
+            throw cause;
+        throw new GateError({
+            code: "PROVIDER_PROTOCOL",
+            safeMessage: "Provider returned malformed JSON",
+            retryable: false,
+            cause
+        });
     }
     finally {
         reader.releaseLock();
     }
-    const body = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-        body.set(chunk, offset);
-        offset += chunk.byteLength;
-    }
     try {
-        return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+        return JSON.parse(text);
     }
     catch (cause) {
         throw new GateError({

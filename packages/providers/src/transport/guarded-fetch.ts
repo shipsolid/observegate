@@ -118,7 +118,8 @@ async function readBoundedJson(response: Response, limit: number): Promise<unkno
     });
   }
 
-  const chunks: Uint8Array[] = [];
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let text = "";
   let size = 0;
   try {
     while (true) {
@@ -135,21 +136,23 @@ async function readBoundedJson(response: Response, limit: number): Promise<unkno
           retryable: false
         });
       }
-      chunks.push(value);
+      text += decoder.decode(value, { stream: true });
     }
+    text += decoder.decode();
+  } catch (cause) {
+    if (cause instanceof GateError) throw cause;
+    throw new GateError({
+      code: "PROVIDER_PROTOCOL",
+      safeMessage: "Provider returned malformed JSON",
+      retryable: false,
+      cause
+    });
   } finally {
     reader.releaseLock();
   }
 
-  const body = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as unknown;
+    return JSON.parse(text) as unknown;
   } catch (cause) {
     throw new GateError({
       code: "PROVIDER_PROTOCOL",

@@ -1,8 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runMemoryScenario } from "./fixtures/memory-scenario.js";
+import { runMemoryScenario, type MemoryScenarioMetrics } from "./fixtures/memory-scenario.js";
 
 const directories: string[] = [];
 
@@ -14,7 +15,25 @@ describe("execution memory budget", () => {
   it("enforces configured production boundaries for provider data and a 200-gate report", async () => {
     const directory = await mkdtemp(join(tmpdir(), "observegate-memory-"));
     directories.push(directory);
-    const metrics = await runMemoryScenario(directory);
+    let metrics: MemoryScenarioMetrics;
+    try {
+      const stdout = execFileSync(
+        process.execPath,
+        ["--experimental-strip-types", "tests/performance/fixtures/memory-child.ts", directory],
+        { cwd: process.cwd(), encoding: "utf8", maxBuffer: 1024 * 1024 }
+      );
+      metrics = JSON.parse(stdout) as MemoryScenarioMetrics;
+    } catch (error) {
+      if (!(
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "EPERM"
+      )) {
+        throw error;
+      }
+      metrics = await runMemoryScenario(directory);
+    }
 
     expect(metrics.gateCount).toBe(200);
     expect(metrics.responseBytes).toBe(metrics.maximumProviderResponseBytes);
@@ -23,9 +42,14 @@ describe("execution memory budget", () => {
     expect(metrics.providerRejectedOverLimit).toBe(true);
     expect(metrics.reporterRejectedOverLimit).toBe(true);
     // Covers the normalized 200-gate object graph and formatter bookkeeping after transient strings are collected.
-    const serializationOverheadBytes = 8 * 1024 * 1024;
+    const retainedOverheadBytes = 8 * 1024 * 1024;
     expect(metrics.retainedHeapBytes).toBeLessThanOrEqual(
-      metrics.responseBytes + metrics.reportBytes + serializationOverheadBytes
+      metrics.responseBytes + metrics.reportBytes + retainedOverheadBytes
     );
-  });
+    // Allows one bounded projection plus filesystem/runtime buffers above the configured input + output ceiling.
+    const peakOverheadBytes = 32 * 1024 * 1024;
+    expect(metrics.peakRssGrowthBytes).toBeLessThanOrEqual(
+      metrics.responseBytes + metrics.reportBytes + peakOverheadBytes
+    );
+  }, 15_000);
 });

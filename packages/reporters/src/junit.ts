@@ -1,4 +1,5 @@
 import type { ExecutionResult, GateResult } from "@observability-gate/core";
+import { collectChunks } from "./chunks.js";
 
 function escapeXml(value: string): string {
   return value
@@ -28,26 +29,25 @@ function isSkipped(gate: GateResult): boolean {
   return gate.status === "skipped" || (gate.enforcement === "advisory" && gate.status !== "passed");
 }
 
-export function renderJunit(result: ExecutionResult): string {
+export function* junitReportChunks(result: ExecutionResult): Iterable<string> {
   const failures = result.gates.filter(isFailure).length;
   const skipped = result.gates.filter(isSkipped).length;
-  const lines = [
+  yield `${[
     '<?xml version="1.0" encoding="UTF-8"?>',
     `<testsuite name="Observability Gate" tests="${result.gates.length}" failures="${failures}" skipped="${skipped}" time="${(Date.parse(result.completedAt) - Date.parse(result.startedAt)) / 1_000}">`
-  ];
+  ].join("\n")}\n`;
   for (const gate of result.gates) {
-    lines.push(
-      `  <testcase classname="${escapeXml(gate.type)}" name="${escapeXml(gate.id)}" time="${gate.durationMs / 1_000}">`
-    );
+    yield `  <testcase classname="${escapeXml(gate.type)}" name="${escapeXml(gate.id)}" time="${gate.durationMs / 1_000}">\n`;
     if (isFailure(gate)) {
-      lines.push(
-        `    <failure message="${escapeXml(message(gate))}">${escapeXml(gate.status)}</failure>`
-      );
+      yield `    <failure message="${escapeXml(message(gate))}">${escapeXml(gate.status)}</failure>\n`;
     } else if (isSkipped(gate)) {
-      lines.push(`    <skipped message="${escapeXml(message(gate))}"/>`);
+      yield `    <skipped message="${escapeXml(message(gate))}"/>\n`;
     }
-    lines.push("  </testcase>");
+    yield "  </testcase>\n";
   }
-  lines.push("</testsuite>");
-  return `${lines.join("\n")}\n`;
+  yield "</testsuite>\n";
+}
+
+export function renderJunit(result: ExecutionResult): string {
+  return collectChunks(junitReportChunks(result));
 }
