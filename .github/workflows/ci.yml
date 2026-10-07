@@ -26,4 +26,9 @@ jobs:
         run: npm ci
 
       - name: Verify
-        run: npm run ci
+        run: |
+          npm run ci
+          npm run bundle
+          npm run verify:bundle
+          npm run verify:read-only
+          git diff --exit-code

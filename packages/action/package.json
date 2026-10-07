@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -b && rollup -c rollup.config.js",
+    "build": "tsc -b",
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
