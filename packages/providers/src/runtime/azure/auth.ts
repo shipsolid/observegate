@@ -19,8 +19,6 @@ export interface AzureRuntimeClientOptions {
 
 export function buildAzureRuntimeClients(options: AzureRuntimeClientOptions):
   | {
-      readonly containerApps: ContainerAppsAPIClient;
-      readonly compute: ComputeManagementClient;
       readonly containerAppsRead: AzureSdkContainerAppsReadClient;
       readonly vmRead: AzureSdkVmReadClient;
     }
@@ -45,8 +43,6 @@ export function buildAzureRuntimeClients(options: AzureRuntimeClientOptions):
     options.subscriptionId
   );
   return {
-    containerApps,
-    compute,
     containerAppsRead: new AzureSdkContainerAppsReadClient(containerApps),
     vmRead: new AzureSdkVmReadClient(compute)
   };

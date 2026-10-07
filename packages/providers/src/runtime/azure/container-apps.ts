@@ -1,4 +1,3 @@
-import type { ContainerAppsAPIClient } from "@azure/arm-appcontainers";
 import { stableFingerprint, type Evidence } from "@observability-gate/core";
 import { asRecord, invalidAzureEvidence, mapAzureError, requireNotCancelled } from "./normalize.js";
 import type { RuntimeSnapshot } from "../types.js";
@@ -18,8 +17,33 @@ export interface ContainerAppsReadClient {
   ): Promise<readonly unknown[]>;
 }
 
+interface ContainerAppsSdkReadSurface {
+  readonly containerApps: {
+    get(
+      resourceGroup: string,
+      appName: string,
+      options: { readonly abortSignal: AbortSignal }
+    ): Promise<unknown>;
+  };
+  readonly containerAppsRevisions: {
+    listRevisions(
+      resourceGroup: string,
+      appName: string,
+      options: { readonly abortSignal: AbortSignal }
+    ): AsyncIterable<unknown>;
+  };
+  readonly containerAppsRevisionReplicas: {
+    listReplicas(
+      resourceGroup: string,
+      appName: string,
+      revisionName: string,
+      options: { readonly abortSignal: AbortSignal }
+    ): Promise<{ readonly value: readonly unknown[] }>;
+  };
+}
+
 export class AzureSdkContainerAppsReadClient implements ContainerAppsReadClient {
-  public constructor(private readonly client: ContainerAppsAPIClient) {}
+  public constructor(private readonly client: ContainerAppsSdkReadSurface) {}
 
   public getApp(resourceGroup: string, appName: string, signal: AbortSignal): Promise<unknown> {
     return this.client.containerApps.get(resourceGroup, appName, { abortSignal: signal });

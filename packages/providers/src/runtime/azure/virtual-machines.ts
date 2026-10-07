@@ -1,4 +1,3 @@
-import type { ComputeManagementClient } from "@azure/arm-compute";
 import { stableFingerprint, type Evidence } from "@observability-gate/core";
 import type { RuntimeSnapshot } from "../types.js";
 import { asRecord, invalidAzureEvidence, mapAzureError, requireNotCancelled } from "./normalize.js";
@@ -7,8 +6,18 @@ export interface AzureVmReadClient {
   getInstanceView(resourceGroup: string, vmName: string, signal: AbortSignal): Promise<unknown>;
 }
 
+interface AzureVmSdkReadSurface {
+  readonly virtualMachines: {
+    instanceView(
+      resourceGroup: string,
+      vmName: string,
+      options: { readonly abortSignal: AbortSignal }
+    ): Promise<unknown>;
+  };
+}
+
 export class AzureSdkVmReadClient implements AzureVmReadClient {
-  public constructor(private readonly client: ComputeManagementClient) {}
+  public constructor(private readonly client: AzureVmSdkReadSurface) {}
 
   public getInstanceView(
     resourceGroup: string,
