@@ -5,7 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutionResult } from "@observability-gate/core";
 import { renderJson, writeReports } from "../src/index.js";
 
-const fileSystem = vi.hoisted(() => ({ failMarkdownInstall: false }));
+const fileSystem = vi.hoisted(() => ({
+  failMarkdownInstall: false,
+  failMarkdownRestore: false,
+  failBackupCleanup: false
+}));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
@@ -22,7 +26,21 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         fileSystem.failMarkdownInstall = false;
         throw Object.assign(new Error("injected rename failure"), { code: "EACCES" });
       }
+      if (
+        fileSystem.failMarkdownRestore &&
+        String(oldPath).includes("observability-gate.md.backup-")
+      ) {
+        fileSystem.failMarkdownRestore = false;
+        throw Object.assign(new Error("injected restore failure"), { code: "EACCES" });
+      }
       await original.rename(oldPath, newPath);
+    },
+    async rm(path: Parameters<typeof original.rm>[0], options: Parameters<typeof original.rm>[1]) {
+      if (fileSystem.failBackupCleanup && String(path).includes(".backup-")) {
+        fileSystem.failBackupCleanup = false;
+        throw Object.assign(new Error("injected backup cleanup failure"), { code: "EACCES" });
+      }
+      await original.rm(path, options);
     }
   };
 });
@@ -36,6 +54,8 @@ async function fixture(): Promise<ExecutionResult> {
 describe("writeReports", () => {
   beforeEach(() => {
     fileSystem.failMarkdownInstall = false;
+    fileSystem.failMarkdownRestore = false;
+    fileSystem.failBackupCleanup = false;
   });
 
   it("atomically writes every requested projection", async () => {
@@ -102,5 +122,55 @@ describe("writeReports", () => {
       "observability-gate.json",
       "observability-gate.md"
     ]);
+  });
+
+  it("attempts every restoration and temporary cleanup after a rollback failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "observegate-reports-"));
+    await writeFile(join(directory, "observability-gate.json"), "old json", "utf8");
+    await writeFile(join(directory, "observability-gate.md"), "old markdown", "utf8");
+    fileSystem.failMarkdownInstall = true;
+    fileSystem.failMarkdownRestore = true;
+
+    await expect(
+      writeReports(await fixture(), {
+        directory,
+        formats: ["json", "markdown"],
+        maximumTotalBytes: 1_000_000,
+        signal: new AbortController().signal
+      })
+    ).rejects.toMatchObject({
+      code: "REPORTING",
+      safeMessage: "Report publication failed and the prior report set could not be fully restored."
+    });
+
+    expect(await readFile(join(directory, "observability-gate.json"), "utf8")).toBe("old json");
+    const names = await readdir(directory);
+    expect(names.some((name) => name.startsWith("observability-gate.md.backup-"))).toBe(true);
+    expect(names.some((name) => name.includes(".tmp-"))).toBe(false);
+  });
+
+  it("reports a retained prior backup after successful publication", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "observegate-reports-"));
+    await writeFile(join(directory, "observability-gate.json"), "old json", "utf8");
+    fileSystem.failBackupCleanup = true;
+
+    await expect(
+      writeReports(await fixture(), {
+        directory,
+        formats: ["json"],
+        maximumTotalBytes: 1_000_000,
+        signal: new AbortController().signal
+      })
+    ).rejects.toMatchObject({
+      code: "REPORTING",
+      safeMessage: "Reports were published, but the prior report set could not be removed."
+    });
+
+    expect(await readFile(join(directory, "observability-gate.json"), "utf8")).toBe(
+      renderJson(await fixture())
+    );
+    expect(
+      (await readdir(directory)).some((name) => name.startsWith("observability-gate.json.backup-"))
+    ).toBe(true);
   });
 });

@@ -127,8 +127,9 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
   );
   const maximumReportBytes = parseByteSize(configuredLimits.maximum_report_size, 1);
   collectGarbage();
-  const baselineHeapBytes = process.memoryUsage().heapUsed;
-  const baselinePeakRssBytes = process.resourceUsage().maxRSS * 1024;
+  const baselineMemory = process.memoryUsage();
+  const baselineHeapBytes = baselineMemory.heapUsed;
+  const baselineRssBytes = baselineMemory.rss;
   let responseBytes = maximumProviderResponseBytes;
   const transport = new GuardedTransport({
     urlPolicy: new UrlPolicy({
@@ -210,10 +211,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
   } catch (error) {
     reporterRejectedOverLimit = errorCode(error) === "REPORTING";
   }
-  const peakRssGrowthBytes = Math.max(
-    0,
-    process.resourceUsage().maxRSS * 1024 - baselinePeakRssBytes
-  );
+  const peakRssGrowthBytes = Math.max(0, process.resourceUsage().maxRSS * 1024 - baselineRssBytes);
   collectGarbage();
 
   return {

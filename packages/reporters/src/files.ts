@@ -153,14 +153,44 @@ export async function writeReports(
       installed.push(report.path);
     }
   } catch (error) {
-    await Promise.all(installed.map((path) => rm(path, { force: true })));
-    for (const { path, backup } of backups.toReversed()) {
-      await rename(backup, path);
+    const removalResults = await Promise.allSettled(
+      installed.map((path) => rm(path, { force: true }))
+    );
+    const restorationResults = await Promise.allSettled(
+      backups.toReversed().map(({ path, backup }) => rename(backup, path))
+    );
+    const temporaryCleanupResults = await Promise.allSettled(
+      staged.map((report) => rm(report.temporary, { force: true }))
+    );
+    const rollbackResults = [...removalResults, ...restorationResults, ...temporaryCleanupResults];
+    const rollbackFailures = rollbackResults.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : []
+    );
+    if (rollbackFailures.length > 0) {
+      throw new GateError({
+        code: "REPORTING",
+        safeMessage:
+          "Report publication failed and the prior report set could not be fully restored.",
+        retryable: false,
+        cause: new AggregateError([error, ...rollbackFailures])
+      });
     }
-    await Promise.all(staged.map((report) => rm(report.temporary, { force: true })));
     throw error;
   }
-  await Promise.allSettled(backups.map(({ backup }) => rm(backup, { force: true })));
+  const cleanupResults = await Promise.allSettled(
+    backups.map(({ backup }) => rm(backup, { force: true }))
+  );
+  const cleanupFailures = cleanupResults.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : []
+  );
+  if (cleanupFailures.length > 0) {
+    throw new GateError({
+      code: "REPORTING",
+      safeMessage: "Reports were published, but the prior report set could not be removed.",
+      retryable: false,
+      cause: new AggregateError(cleanupFailures)
+    });
+  }
   const paths: Partial<Record<ReportFormat, string>> = {};
   for (const report of staged) paths[report.format] = report.path;
   return Object.freeze({ paths: Object.freeze(paths), totalBytes });
