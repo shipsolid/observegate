@@ -4,6 +4,9 @@ import { GuardedTransport } from "../../../packages/providers/src/transport/guar
 import { UrlPolicy } from "../../../packages/providers/src/transport/url-policy.ts";
 import { writeReports } from "../../../packages/reporters/src/files.ts";
 import { renderJson } from "../../../packages/reporters/src/json.ts";
+import { renderJunit } from "../../../packages/reporters/src/junit.ts";
+import { renderMarkdown } from "../../../packages/reporters/src/markdown.ts";
+import { renderSarif } from "../../../packages/reporters/src/sarif.ts";
 
 const gateCount = 200;
 const assertionsPerGate = 12;
@@ -12,6 +15,10 @@ const configuredLimits = {
   maximum_provider_response_size: "10MiB",
   maximum_report_size: "25MiB"
 } as const;
+const reportFormats = ["json", "markdown", "junit", "sarif"] as const;
+
+setFlagsFromString("--expose-gc");
+const collectGarbage = runInNewContext("gc") as () => void;
 
 function gate(index: number, retainedEvidence: { readonly data: string }): GateResult {
   const padding = retainedEvidence.data.slice(0, 900);
@@ -57,12 +64,29 @@ function errorCode(error: unknown): unknown {
   return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
 }
 
-function withExactJsonSize(result: ExecutionResult, bytes: number): ExecutionResult {
-  const base = { ...result, links: { padding: "" } };
-  const baseBytes = Buffer.byteLength(renderJson(base));
+function renderedReportBytes(result: ExecutionResult): number {
+  let total = 0;
+  for (const render of [renderJson, renderMarkdown, renderJunit, renderSarif]) {
+    total += Buffer.byteLength(render(result));
+  }
+  return total;
+}
+
+function withExactReportSetSize(result: ExecutionResult, bytes: number): ExecutionResult {
+  const base = { ...result, configurationFingerprint: "", links: { padding: "" } };
+  const baseBytes = renderedReportBytes(base);
   if (baseBytes > bytes)
     throw new Error("The 200-gate report exceeds the configured fixture size.");
-  return { ...base, links: { padding: "x".repeat(bytes - baseBytes) } };
+  const remaining = bytes - baseBytes;
+  const padded = {
+    ...base,
+    configurationFingerprint: "f".repeat(remaining % 2),
+    links: { padding: "x".repeat(Math.floor(remaining / 2)) }
+  };
+  if (renderedReportBytes(padded) !== bytes) {
+    throw new Error("The production report set could not be calibrated to its configured limit.");
+  }
+  return padded;
 }
 
 export interface MemoryScenarioMetrics {
@@ -82,6 +106,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
     1
   );
   const maximumReportBytes = parseByteSize(configuredLimits.maximum_report_size, 1);
+  collectGarbage();
   const baselineHeapBytes = process.memoryUsage().heapUsed;
   let body = responseBody(maximumProviderResponseBytes);
   const responseBytes = Buffer.byteLength(body);
@@ -116,6 +141,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
   } catch (error) {
     providerRejectedOverLimit = errorCode(error) === "PROVIDER_PROTOCOL";
   }
+  body = "";
 
   const execution: ExecutionResult = {
     decision: "pass",
@@ -129,11 +155,10 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
     diagnostics: [],
     links: {}
   };
-  const exactLimitExecution = withExactJsonSize(execution, maximumReportBytes);
-  const reportBytes = Buffer.byteLength(renderJson(exactLimitExecution));
-  await writeReports(exactLimitExecution, {
+  const exactLimitExecution = withExactReportSetSize(execution, maximumReportBytes);
+  const publication = await writeReports(exactLimitExecution, {
     directory: `${directory}/accepted`,
-    formats: ["json"],
+    formats: reportFormats,
     maximumTotalBytes: maximumReportBytes,
     signal: request.signal
   });
@@ -147,7 +172,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
       },
       {
         directory: `${directory}/rejected`,
-        formats: ["json"],
+        formats: reportFormats,
         maximumTotalBytes: maximumReportBytes,
         signal: request.signal
       }
@@ -155,11 +180,12 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
   } catch (error) {
     reporterRejectedOverLimit = errorCode(error) === "REPORTING";
   }
+  collectGarbage();
 
   return {
     gateCount,
     responseBytes,
-    reportBytes,
+    reportBytes: publication.totalBytes,
     retainedHeapBytes: Math.max(0, process.memoryUsage().heapUsed - baselineHeapBytes),
     maximumProviderResponseBytes,
     maximumReportBytes,
@@ -167,3 +193,5 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
     reporterRejectedOverLimit
   };
 }
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";

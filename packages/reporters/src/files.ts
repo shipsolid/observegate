@@ -44,24 +44,21 @@ function checkCancellation(signal: AbortSignal): void {
   }
 }
 
-async function atomicWrite(path: string, content: string, signal: AbortSignal): Promise<void> {
+async function stageWrite(path: string, content: string, signal: AbortSignal): Promise<string> {
   const temporaryPath = `${path}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  let created = false;
   try {
     checkCancellation(signal);
     const handle = await open(temporaryPath, "wx", 0o600);
-    created = true;
     try {
       await handle.writeFile(content, "utf8");
       await handle.sync();
     } finally {
       await handle.close();
     }
-    checkCancellation(signal);
-    await rename(temporaryPath, path);
-    created = false;
-  } finally {
-    if (created) await rm(temporaryPath, { force: true });
+    return temporaryPath;
+  } catch (error) {
+    await rm(temporaryPath, { force: true });
+    throw error;
   }
 }
 
@@ -70,27 +67,35 @@ export async function writeReports(
   options: WriteReportsOptions
 ): Promise<ReportPublication> {
   checkCancellation(options.signal);
-  const rendered = options.formats.map((format) => ({
-    format,
-    content: renderers[format](result),
-    path: join(options.directory, fileNames[format])
-  }));
-  const totalBytes = rendered.reduce(
-    (total, report) => total + Buffer.byteLength(report.content, "utf8"),
-    0
-  );
-  if (totalBytes > options.maximumTotalBytes) {
-    throw new GateError({
-      code: "REPORTING",
-      safeMessage: "The report set exceeds the configured total size limit.",
-      retryable: false
-    });
-  }
   await mkdir(options.directory, { recursive: true });
-  const paths: Partial<Record<ReportFormat, string>> = {};
-  for (const report of rendered) {
-    await atomicWrite(report.path, report.content, options.signal);
-    paths[report.format] = report.path;
+  const staged: {
+    readonly format: ReportFormat;
+    readonly path: string;
+    readonly temporary: string;
+  }[] = [];
+  let totalBytes = 0;
+  try {
+    for (const format of options.formats) {
+      checkCancellation(options.signal);
+      const content = renderers[format](result);
+      totalBytes += Buffer.byteLength(content, "utf8");
+      if (totalBytes > options.maximumTotalBytes) {
+        throw new GateError({
+          code: "REPORTING",
+          safeMessage: "The report set exceeds the configured total size limit.",
+          retryable: false
+        });
+      }
+      const path = join(options.directory, fileNames[format]);
+      staged.push({ format, path, temporary: await stageWrite(path, content, options.signal) });
+    }
+    checkCancellation(options.signal);
+    for (const report of staged) await rename(report.temporary, report.path);
+  } catch (error) {
+    await Promise.all(staged.map((report) => rm(report.temporary, { force: true })));
+    throw error;
   }
+  const paths: Partial<Record<ReportFormat, string>> = {};
+  for (const report of staged) paths[report.format] = report.path;
   return Object.freeze({ paths: Object.freeze(paths), totalBytes });
 }

@@ -22,6 +22,10 @@ describe("execution memory budget", () => {
     expect(metrics.responseBytes + metrics.reportBytes).toBe(35 * 1024 * 1024);
     expect(metrics.providerRejectedOverLimit).toBe(true);
     expect(metrics.reporterRejectedOverLimit).toBe(true);
-    expect(metrics.retainedHeapBytes).toBeLessThanOrEqual(192 * 1024 * 1024);
+    // Covers the normalized 200-gate object graph and formatter bookkeeping after transient strings are collected.
+    const serializationOverheadBytes = 8 * 1024 * 1024;
+    expect(metrics.retainedHeapBytes).toBeLessThanOrEqual(
+      metrics.responseBytes + metrics.reportBytes + serializationOverheadBytes
+    );
   });
 });

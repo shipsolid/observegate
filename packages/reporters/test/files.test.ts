@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExecutionResult } from "@observability-gate/core";
-import { writeReports } from "../src/index.js";
+import { renderJson, writeReports } from "../src/index.js";
 
 async function fixture(): Promise<ExecutionResult> {
   return JSON.parse(
@@ -43,11 +43,12 @@ describe("writeReports", () => {
 
   it("rejects a report set that exceeds the configured total size", async () => {
     const directory = await mkdtemp(join(tmpdir(), "observegate-reports-"));
+    const result = await fixture();
     await expect(
-      writeReports(await fixture(), {
+      writeReports(result, {
         directory,
-        formats: ["json"],
-        maximumTotalBytes: 10,
+        formats: ["json", "markdown"],
+        maximumTotalBytes: Buffer.byteLength(renderJson(result)),
         signal: new AbortController().signal
       })
     ).rejects.toMatchObject({ code: "REPORTING" });
