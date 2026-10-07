@@ -1,5 +1,5 @@
-import * as core from "@actions/core";
 import { GateError, type Phase } from "@observability-gate/core";
+import { githubActionsRuntime, type ActionRuntime } from "./actions-runtime.js";
 
 export interface ActionInputs {
   readonly config: string;
@@ -9,8 +9,8 @@ export interface ActionInputs {
   readonly githubToken?: string;
 }
 
-export function readInputs(): ActionInputs {
-  const phase = core.getInput("phase", { required: true });
+export function readInputs(runtime: ActionRuntime = githubActionsRuntime): ActionInputs {
+  const phase = runtime.getInput("phase", { required: true });
   if (phase !== "pre_deployment" && phase !== "post_deployment") {
     throw new GateError({
       code: "CONFIG_SCHEMA",
@@ -18,13 +18,13 @@ export function readInputs(): ActionInputs {
       retryable: false
     });
   }
-  const target = core.getInput("target");
-  const githubToken = core.getInput("github-token");
+  const target = runtime.getInput("target");
+  const githubToken = runtime.getInput("github-token");
   return Object.freeze({
-    config: core.getInput("config", { required: true }),
+    config: runtime.getInput("config", { required: true }),
     phase,
     ...(target.length === 0 ? {} : { target }),
-    outputDirectory: core.getInput("output-directory") || "observability-gate-results",
+    outputDirectory: runtime.getInput("output-directory") || "observability-gate-results",
     ...(githubToken.length === 0 ? {} : { githubToken })
   });
 }

@@ -21,7 +21,6 @@
     "@observability-gate/core": "0.0.0",
     "@observability-gate/gates": "0.0.0",
     "@observability-gate/providers": "0.0.0",
-    "@observability-gate/reporters": "0.0.0",
-    "commander": "15.0.0"
+    "@observability-gate/reporters": "0.0.0"
   }
 }

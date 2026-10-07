@@ -1,10 +1,10 @@
-import * as core from "@actions/core";
 import type { ExecutionResult } from "@observability-gate/core";
 import { writeReports } from "@observability-gate/reporters";
 import { publishCheck, updatePullRequestComment, writeStepSummary } from "./github-reporter.js";
 import { readInputs } from "./inputs.js";
 import { setActionOutputs } from "./outputs.js";
 import { createActionService } from "./service.js";
+import { githubActionsRuntime, type ActionRuntime } from "./actions-runtime.js";
 
 export interface ActionService {
   readonly run: (request: {
@@ -21,6 +21,7 @@ export interface RunActionDependencies {
   readonly service?: ActionService;
   readonly workspaceRoot?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
+  readonly runtime?: ActionRuntime;
 }
 
 function shouldFail(result: ExecutionResult): boolean {
@@ -35,7 +36,8 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
-    const inputs = readInputs();
+    const runtime = dependencies.runtime ?? githubActionsRuntime;
+    const inputs = readInputs(runtime);
     const service = dependencies.service ?? createActionService();
     const result = await service.run({
       workspaceRoot: dependencies.workspaceRoot ?? process.env.GITHUB_WORKSPACE ?? process.cwd(),
@@ -51,20 +53,22 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
       maximumTotalBytes: 10 * 1024 * 1024,
       signal: controller.signal
     });
-    setActionOutputs(result, publication.paths.json ?? "");
-    await writeStepSummary(result);
+    setActionOutputs(result, publication.paths.json ?? "", runtime);
+    await writeStepSummary(result, runtime);
     if (inputs.githubToken !== undefined) {
       try {
         await publishCheck(result, inputs.githubToken);
         await updatePullRequestComment(result, inputs.githubToken);
       } catch {
-        core.warning("GitHub report publication was not authorized; local reports are available.");
+        runtime.warning(
+          "GitHub report publication was not authorized; local reports are available."
+        );
       }
     }
-    if (shouldFail(result)) core.setFailed(`Observability Gate decision: ${result.decision}`);
+    if (shouldFail(result)) runtime.setFailed(`Observability Gate decision: ${result.decision}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Observability Gate Action failed.";
-    core.setFailed(message);
+    (dependencies.runtime ?? githubActionsRuntime).setFailed(message);
   } finally {
     process.off("SIGINT", cancel);
     process.off("SIGTERM", cancel);

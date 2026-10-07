@@ -1,13 +1,15 @@
-import * as core from "@actions/core";
 import * as github from "@actions/github";
 import type { Diagnostic, ExecutionResult } from "@observability-gate/core";
 import { renderMarkdown } from "@observability-gate/reporters";
+import { githubActionsRuntime, type ActionRuntime } from "./actions-runtime.js";
 
 const commentMarker = "<!-- observability-gate -->";
 
-export async function writeStepSummary(result: ExecutionResult): Promise<void> {
-  core.summary.addRaw(renderMarkdown(result));
-  await core.summary.write();
+export async function writeStepSummary(
+  result: ExecutionResult,
+  runtime: ActionRuntime = githubActionsRuntime
+): Promise<void> {
+  await runtime.writeSummary(renderMarkdown(result));
 }
 
 function annotations(result: ExecutionResult) {

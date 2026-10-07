@@ -4,15 +4,12 @@ import type { ExecutionResult } from "@observability-gate/core";
 const mocks = vi.hoisted(() => {
   const inputs = new Map<string, string>();
   const outputs = new Map<string, unknown>();
-  const addRaw = vi.fn();
-  const summary = { addRaw, write: vi.fn(async () => undefined) };
-  addRaw.mockReturnValue(summary);
   return {
     inputs,
     outputs,
-    summary,
     setFailed: vi.fn(),
     warning: vi.fn(),
+    writeSummary: vi.fn(async () => undefined),
     writeReports: vi.fn(async () => ({
       paths: { json: "/tmp/observability-gate.json" },
       totalBytes: 100
@@ -20,7 +17,7 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("@actions/core", () => ({
+const runtime = {
   getInput: (name: string, options?: { required?: boolean }) => {
     const value = mocks.inputs.get(name) ?? "";
     if (options?.required === true && value.length === 0) throw new Error(`Missing input: ${name}`);
@@ -29,8 +26,8 @@ vi.mock("@actions/core", () => ({
   setOutput: (name: string, value: unknown) => mocks.outputs.set(name, value),
   setFailed: mocks.setFailed,
   warning: mocks.warning,
-  summary: mocks.summary
-}));
+  writeSummary: mocks.writeSummary
+};
 
 vi.mock("@actions/github", () => ({
   context: { repo: { owner: "shipsolid", repo: "observegate" }, sha: "abc", payload: {} },
@@ -68,14 +65,13 @@ describe("GitHub Action adapter", () => {
     mocks.inputs.set("output-directory", "/tmp/reports");
     mocks.setFailed.mockClear();
     mocks.warning.mockClear();
-    mocks.summary.addRaw.mockClear();
-    mocks.summary.write.mockClear();
+    mocks.writeSummary.mockClear();
     mocks.writeReports.mockClear();
   });
 
   it("requires config and phase inputs", async () => {
     mocks.inputs.delete("config");
-    await runAction({ service: { run: vi.fn() } });
+    await runAction({ service: { run: vi.fn() }, runtime });
     expect(mocks.setFailed).toHaveBeenCalledWith("Missing input: config");
   });
 
@@ -84,27 +80,28 @@ describe("GitHub Action adapter", () => {
     await runAction({
       service,
       workspaceRoot: "/workspace",
-      environment: { TOKEN: "secret-token" }
+      environment: { TOKEN: "secret-token" },
+      runtime
     });
 
     expect(service.run).toHaveBeenCalledOnce();
     expect(mocks.outputs.get("decision")).toBe(decision);
     expect(mocks.outputs.get("target_id")).toBe("production");
     expect(mocks.outputs.get("report_path")).toBe("/tmp/observability-gate.json");
-    expect(mocks.summary.write).toHaveBeenCalledOnce();
+    expect(mocks.writeSummary).toHaveBeenCalledOnce();
     expect(mocks.setFailed).not.toHaveBeenCalled();
     expect(JSON.stringify([...mocks.outputs.values()])).not.toContain("secret-token");
   });
 
   it.each(["fail", "inconclusive", "error"] as const)("fails the step for %s", async (decision) => {
-    await runAction({ service: { run: async () => result(decision) } });
+    await runAction({ service: { run: async () => result(decision) }, runtime });
     expect(mocks.setFailed).toHaveBeenCalledWith(`Observability Gate decision: ${decision}`);
   });
 
   it("passes the target override and phase to the service", async () => {
     mocks.inputs.set("target", "blue");
     const service = { run: vi.fn(async () => result("pass")) };
-    await runAction({ service });
+    await runAction({ service, runtime });
     expect(service.run).toHaveBeenCalledWith(
       expect.objectContaining({ phase: "post_deployment", targetOverride: "blue" })
     );
@@ -116,7 +113,7 @@ describe("GitHub Action adapter", () => {
     vi.mocked(github.getOctokit).mockReturnValue({
       rest: { checks: { create: vi.fn(async () => Promise.reject(new Error("forbidden"))) } }
     } as never);
-    await runAction({ service: { run: async () => result("pass") } });
+    await runAction({ service: { run: async () => result("pass") }, runtime });
     expect(mocks.warning).toHaveBeenCalledWith(
       "GitHub report publication was not authorized; local reports are available."
     );

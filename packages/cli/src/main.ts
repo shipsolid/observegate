@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
-import { Command, CommanderError } from "commander";
 import {
   ObservabilityGateService,
   stableFingerprint,
@@ -24,6 +23,7 @@ import { runCommand } from "./commands/run.js";
 import type { CliService, CommandContext } from "./commands/types.js";
 import { validateCommand } from "./commands/validate.js";
 import type { OutputWriter } from "./output.js";
+import { CliUsageError, helpText, parseCliArguments } from "./arguments.js";
 
 export interface CliDependencies {
   readonly service?: CliService;
@@ -160,66 +160,36 @@ export async function runCli(
     environment: dependencies.environment ?? process.env,
     signal
   };
-  let exitCode = 0;
-  const program = new Command()
-    .name("observability-gate")
-    .description("Evidence-driven deployment gates for observability and reliability")
-    .showHelpAfterError()
-    .exitOverride()
-    .configureOutput({
-      writeOut: output.stdout,
-      writeErr: output.stderr
-    });
-
-  program
-    .command("validate")
-    .requiredOption("--config <path>")
-    .option("--phase <phase>", "phase to validate", "pre_deployment")
-    .option("--target <id>")
-    .option("--json")
-    .action(async (options) => {
-      exitCode = await validateCommand(options, context);
-    });
-  program
-    .command("plan")
-    .requiredOption("--config <path>")
-    .requiredOption("--phase <phase>")
-    .option("--target <id>")
-    .option("--json")
-    .action(async (options) => {
-      exitCode = await planCommand(options, context);
-    });
-  program
-    .command("run")
-    .requiredOption("--config <path>")
-    .requiredOption("--phase <phase>")
-    .option("--target <id>")
-    .option("--output-directory <path>")
-    .option("--json")
-    .action(async (options) => {
-      exitCode = await runCommand(options, context);
-    });
-  program
-    .command("explain")
-    .argument("<gate>")
-    .option("--config <path>")
-    .option("--phase <phase>", "phase used for configured gate IDs", "pre_deployment")
-    .option("--target <id>")
-    .action(async (identifier, options) => {
-      exitCode = await explainCommand(identifier, options, context);
-    });
-  program
-    .command("catalog")
-    .option("--json")
-    .action((options) => {
-      exitCode = catalogCommand(options.json === true, context);
-    });
-
   try {
-    await program.parseAsync([...argv], { from: "user" });
+    const command = parseCliArguments(argv);
+    let exitCode: number;
+    switch (command.name) {
+      case "help":
+        output.stdout(helpText);
+        exitCode = 0;
+        break;
+      case "validate":
+        exitCode = await validateCommand(command.options, context);
+        break;
+      case "plan":
+        exitCode = await planCommand(command.options, context);
+        break;
+      case "run":
+        exitCode = await runCommand(command.options, context);
+        break;
+      case "explain":
+        exitCode = await explainCommand(command.identifier, command.options, context);
+        break;
+      case "catalog":
+        exitCode = catalogCommand(command.json, context);
+        break;
+    }
     return signal.aborted ? 3 : exitCode;
   } catch (error) {
-    if (error instanceof CommanderError) return error.exitCode;
+    if (error instanceof CliUsageError) {
+      output.stderr(`${error.message}\n${helpText}`);
+      return 1;
+    }
     output.stderr("INTERNAL: Command execution failed.\n");
     return 3;
   } finally {

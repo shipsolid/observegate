@@ -116,6 +116,18 @@ describe("observability-gate CLI", () => {
     expect(missing.stderr()).toContain("required option '--config <path>'");
   });
 
+  it("rejects unknown options and missing option values without executing a command", async () => {
+    const unknown = harness();
+    expect(await runCli(["catalog", "--write"], unknown.dependencies)).toBe(1);
+    expect(unknown.stderr()).toContain("unknown option '--write'");
+    expect(unknown.requests).toHaveLength(0);
+
+    const missingValue = harness();
+    expect(await runCli(["validate", "--config"], missingValue.dependencies)).toBe(1);
+    expect(missingValue.stderr()).toContain("argument missing");
+    expect(missingValue.requests).toHaveLength(0);
+  });
+
   it("validates successfully and reports validation diagnostics", async () => {
     const valid = harness();
     expect(await runCli(["validate", "--config", "policy.yml"], valid.dependencies)).toBe(0);

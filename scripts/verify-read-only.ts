@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import ts from "typescript";
+import { inspectBundleImports } from "./bundle-policy.ts";
 
 const bannedModules = new Set([
   "node:child_process",
@@ -70,10 +71,14 @@ for (const path of productionFiles) {
   inspect(file);
 }
 
+for (const bundle of ["dist/index.js", "dist/cli/observegate.js"]) {
+  violations.push(...inspectBundleImports(bundle, await readFile(join(root, bundle), "utf8")));
+}
+
 if (violations.length > 0) {
   process.stderr.write(`${violations.join("\n")}\n`);
   process.exit(1);
 }
 process.stdout.write(
-  `verify:read-only: scanned ${productionFiles.length} production files; no mutation or remote-shell APIs found\n`
+  `verify:read-only: scanned ${productionFiles.length} production files and both bundles; no mutation or remote-shell APIs found\n`
 );

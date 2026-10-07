@@ -5,11 +5,9 @@ const mocks = vi.hoisted(() => ({
   create: vi.fn(async () => undefined),
   listComments: vi.fn(async () => ({ data: [] })),
   createComment: vi.fn(async () => undefined),
-  updateComment: vi.fn(async () => undefined),
-  summary: { addRaw: vi.fn(), write: vi.fn(async () => undefined) }
+  updateComment: vi.fn(async () => undefined)
 }));
 
-vi.mock("@actions/core", () => ({ summary: mocks.summary }));
 vi.mock("@actions/github", () => ({
   context: {
     repo: { owner: "shipsolid", repo: "observegate" },
