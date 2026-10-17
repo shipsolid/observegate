@@ -2,12 +2,64 @@ import { createHash } from "node:crypto";
 import type { EvidenceRequest } from "./types.js";
 
 const sensitiveKeyPattern = /authorization|token|password|secret|cookie|api[_-]?key|credential/iu;
+const queryPunctuation = new Set("()[]{},+*/=<>!-");
 
 function normalizeQuery(query: string): string {
-  return query
-    .trim()
-    .replace(/\s+/gu, " ")
-    .replace(/\s*([()[\]{},+*/=<>!-])\s*/gu, "$1");
+  let normalized = "";
+  let quote: '"' | "'" | "`" | undefined;
+  let escaped = false;
+  let pendingWhitespace = false;
+
+  for (const character of query.trim()) {
+    if (quote !== undefined) {
+      normalized += character;
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'" || character === "`") {
+      if (
+        pendingWhitespace &&
+        normalized.length > 0 &&
+        !queryPunctuation.has(normalized.at(-1) ?? "")
+      ) {
+        normalized += " ";
+      }
+      pendingWhitespace = false;
+      quote = character;
+      normalized += character;
+      continue;
+    }
+
+    if (/\s/u.test(character)) {
+      pendingWhitespace = true;
+      continue;
+    }
+
+    if (queryPunctuation.has(character)) {
+      pendingWhitespace = false;
+      normalized += character;
+      continue;
+    }
+
+    if (
+      pendingWhitespace &&
+      normalized.length > 0 &&
+      !queryPunctuation.has(normalized.at(-1) ?? "")
+    ) {
+      normalized += " ";
+    }
+    pendingWhitespace = false;
+    normalized += character;
+  }
+
+  return normalized;
 }
 
 function canonicalize(value: unknown, key?: string): unknown {

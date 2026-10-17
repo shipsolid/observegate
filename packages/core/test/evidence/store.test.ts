@@ -84,6 +84,16 @@ describe("fingerprintEvidenceRequest", () => {
 
     expect(first).toBe(second);
   });
+
+  it.each([
+    [String.raw`up{job="a b"}`, String.raw`up{job="a  b"}`],
+    [String.raw`logs{message="a\" b"}`, String.raw`logs{message="a\"  b"}`],
+    [String.raw`logs{path="C:\temp"}`, String.raw`logs{path="C:\\temp"}`]
+  ])("preserves distinct quoted query literals", (firstQuery, secondQuery) => {
+    expect(fingerprintEvidenceRequest({ ...request, query: firstQuery })).not.toBe(
+      fingerprintEvidenceRequest({ ...request, query: secondQuery })
+    );
+  });
 });
 
 describe("EvidenceStore", () => {
@@ -106,6 +116,16 @@ describe("EvidenceStore", () => {
 
     await new EvidenceStore().getOrLoad(request, loader);
     await new EvidenceStore().getOrLoad(request, loader);
+
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads semantically distinct quoted queries independently", async () => {
+    const store = new EvidenceStore(() => new Date("2026-10-06T07:30:00.000Z"));
+    const loader = vi.fn(async () => validEvidence(42));
+
+    await store.getOrLoad({ ...request, query: String.raw`up{job="a b"}` }, loader);
+    await store.getOrLoad({ ...request, query: String.raw`up{job="a  b"}` }, loader);
 
     expect(loader).toHaveBeenCalledTimes(2);
   });
