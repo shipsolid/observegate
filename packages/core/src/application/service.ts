@@ -288,7 +288,9 @@ export class ObservabilityGateService<TPolicy> {
         startedAt: startedAt.toISOString(),
         completedAt: this.clock().toISOString(),
         evidenceCoveragePercent: summary.evidenceCoveragePercent,
-        ...(prepared.execution.artifactRetentionDays === undefined ? {} : { artifactRetentionDays: prepared.execution.artifactRetentionDays }),
+        ...(prepared.execution.artifactRetentionDays === undefined
+          ? {}
+          : { artifactRetentionDays: prepared.execution.artifactRetentionDays }),
         ...(prepared.execution.configurationFingerprint === undefined
           ? {}
           : { configurationFingerprint: prepared.execution.configurationFingerprint }),

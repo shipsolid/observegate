@@ -8,6 +8,10 @@ import {
   type V1Deployment,
   type V1StatefulSet
 } from "@kubernetes/client-node";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
+import { GateError } from "@observability-gate/core";
 
 export type KubernetesWorkloadKind = "Deployment" | "StatefulSet" | "DaemonSet";
 
@@ -147,11 +151,51 @@ export function buildKubernetesReadClient(
   options: {
     readonly kubeConfig?: KubeConfig;
     readonly context?: string;
+    readonly kubeconfigPath?: string;
   } = {}
 ): KubernetesReadClient {
   const kubeConfig = options.kubeConfig ?? new KubeConfig();
-  if (options.kubeConfig === undefined) kubeConfig.loadFromDefault();
+  if (options.kubeConfig === undefined) {
+    const paths = (
+      options.kubeconfigPath ??
+      process.env.KUBECONFIG ??
+      join(homedir(), ".kube", "config")
+    )
+      .split(delimiter)
+      .filter(Boolean);
+    if (paths.length !== 1)
+      throw new GateError({
+        code: "CONFIG_REFERENCE",
+        safeMessage: "Select one kubeconfig file; merged credential sources are not supported.",
+        retryable: false
+      });
+    const path = paths[0];
+    if (path !== undefined && existsSync(path)) kubeConfig.loadFromFile(path);
+    else if (process.env.KUBERNETES_SERVICE_HOST !== undefined) kubeConfig.loadFromCluster();
+    else
+      throw new GateError({
+        code: "CONFIG_REFERENCE",
+        safeMessage: "A kubeconfig or in-cluster service account is required.",
+        retryable: false
+      });
+  }
   if (options.context !== undefined) kubeConfig.setCurrentContext(options.context);
+  if (kubeConfig.getCurrentCluster?.()?.skipTLSVerify === true) {
+    throw new GateError({
+      code: "SECURITY_POLICY",
+      safeMessage: "Kubernetes TLS certificate verification must remain enabled.",
+      retryable: false
+    });
+  }
+  const user = kubeConfig.getCurrentUser?.();
+  if (user?.exec !== undefined || ["azure", "gcp"].includes(String(user?.authProvider?.name))) {
+    throw new GateError({
+      code: "SECURITY_POLICY",
+      safeMessage:
+        "Command-based Kubernetes authentication is forbidden; use a token, client certificate, or in-cluster service account.",
+      retryable: false
+    });
+  }
   return new KubernetesApiReadClient(
     kubeConfig.makeApiClient(AppsV1Api),
     kubeConfig.makeApiClient(CoreV1Api)

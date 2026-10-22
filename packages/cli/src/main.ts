@@ -23,6 +23,7 @@ import {
   createPolicyProviderSession,
   validateProviderAcquisition
 } from "@observability-gate/providers/session";
+import type { PolicyProviderSessionOptions } from "@observability-gate/providers/session";
 import { catalogCommand } from "./commands/catalog.js";
 import { explainCommand } from "./commands/explain.js";
 import { planCommand } from "./commands/plan.js";
@@ -39,9 +40,16 @@ export interface CliDependencies {
   readonly workspaceRoot?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly signal?: AbortSignal;
+  readonly providerOptions?: Omit<
+    PolicyProviderSessionOptions,
+    "policy" | "workspaceRoot" | "environment" | "plan"
+  >;
 }
 
-function createDefaultService(catalog = createBuiltInGateCatalog()): CliService {
+function createDefaultService(
+  catalog = createBuiltInGateCatalog(),
+  providerOptions: CliDependencies["providerOptions"] = {}
+): CliService {
   const service = new ObservabilityGateService<RawPolicy>({
     policy: {
       load: (request) => loadPolicy(request.configPath, request.workspaceRoot),
@@ -82,6 +90,7 @@ function createDefaultService(catalog = createBuiltInGateCatalog()): CliService 
     providers: {
       async initialize(_requirements, context) {
         return createPolicyProviderSession({
+          ...providerOptions,
           policy: context.policy,
           plan: context.plan,
           workspaceRoot: context.request.workspaceRoot,
@@ -158,7 +167,7 @@ export async function runCli(
     process.once("SIGTERM", cancel);
   }
   const context: CommandContext = {
-    service: dependencies.service ?? createDefaultService(),
+    service: dependencies.service ?? createDefaultService(undefined, dependencies.providerOptions),
     catalog,
     output,
     workspaceRoot: dependencies.workspaceRoot ?? process.cwd(),

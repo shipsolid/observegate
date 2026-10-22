@@ -25,6 +25,11 @@ Use GitHub OIDC or ambient Azure identity. Grant Reader at the narrowest resourc
 App scope. No client secret is required when workload identity is available, and no Contributor
 permission is needed.
 
+The default credential chain uses environment credentials, federated workload identity when
+configured, and managed identity. It does not invoke Azure CLI, Azure PowerShell, Azure Developer
+CLI, or interactive credentials. Activation/deactivation failure counters require explicit metric
+queries in `source.queries`; replica snapshots cannot prove those counters are zero.
+
 ## Evidence and gates
 
 - Candidate revision provisioning and active state.

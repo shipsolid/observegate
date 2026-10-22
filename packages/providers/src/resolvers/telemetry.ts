@@ -215,10 +215,14 @@ export async function resolveTelemetry(
   if (kind === "telemetry.contract") {
     const files = await loadFiles(base, definition),
       file = files[0],
-      parsed = parseOtlpContract(file.content, {
-        commit: String(record(base.policy.identity.canonical).release_id ?? ""),
-        workflow: String(record(base.policy.identity.canonical).deployment_id ?? "")
-      }),
+      parsed = parseOtlpContract(
+        file.content,
+        {
+          commit: String(record(base.policy.identity.canonical).release_id ?? ""),
+          workflow: String(record(base.policy.identity.canonical).deployment_id ?? "")
+        },
+        { forbiddenFields: array(assertions.forbid_sensitive_fields).map(String) }
+      ),
       root = record(JSON.parse(file.content.toString("utf8")));
     const [m, l, t] = await Promise.all([
         metric(base, queries.metrics, context),
@@ -275,19 +279,61 @@ export async function resolveTelemetry(
     ];
   }
   if (kind === "metric.threshold") {
-    const minimumSamples=number(assertions.minimum_samples)??1;
-    let raw: Evidence<MetricVector|MetricMatrix>;
-    let value:number|undefined;
-    if(minimumSamples>1||typeof definition.window==="string") {
-      if(base.metrics===undefined||typeof source.query!=="string")configuration("Metric range acquisition requires a metrics provider and explicit source.query");
-      const end=new Date(base.now()).toISOString(),start=new Date(base.now()-durationMs(definition.window,600000)).toISOString(),query=source.query,stepMs=durationMs(source.step,30000),client=base.metrics;
-      raw=await context.evidenceStore.getOrLoad({kind:"metrics.matrix",provider:"metrics",capability:"metrics.query.range",target:context.targetId,...(context.releaseId===undefined?{}:{releaseId:context.releaseId}),query,range:{start,end,stepMs}},()=>client.queryRange({query,target:context.targetId,...(context.releaseId===undefined?{}:{releaseId:context.releaseId}),start,end,stepMs,minimumSamples:1,maximumAgeMs:120000,maximumFutureSkewMs:base.maximumFutureSkewMs,signal:context.signal}));
-      if(raw.state==="valid"&&raw.value?.resultType==="matrix") {
-        if(raw.value.series.length!==1)invalid("Scalar threshold range query must return exactly one metric series");
-        const values=raw.value.series[0]?.samples.map(s=>s.value)??[];
-        value=values.length===0?undefined:["lt","lte","less_than","less_than_or_equal"].includes(String(assertions.operator))?Math.max(...values):Math.min(...values);
+    const minimumSamples = number(assertions.minimum_samples) ?? 1;
+    let raw: Evidence<MetricVector | MetricMatrix>;
+    let value: number | undefined;
+    if (minimumSamples > 1 || typeof definition.window === "string") {
+      if (base.metrics === undefined || typeof source.query !== "string")
+        configuration(
+          "Metric range acquisition requires a metrics provider and explicit source.query"
+        );
+      const end = new Date(base.now()).toISOString(),
+        start = new Date(base.now() - durationMs(definition.window, 600000)).toISOString(),
+        query = source.query,
+        stepMs = durationMs(source.step, 30000),
+        client = base.metrics;
+      raw = await context.evidenceStore.getOrLoad(
+        {
+          kind: "metrics.matrix",
+          provider: "metrics",
+          capability: "metrics.query.range",
+          target: context.targetId,
+          ...(context.releaseId === undefined ? {} : { releaseId: context.releaseId }),
+          query,
+          range: { start, end, stepMs }
+        },
+        () =>
+          client.queryRange({
+            query,
+            target: context.targetId,
+            ...(context.releaseId === undefined ? {} : { releaseId: context.releaseId }),
+            start,
+            end,
+            stepMs,
+            minimumSamples: 1,
+            maximumAgeMs: 120000,
+            maximumFutureSkewMs: base.maximumFutureSkewMs,
+            signal: context.signal
+          })
+      );
+      if (raw.state === "valid" && raw.value?.resultType === "matrix") {
+        if (raw.value.series.length !== 1)
+          invalid("Scalar threshold range query must return exactly one metric series");
+        const values = raw.value.series[0]?.samples.map((s) => s.value) ?? [];
+        const operator = String(assertions.operator);
+        value =
+          values.length === 0
+            ? undefined
+            : ["equal", "eq"].includes(operator)
+              ? (values.find((sample) => sample !== assertions.threshold) ?? values[0])
+              : ["lt", "lte", "less_than", "less_than_or_equal"].includes(operator)
+                ? Math.max(...values)
+                : Math.min(...values);
       }
-    } else {raw=await metric(base,source.query,context);value=scalar(raw as Evidence<MetricVector>);}
+    } else {
+      raw = await metric(base, source.query, context);
+      value = scalar(raw as Evidence<MetricVector>);
+    }
     const minimumRequests = number(
       assertions.minimum_requests ?? assertions.minimum_total_requests
     );
@@ -473,7 +519,17 @@ export async function resolveTelemetry(
       values.push({
         name: dependency.name,
         required: dependency.required !== false,
-        healthy: raw.state === "valid" && compare(scalar(raw), dependency.threshold===undefined?{[String(record(dependency.assertions).operator)]:record(dependency.assertions).threshold}:record(dependency.threshold))
+        healthy:
+          raw.state === "valid" &&
+          compare(
+            scalar(raw),
+            dependency.threshold === undefined
+              ? {
+                  [String(record(dependency.assertions).operator)]: record(dependency.assertions)
+                    .threshold
+                }
+              : record(dependency.threshold)
+          )
       });
     }
     return [combined(raws, kind, { dependencies: values }), ...raws];

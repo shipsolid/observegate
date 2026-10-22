@@ -1,5 +1,8 @@
 # ObserveGate End-to-End Product Audit
 
+> Remediation status: see the [22 October completeness and closure report](product-completeness-review.md).
+> This document preserves the original findings and acceptance criteria.
+
 ## Audit metadata
 
 - **Audit date:** 2026-10-11 (IST)

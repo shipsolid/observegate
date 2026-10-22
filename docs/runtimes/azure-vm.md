@@ -23,6 +23,11 @@ Use GitHub OIDC or ambient Azure identity with Reader at the VM or resource-grou
 service state, release markers, host health, and telemetry-agent state come from bounded signed
 evidence or telemetry, not remote command execution.
 
+The default credential chain uses environment, workload, or managed identity without invoking
+Azure CLI/PowerShell. ARM instance view proves platform state. Guest service, host, agent, and
+release gates additionally require `runtime.expected_hosts` and
+`runtime.artifacts.runtime_evidence` files with measured facts for each expected host.
+
 ```bash
 az vm get-instance-view --subscription "$AZURE_SUBSCRIPTION_ID" --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_VM_NAME"
 ```

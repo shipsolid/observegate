@@ -26,6 +26,11 @@ runtime:
 
 Environment variables contain selected values; credential values stay outside YAML.
 
+Use a token/client-certificate kubeconfig or an in-cluster service account. ObserveGate rejects
+exec-based kubeconfig authentication and legacy Azure/GCP command authenticators. Run any external
+credential preparation in the workflow before the gate and supply non-executable credentials;
+the gate never invokes kubelogin, a shell, or a credential command. Select a single kubeconfig file.
+
 ## Permissions
 
 Grant `get` and `list` only for the selected workload kind, ReplicaSets, Pods, and Events in the

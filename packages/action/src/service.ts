@@ -22,8 +22,14 @@ import {
   createPolicyProviderSession,
   validateProviderAcquisition
 } from "@observability-gate/providers/session";
+import type { PolicyProviderSessionOptions } from "@observability-gate/providers/session";
 
-export function createActionService() {
+export function createActionService(
+  providerOptions: Omit<
+    PolicyProviderSessionOptions,
+    "policy" | "workspaceRoot" | "environment" | "plan"
+  > = {}
+) {
   const catalog = createBuiltInGateCatalog();
   const service = new ObservabilityGateService<RawPolicy>({
     policy: {
@@ -65,6 +71,7 @@ export function createActionService() {
     providers: {
       async initialize(_requirements, context) {
         return createPolicyProviderSession({
+          ...providerOptions,
           policy: context.policy,
           plan: context.plan,
           workspaceRoot: context.request.workspaceRoot,

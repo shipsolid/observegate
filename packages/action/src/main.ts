@@ -19,6 +19,7 @@ export interface RunActionDependencies {
   readonly workspaceRoot?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly runtime?: ActionRuntime;
+  readonly providerOptions?: Parameters<typeof createActionService>[0];
 }
 
 function shouldFail(result: ExecutionResult): boolean {
@@ -35,7 +36,7 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
   try {
     const runtime = dependencies.runtime ?? githubActionsRuntime;
     const inputs = readInputs(runtime);
-    const service = dependencies.service ?? createActionService();
+    const service = dependencies.service ?? createActionService(dependencies.providerOptions);
     const request: ExecutionRequest = {
       workspaceRoot: dependencies.workspaceRoot ?? process.env.GITHUB_WORKSPACE ?? process.cwd(),
       configPath: inputs.config,
@@ -89,11 +90,7 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
       }
     }
     checkCancellation();
-    setActionOutputs(
-      result,
-      publication.paths.json ?? "",
-      runtime
-    );
+    setActionOutputs(result, publication.paths.json ?? "", runtime);
     if (shouldFail(result)) runtime.setFailed(`Observability Gate decision: ${result.decision}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Observability Gate Action failed.";

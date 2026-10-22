@@ -13,6 +13,17 @@ async function fixture(path: string): Promise<Buffer> {
 }
 
 describe("file evidence contracts", () => {
+  it("rejects policy-specific sensitive fields in captured signals", async () => {
+    const content = JSON.parse((await fixture("otlp/contract.json")).toString("utf8"));
+    content.logs[0].attributes["customer.email"] = "private@example.test";
+    expect(() =>
+      parseOtlpContract(
+        Buffer.from(JSON.stringify(content)),
+        { commit: "abc123", workflow: "observegate-ci" },
+        { forbiddenFields: ["customer.email"] }
+      )
+    ).toThrowError(expect.objectContaining({ code: "EVIDENCE_INVALID" }));
+  });
   it("extracts only configured SARIF instrumentation rule families and locations", async () => {
     const evidence = parseSarifEvidence(await fixture("sarif/instrumentation.sarif"), {
       acceptedRulePrefixes: ["OTEL"]

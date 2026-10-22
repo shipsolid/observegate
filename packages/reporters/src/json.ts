@@ -95,7 +95,9 @@ export function executionReportDto(result: ExecutionResult): Readonly<Record<str
     startedAt: result.startedAt,
     completedAt: result.completedAt,
     evidenceCoveragePercent: result.evidenceCoveragePercent,
-    ...(result.artifactRetentionDays === undefined ? {} : { artifactRetentionDays: result.artifactRetentionDays }),
+    ...(result.artifactRetentionDays === undefined
+      ? {}
+      : { artifactRetentionDays: result.artifactRetentionDays }),
     ...(result.configurationFingerprint === undefined
       ? {}
       : { configurationFingerprint: result.configurationFingerprint }),

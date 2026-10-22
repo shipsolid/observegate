@@ -5927,6 +5927,7 @@ export const gateContracts: Readonly<Record<string, Readonly<Record<string, Fiel
       }
     },
     source: {
+      adapter: "string",
       provider: "string",
       query: {
         anyOf: [

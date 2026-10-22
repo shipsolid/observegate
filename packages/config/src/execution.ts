@@ -57,7 +57,11 @@ export function describePolicyExecution(
       warnOnSkipped: true
     },
     missingEvidenceBehavior: {
-      blocking: missing(policy.observation.no_data?.blocking_gate, "fail"),
+      blocking: missing(
+        policy.observation.no_data?.blocking_gate ??
+          policy.execution.enforcement?.missing_blocking_evidence,
+        "fail"
+      ),
       advisory: missing(policy.observation.no_data?.advisory_gate, "warn"),
       comparison: missing(policy.observation.no_data?.comparison_gate, "inconclusive"),
       synthetic: missing(policy.observation.no_data?.synthetic_gate, "fail")

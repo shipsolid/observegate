@@ -94,6 +94,7 @@ export async function runPhase(input: RunPhaseInput): Promise<readonly GateResul
           while (clock().getTime() - sampleStartedAt <= sampleDeadline) {
             const successful = await raceWithSignal(input.sample(sampling.signal), sampling.signal);
             if (successful) successfulSamples += 1;
+            if (sampleBudget === 0 && input.observation.minimumSuccessfulSamples <= 1) break;
             const elapsed = Math.max(0, clock().getTime() - sampleStartedAt);
             if (
               elapsed >= evaluationWindow &&
@@ -112,7 +113,11 @@ export async function runPhase(input: RunPhaseInput): Promise<readonly GateResul
         } finally {
           sampling.dispose();
         }
-        if (interrupted || successfulSamples < input.observation.minimumSuccessfulSamples) {
+        if (
+          interrupted ||
+          (successfulSamples < input.observation.minimumSuccessfulSamples &&
+            (sampleBudget > 0 || input.observation.minimumSuccessfulSamples > 1))
+        ) {
           const now = clock();
           return Object.freeze(
             input.plan.gates.map((gate) => insufficientSampleResult(gate, input.plan.phase, now))

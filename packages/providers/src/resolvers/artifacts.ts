@@ -109,8 +109,8 @@ export async function resolveArtifact(
         ...array(base.policy.gates.post_deployment)
       ].map(record),
       ids = all.map((g) => g.id);
-    const sections = ["identity", "targets", "providers", "reporting", "security"].filter(
-      (key) => Object.prototype.hasOwnProperty.call(base.policy,key)
+    const sections = ["identity", "targets", "providers", "reporting", "security"].filter((key) =>
+      Object.prototype.hasOwnProperty.call(base.policy, key)
     );
     for (const phase of ["pre_deployment", "post_deployment"])
       if (Array.isArray(base.policy.gates[phase])) sections.push(`gates.${phase}`);
@@ -190,10 +190,20 @@ export async function resolveArtifact(
       )
     };
   } else if (kind === "policy.change_window") {
-    const fileConfig=typeof source.file === "string" ? yaml((await loadFiles(base,definition))[0].content.toString("utf8"))[0] ?? {} : {};
+    const fileConfig =
+      typeof source.file === "string"
+        ? (yaml((await loadFiles(base, definition))[0].content.toString("utf8"))[0] ?? {})
+        : {};
     const timezone = string(definition.timezone ?? a.timezone ?? fileConfig.timezone),
       freezes = array(definition.freezes ?? a.freezes ?? fileConfig.freezes);
-    if (timezone === undefined || !(Array.isArray(definition.freezes) || Array.isArray(a.freezes) || Array.isArray(fileConfig.freezes)))
+    if (
+      timezone === undefined ||
+      !(
+        Array.isArray(definition.freezes) ||
+        Array.isArray(a.freezes) ||
+        Array.isArray(fileConfig.freezes)
+      )
+    )
       configuration(
         "policy.change_window requires an explicit IANA timezone and freezes array with start/end instants"
       );
@@ -212,12 +222,21 @@ export async function resolveArtifact(
       return base.now() >= start && base.now() < end;
     });
     const exception = record(definition.exception ?? a.exception);
-    const exceptionId=field(exception,"environment_variable",base.environment)??base.environment[String(exception.environment_variable??"")]??exception.id;
-    const exceptionReason=base.environment[String(exception.require_reason_env??"")]??exception.reason;
-    const exceptionApprover=base.environment[String(exception.require_approver_env??"")]??exception.approver;
+    const exceptionId =
+      field(exception, "environment_variable", base.environment) ??
+      base.environment[String(exception.environment_variable ?? "")] ??
+      exception.id;
+    const exceptionReason =
+      base.environment[String(exception.require_reason_env ?? "")] ?? exception.reason;
+    const exceptionApprover =
+      base.environment[String(exception.require_approver_env ?? "")] ?? exception.approver;
     value = {
       freezeActive: active,
-      exceptionApproved: exception.approved === true || (typeof exceptionId==="string"&&typeof exceptionReason==="string"&&typeof exceptionApprover==="string"),
+      exceptionApproved:
+        exception.approved === true ||
+        (typeof exceptionId === "string" &&
+          typeof exceptionReason === "string" &&
+          typeof exceptionApprover === "string"),
       exceptionId,
       exceptionReason,
       exceptionApprover
@@ -276,11 +295,17 @@ export async function resolveArtifact(
     (kind.startsWith("azure_container_apps.") && context.phase === "pre_deployment") ||
     kind === "artifact.instrumentation_configuration"
   ) {
-    const files = await loadFiles(base, definition, [
-      ...array(artifacts.rendered_manifests),
-      ...array(artifacts.rendered_configuration),
-      ...array(artifacts.service_definition)
-    ]);
+    const files = await loadFiles(
+      base,
+      definition,
+      kind === "artifact.instrumentation_configuration"
+        ? [
+            ...array(artifacts.rendered_manifests),
+            ...array(artifacts.rendered_configuration),
+            ...array(artifacts.service_definition)
+          ]
+        : array(artifacts.rendered_configuration)
+    );
     const resources = files.flatMap((f) => yaml(f.content.toString("utf8"))),
       environment = envFrom(resources);
     if (kind === "artifact.instrumentation_configuration") {
@@ -356,10 +381,19 @@ export async function resolveArtifact(
       });
     else if (kind === "evidence.incident_state") value = parseIncidentEvidence(content);
     else if (kind === "evidence.otlp_contract")
-      value = parseOtlpContract(content, {
-        commit: String(record(base.policy.identity.canonical).release_id ?? ""),
-        workflow: String(record(base.policy.identity.canonical).deployment_id ?? "")
-      });
+      value = parseOtlpContract(
+        content,
+        {
+          commit: String(record(base.policy.identity.canonical).release_id ?? ""),
+          workflow: String(record(base.policy.identity.canonical).deployment_id ?? "")
+        },
+        {
+          forbiddenFields: [
+            ...array(a.forbid_sensitive_fields),
+            ...array(a.forbid_metric_labels)
+          ].map(String)
+        }
+      );
     else if (kind === "synthetic.result") {
       const parsed = parseSyntheticEvidence(content);
       const headers = record(a.release_identity_header);

@@ -26,28 +26,31 @@ function invalid(message: string): never {
   throw new GateError({ code: "EVIDENCE_INVALID", safeMessage: message, retryable: false });
 }
 
-function rejectForbiddenKeys(value: unknown): void {
+function rejectForbiddenKeys(value: unknown, forbidden: ReadonlySet<string>): void {
   if (Array.isArray(value)) {
-    value.forEach(rejectForbiddenKeys);
+    value.forEach((item) => rejectForbiddenKeys(item, forbidden));
     return;
   }
   const object = record(value);
   if (object === undefined) return;
   for (const [key, nested] of Object.entries(object)) {
     if (
+      forbidden.has(key) ||
+      (key === "key" && typeof nested === "string" && forbidden.has(nested)) ||
       /(?:request|user)[._-]?id|raw[._-]?timestamp|password|secret|token|cookie|authorization/iu.test(
         key
       )
     ) {
       invalid("OTLP contract contains a forbidden cardinality or sensitive field");
     }
-    rejectForbiddenKeys(nested);
+    rejectForbiddenKeys(nested, forbidden);
   }
 }
 
 export function parseOtlpContract(
   content: Buffer,
-  expectedProvenance: ExpectedProvenance
+  expectedProvenance: ExpectedProvenance,
+  options: { readonly forbiddenFields?: readonly string[] } = {}
 ): OtlpContractEvidence {
   let payload: unknown;
   try {
@@ -55,7 +58,7 @@ export function parseOtlpContract(
   } catch {
     return invalid("OTLP contract is not valid JSON");
   }
-  rejectForbiddenKeys(payload);
+  rejectForbiddenKeys(payload, new Set(options.forbiddenFields ?? []));
   const root = record(payload);
   const resource = record(root?.resource);
   if (

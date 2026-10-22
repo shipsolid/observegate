@@ -147,6 +147,24 @@ describe("common post-deployment gate catalogue", () => {
     ).toBe(true);
   });
 
+  it("accepts repeated matching records while rejecting a conflicting record from the same source", () => {
+    const identities = ["runtime", "metrics", "logs", "logs", "traces", "attestation"].map(
+      (source) => ({ source, releaseId: "candidate", consistent: true })
+    );
+    expect(
+      assertionsFor("telemetry.identity_consistency", {
+        expectedReleaseId: "candidate",
+        identities
+      }).every((result) => result.status === "passed")
+    ).toBe(true);
+    expect(
+      assertionsFor("telemetry.identity_consistency", {
+        expectedReleaseId: "candidate",
+        identities: [...identities, { source: "logs", releaseId: "wrong", consistent: true }]
+      }).some((result) => result.status !== "passed")
+    ).toBe(true);
+  });
+
   it("requires policy-mandated release digest fields even when all evidence omits them", () => {
     const catalog = registerPostCommonGates(new GateCatalog());
     const results = catalog

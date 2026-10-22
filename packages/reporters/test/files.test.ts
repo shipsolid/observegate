@@ -8,8 +8,8 @@ import { renderJson, writeReports } from "../src/index.js";
 const fileSystem = vi.hoisted(() => ({
   failMarkdownInstall: false,
   failMarkdownRestore: false,
-  failBackupCleanup: false
-  , abortInstall: undefined as (() => void) | undefined
+  failBackupCleanup: false,
+  abortInstall: undefined as (() => void) | undefined
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -83,7 +83,14 @@ describe("writeReports", () => {
     await writeFile(join(directory, "observability-gate.json"), "prior");
     const controller = new AbortController();
     fileSystem.abortInstall = () => controller.abort();
-    await expect(writeReports(await fixture(), { directory, formats: ["json", "markdown"], maximumTotalBytes: 1_000_000, signal: controller.signal })).rejects.toMatchObject({ code: "CANCELLED" });
+    await expect(
+      writeReports(await fixture(), {
+        directory,
+        formats: ["json", "markdown"],
+        maximumTotalBytes: 1_000_000,
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({ code: "CANCELLED" });
     expect(await readFile(join(directory, "observability-gate.json"), "utf8")).toBe("prior");
     expect(await readdir(directory)).toEqual(["observability-gate.json"]);
   });

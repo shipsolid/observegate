@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 import type { ExecutionResult } from "@observability-gate/core";
 import { renderJson, renderJunit, renderMarkdown, renderSarif } from "../src/index.js";
 
+function required<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("Required report fixture value is missing.");
+  return value;
+}
+
 async function fixture(): Promise<ExecutionResult> {
   return JSON.parse(
     await readFile(resolve("fixtures/reports/execution-result.json"), "utf8")
@@ -12,16 +17,44 @@ async function fixture(): Promise<ExecutionResult> {
 
 describe("report projections", () => {
   it("preserves declared artifact retention for the workflow uploader", async () => {
-    const rendered = JSON.parse(renderJson({ ...await fixture(), artifactRetentionDays: 14 }));
+    const rendered = JSON.parse(renderJson({ ...(await fixture()), artifactRetentionDays: 14 }));
     expect(rendered.artifactRetentionDays).toBe(14);
   });
   it("retains evidence validity and capability in canonical JSON", async () => {
-    const base = await fixture(), gate = base.gates[0]!, reference = gate.evidence[0]!;
-    const result = { ...base, gates: [{ ...gate, evidence: [{ ...reference, state: "valid" as const, capability: "metrics.query.instant", target: base.target.id, releaseId: base.release.candidateId }] }] };
-    expect(JSON.parse(renderJson(result)).gates[0].evidence[0]).toMatchObject({ state: "valid", capability: "metrics.query.instant", target: base.target.id, releaseId: base.release.candidateId });
+    const base = await fixture(),
+      gate = required(base.gates[0]),
+      reference = required(gate.evidence[0]);
+    const result = {
+      ...base,
+      gates: [
+        {
+          ...gate,
+          evidence: [
+            {
+              ...reference,
+              state: "valid" as const,
+              capability: "metrics.query.instant",
+              target: base.target.id,
+              releaseId: base.release.candidateId
+            }
+          ]
+        }
+      ]
+    };
+    expect(JSON.parse(renderJson(result)).gates[0].evidence[0]).toMatchObject({
+      state: "valid",
+      capability: "metrics.query.instant",
+      target: base.target.id,
+      releaseId: base.release.candidateId
+    });
   });
   it("represents a zero-gate execution failure in every projection", async () => {
-    const failed: ExecutionResult = { ...await fixture(), decision: "error", gates: [], diagnostics: [{ code: "AUTHENTICATION", message: "Credentials rejected", retryable: false }] };
+    const failed: ExecutionResult = {
+      ...(await fixture()),
+      decision: "error",
+      gates: [],
+      diagnostics: [{ code: "AUTHENTICATION", message: "Credentials rejected", retryable: false }]
+    };
     expect(renderMarkdown(failed)).toContain("Credentials rejected");
     expect(renderJunit(failed)).toContain('failures="1"');
     expect(renderJunit(failed)).toContain("Credentials rejected");
@@ -32,8 +65,18 @@ describe("report projections", () => {
 
   it("removes XML-forbidden characters and retains valid Unicode", async () => {
     const base = await fixture();
-    const gate = base.gates[0]!;
-    const value = { ...base, gates: [{ ...gate, id: "test\u0001\ud800😀", assertions: [], diagnostics: [{ code: "TEST", message: "bad\u0000 & <value>", retryable: false }] }] };
+    const gate = required(base.gates[0]);
+    const value = {
+      ...base,
+      gates: [
+        {
+          ...gate,
+          id: "test\u0001\ud800😀",
+          assertions: [],
+          diagnostics: [{ code: "TEST", message: "bad\u0000 & <value>", retryable: false }]
+        }
+      ]
+    };
     const junit = renderJunit(value);
     expect(junit).not.toContain("\u0001");
     expect(junit).not.toContain("\ud800");

@@ -1,6 +1,11 @@
 import { ContainerAppsAPIClient } from "@azure/arm-appcontainers";
 import { ComputeManagementClient } from "@azure/arm-compute";
-import { DefaultAzureCredential } from "@azure/identity";
+import {
+  ChainedTokenCredential,
+  EnvironmentCredential,
+  ManagedIdentityCredential,
+  WorkloadIdentityCredential
+} from "@azure/identity";
 import { GateError } from "@observability-gate/core";
 import { AzureSdkContainerAppsReadClient } from "./container-apps.js";
 import { AzureSdkVmReadClient } from "./virtual-machines.js";
@@ -33,7 +38,17 @@ export function buildAzureRuntimeClients(options: AzureRuntimeClientOptions):
       retryable: false
     });
   }
-  const credential = options.credentialFactory?.() ?? new DefaultAzureCredential();
+  const credential =
+    options.credentialFactory?.() ??
+    new ChainedTokenCredential(
+      new EnvironmentCredential(),
+      ...(process.env.AZURE_FEDERATED_TOKEN_FILE !== undefined &&
+      process.env.AZURE_CLIENT_ID !== undefined &&
+      process.env.AZURE_TENANT_ID !== undefined
+        ? [new WorkloadIdentityCredential()]
+        : []),
+      new ManagedIdentityCredential()
+    );
   const containerApps = new ContainerAppsAPIClient(
     credential as ConstructorParameters<typeof ContainerAppsAPIClient>[0],
     options.subscriptionId

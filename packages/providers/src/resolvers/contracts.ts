@@ -14,10 +14,27 @@ export function validateProviderAcquisition(
   const hasFiles = (gate: Data) => {
     const s = record(gate.source);
     return (
-      typeof s.file === "string" || array(s.files).length > 0 ||
+      typeof s.file === "string" ||
+      array(s.files).length > 0 ||
       array(record(record(policy.providers.evidence)[String(s.provider)]).files).length > 0
     );
   };
+  for (const [name, configuration] of Object.entries(providers)) {
+    const compatible: Readonly<Record<string, readonly string[]>> = {
+      metrics: ["prometheus", "mimir"],
+      logs: ["loki"],
+      traces: ["tempo"],
+      grafana: ["grafana"]
+    };
+    const type = record(configuration).type;
+    if (
+      compatible[name] === undefined ||
+      (type !== undefined && !compatible[name]?.includes(String(type)))
+    )
+      errors.push(
+        `providers.telemetry.${name}: use the canonical metrics/logs/traces/grafana key with its matching provider type`
+      );
+  }
   for (const gate of gates) {
     if (gate.enabled === false) continue;
     const when = record(gate.when),
@@ -33,6 +50,42 @@ export function validateProviderAcquisition(
       a = record(gate.assertions),
       queries = record(source.queries ?? a.queries),
       add = (text: string) => errors.push(`${String(gate.id ?? kind)}: ${text}`);
+    const runtimeGate =
+      [
+        "runtime.provisioned",
+        "runtime.ready",
+        "runtime.release_identity",
+        "runtime.stability",
+        "telemetry.identity_consistency"
+      ].includes(kind) ||
+      ((kind.startsWith("vm.") ||
+        kind.startsWith("kubernetes.") ||
+        kind.startsWith("azure_container_apps.") ||
+        kind === "azure_vm.instance_view") &&
+        phase === "post_deployment");
+    if (
+      runtimeGate &&
+      ![
+        "kubernetes",
+        "azure_container_apps",
+        "azure_vm",
+        "linux_vm",
+        "windows_vm",
+        "generic_vm"
+      ].includes(String(runtime.type))
+    )
+      add(
+        "requires a runtime with a snapshot adapter; generic targets support evidence/telemetry gates only"
+      );
+    if (
+      runtimeGate &&
+      ["linux_vm", "windows_vm", "generic_vm"].includes(String(runtime.type)) &&
+      (array(runtime.expected_hosts).length === 0 ||
+        array(record(runtime.artifacts).runtime_evidence).length === 0)
+    )
+      add(
+        "VM snapshots require runtime.expected_hosts and artifacts.runtime_evidence with measured host/service/agent/release facts"
+      );
     if (kind === "metric.threshold") {
       if (typeof source.query !== "string")
         add("source.query must be an explicit bounded metric query");
@@ -114,8 +167,13 @@ export function validateProviderAcquisition(
       typeof queries.release_consumed_percent !== "string"
     )
       add("release-specific consumption requires source.queries.release_consumed_percent");
-    if (kind === "telemetry.contract" && (!hasFiles(gate) || typeof queries.metrics!=="string" || typeof queries.logs!=="string"))
-      add("telemetry.contract requires provenance-bound source.files capture and live source.queries.metrics/logs with traces provider");
+    if (
+      kind === "telemetry.contract" &&
+      (!hasFiles(gate) || typeof queries.metrics !== "string" || typeof queries.logs !== "string")
+    )
+      add(
+        "telemetry.contract requires provenance-bound source.files capture and live source.queries.metrics/logs with traces provider"
+      );
     if (
       [
         "evidence.sarif",
@@ -127,11 +185,17 @@ export function validateProviderAcquisition(
         "telemetry.pipeline_configuration",
         "deployment.concurrency"
       ].includes(kind) &&
-      !hasFiles(gate) && !(kind==="deployment.concurrency"&&source.provider==="metrics"&&typeof source.query==="string")
+      !hasFiles(gate) &&
+      !(
+        kind === "deployment.concurrency" &&
+        source.provider === "metrics" &&
+        typeof source.query === "string"
+      )
     )
       add("requires source.files or a configured evidence provider with files");
     if (
-      kind === "policy.change_window" && typeof source.file !== "string" &&
+      kind === "policy.change_window" &&
+      typeof source.file !== "string" &&
       (typeof (gate.timezone ?? a.timezone) !== "string" ||
         !Array.isArray(gate.freezes ?? a.freezes))
     )
@@ -140,7 +204,11 @@ export function validateProviderAcquisition(
       add(
         "requires source.probes mapping providers to bounded read query or Grafana dashboard uid"
       );
-    if (kind === "azure_container_apps.replica_health" && (typeof queries.activation_failures!=="string"||typeof queries.deactivation_failures!=="string"))
+    if (
+      kind === "azure_container_apps.replica_health" &&
+      (typeof queries.activation_failures !== "string" ||
+        typeof queries.deactivation_failures !== "string")
+    )
       add(
         "requires source.queries activation_failures and deactivation_failures; runtime snapshots do not expose lifecycle counters"
       );
@@ -230,9 +298,26 @@ export function bindAcquisitionPlan(policy: ProviderPolicy, plan: ExecutionPlan)
           : [])
       ];
     if (kind === "runtime.release_identity")
-      return [runtimeRequirement, requirement("deployment", "deployment.verified"),...(typeof source.runtime_release_query==="string"?[requirement("metrics","metrics.query.instant")]:[])];
-    if(kind==="deployment.concurrency"&&source.provider==="metrics")return [requirement("metrics","metrics.query.instant")];
-    if(kind==="metric.threshold"&&(typeof gate.definition.window==="string"||Number(record(gate.definition.assertions).minimum_samples)>1))return [requirement("metrics","metrics.query.range"),...(source.request_count_query===undefined?[]:[requirement("metrics","metrics.query.instant")])];
+      return [
+        runtimeRequirement,
+        requirement("deployment", "deployment.verified"),
+        ...(typeof source.runtime_release_query === "string"
+          ? [requirement("metrics", "metrics.query.instant")]
+          : [])
+      ];
+    if (kind === "deployment.concurrency" && source.provider === "metrics")
+      return [requirement("metrics", "metrics.query.instant")];
+    if (
+      kind === "metric.threshold" &&
+      (typeof gate.definition.window === "string" ||
+        Number(record(gate.definition.assertions).minimum_samples) > 1)
+    )
+      return [
+        requirement("metrics", "metrics.query.range"),
+        ...(source.request_count_query === undefined
+          ? []
+          : [requirement("metrics", "metrics.query.instant")])
+      ];
     if (
       kind === "runtime.capacity" ||
       kind === "metric.multi_threshold" ||
@@ -246,8 +331,10 @@ export function bindAcquisitionPlan(policy: ProviderPolicy, plan: ExecutionPlan)
     if (kind === "telemetry.presence")
       return [requirement(String(source.provider), telemetry[String(source.provider)] ?? kind)];
     if (kind === "telemetry.service_graph") return [requirement("traces", "traces.search")];
-    if(kind.startsWith("vm.")&&plan.phase==="post_deployment")return [requirement("evidence","vm.snapshot")];
-    if(kind==="azure_container_apps.replica_health")return [runtimeRequirement,requirement("metrics","metrics.query.instant")];
+    if (kind.startsWith("vm.") && plan.phase === "post_deployment")
+      return [requirement("evidence", "vm.snapshot")];
+    if (kind === "azure_container_apps.replica_health")
+      return [runtimeRequirement, requirement("metrics", "metrics.query.instant")];
     if (
       ((kind.startsWith("runtime.") ||
         kind.startsWith("vm.") ||

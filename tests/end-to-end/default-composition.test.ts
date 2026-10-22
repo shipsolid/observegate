@@ -149,7 +149,10 @@ describe("default read-only provider composition", () => {
         { source: { adapter: "active" } },
         context()
       );
-      expect(raw?.[0]?.source).toEqual({ provider: "azure", capability: "container-apps.snapshot" });
+      expect(raw?.[0]?.source).toEqual({
+        provider: "azure",
+        capability: "container-apps.snapshot"
+      });
       expect(raw?.[0]?.value).toMatchObject({
         replicas: { healthy: healthy ? 1 : 0, failed: healthy ? 0 : 1 }
       });

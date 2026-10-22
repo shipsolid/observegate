@@ -225,7 +225,26 @@ export class GuardedTransport {
         } catch (error) {
           const gateError = asGateError(error, request.signal, false);
           lastError = gateError;
-          if (!gateError.retryable || attempt >= request.retry.attempts) {
+          const cause = gateError.cause;
+          const connectionReset =
+            cause !== null &&
+            typeof cause === "object" &&
+            "code" in cause &&
+            cause.code === "ECONNRESET";
+          const category =
+            error instanceof HttpFailure
+              ? `http_${error.httpStatus}`
+              : gateError.safeMessage === "Provider request timed out"
+                ? "timeout"
+                : connectionReset
+                  ? "connection_reset"
+                  : undefined;
+          if (
+            !gateError.retryable ||
+            attempt >= request.retry.attempts ||
+            (request.retry.retryOn !== undefined &&
+              (category === undefined || !request.retry.retryOn.includes(category)))
+          ) {
             throw gateError;
           }
 

@@ -6,9 +6,11 @@ export function discoveryMetadata(metadata: GateTypeMetadata) {
     ...metadata,
     definitionContract: gateContracts[metadata.type] ?? {},
     resultSemantics: {
-      blocking: "A failed assertion, invalid evidence, execution error or inconclusive result blocks deployment.",
+      blocking:
+        "A failed assertion, invalid evidence, execution error or inconclusive result blocks deployment.",
       advisory: "Non-passing advisory results contribute a warning.",
-      missingEvidence: "The configured no_data policy applies; missing evidence does not prove health."
+      missingEvidence:
+        "The configured no_data policy applies; missing evidence does not prove health."
     }
   };
 }

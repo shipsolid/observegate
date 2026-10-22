@@ -20,7 +20,15 @@ export const configValueSchema: z.ZodType<ConfigValue> = z.lazy(() =>
 );
 
 export const configObjectSchema = z.record(z.string(), configValueSchema);
-export const durationSchema = z.string().regex(/^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/u, "Expected a bounded duration such as 30s or 5m.").refine((value) => Number.isFinite(Number.parseFloat(value)) && Number.parseFloat(value) <= Number.MAX_SAFE_INTEGER / 86_400_000, "Duration is too large.");
+export const durationSchema = z
+  .string()
+  .regex(/^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/u, "Expected a bounded duration such as 30s or 5m.")
+  .refine(
+    (value) =>
+      Number.isFinite(Number.parseFloat(value)) &&
+      Number.parseFloat(value) <= Number.MAX_SAFE_INTEGER / 86_400_000,
+    "Duration is too large."
+  );
 
 export const phaseSettingsSchema = z
   .object({

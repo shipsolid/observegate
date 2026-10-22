@@ -61,9 +61,24 @@ export function createRuntimeResolver(
   let consecutive = 0;
   let first: Data | undefined;
   let previous: Data | undefined;
-  let vmEvidence:RuntimeResolver|undefined;
-  function evidenceVm():RuntimeResolver {
-    if(vmEvidence===undefined){const target=String(base.policy.execution.active_target);vmEvidence=createRuntimeResolver({...base,policy:{...base.policy,targets:{...base.policy.targets,definitions:{...record(base.policy.targets.definitions),[target]:{runtime:{...runtime,type:"generic_vm"}}}}}});}
+  let vmEvidence: RuntimeResolver | undefined;
+  function evidenceVm(): RuntimeResolver {
+    if (vmEvidence === undefined) {
+      const target = String(base.policy.execution.active_target);
+      vmEvidence = createRuntimeResolver({
+        ...base,
+        policy: {
+          ...base.policy,
+          targets: {
+            ...base.policy.targets,
+            definitions: {
+              ...record(base.policy.targets.definitions),
+              [target]: { runtime: { ...runtime, type: "generic_vm" } }
+            }
+          }
+        }
+      });
+    }
     return vmEvidence;
   }
   let kube: KubernetesRuntimeAdapter | undefined,
@@ -73,9 +88,15 @@ export function createRuntimeResolver(
   async function collect(context: Context): Promise<Evidence<unknown>> {
     if (type === "kubernetes") {
       const contextName = field(runtime, "context", env);
+      const provider = record(record(base.policy.providers.runtime)[String(runtime.provider)]);
+      const kubeconfigEnvironment = string(record(provider.authentication).kubeconfig_env);
+      const kubeconfigPath = env[kubeconfigEnvironment ?? "KUBECONFIG"];
       kube ??= new KubernetesRuntimeAdapter(
         clients.kubernetes ??
-          buildKubernetesReadClient(contextName === undefined ? {} : { context: contextName }),
+          buildKubernetesReadClient({
+            ...(contextName === undefined ? {} : { context: contextName }),
+            ...(kubeconfigPath === undefined ? {} : { kubeconfigPath })
+          }),
         base.now
       );
       const workload = record(runtime.workload),
@@ -109,7 +130,9 @@ export function createRuntimeResolver(
       const resourceGroup = required(field(runtime, "resource_group", env), "resource_group");
       if (type === "azure_container_apps") {
         aca ??= new AzureContainerAppsAdapter(
-          clients.containerApps ?? (built?.containerAppsRead ?? configuration("Container Apps read client is unavailable")),
+          clients.containerApps ??
+            built?.containerAppsRead ??
+            configuration("Container Apps read client is unavailable"),
           base.now
         );
         return aca.getSnapshot({
@@ -120,7 +143,10 @@ export function createRuntimeResolver(
           signal: context.signal
         });
       }
-      azure ??= new AzureVmRuntimeAdapter(clients.azureVm ?? (built?.vmRead ?? configuration("Azure VM read client is unavailable")), base.now);
+      azure ??= new AzureVmRuntimeAdapter(
+        clients.azureVm ?? built?.vmRead ?? configuration("Azure VM read client is unavailable"),
+        base.now
+      );
       return azure.getSnapshot({
         target: context.targetId,
         resourceGroup,
@@ -128,7 +154,12 @@ export function createRuntimeResolver(
         signal: context.signal
       });
     }
-    if (type === "linux_vm" || type === "windows_vm" || (type === "generic_vm" || type === "generic")) {
+    if (
+      type === "linux_vm" ||
+      type === "windows_vm" ||
+      type === "generic_vm" ||
+      type === "generic"
+    ) {
       const files = await loadFiles(base, {
         source: { files: array(record(runtime.artifacts).runtime_evidence) }
       });
@@ -202,7 +233,11 @@ export function createRuntimeResolver(
     );
   }
   async function snapshot(context: Context, fresh = false): Promise<Evidence<unknown>> {
-    if (fresh) {pending = undefined;if(type==="azure_vm"&&array(record(runtime.artifacts).runtime_evidence).length>0)await evidenceVm().snapshot(context,true);}
+    if (fresh) {
+      pending = undefined;
+      if (type === "azure_vm" && array(record(runtime.artifacts).runtime_evidence).length > 0)
+        await evidenceVm().snapshot(context, true);
+    }
     pending ??= collect(context).then((raw) => {
       const value = record(raw.value);
       previous = first;
@@ -246,7 +281,8 @@ export function createRuntimeResolver(
     if (context.phase === "pre_deployment" && kind !== "runtime.capacity" && kind !== "vm.capacity")
       return undefined;
     if (kind === "runtime.capacity") return undefined;
-    if(type==="azure_vm"&&kind.startsWith("vm."))return evidenceVm().resolve(kind,definition,context);
+    if (type === "azure_vm" && kind.startsWith("vm."))
+      return evidenceVm().resolve(kind, definition, context);
     const raw = await snapshot(context),
       v = record(raw.value),
       a = record(definition.assertions),
@@ -332,9 +368,21 @@ export function createRuntimeResolver(
       value = {
         ready: consecutive > 0,
         availableInstances:
-          replicas.available ?? replicas.healthy ?? (type==="azure_vm"?(v.powerState==="running"?1:0):hosts.filter((h) => h.available).length),
+          replicas.available ??
+          replicas.healthy ??
+          (type === "azure_vm"
+            ? v.powerState === "running"
+              ? 1
+              : 0
+            : hosts.filter((h) => h.available).length),
         unavailableInstances:
-          replicas.unavailable ?? replicas.failed ?? (type==="azure_vm"?(v.powerState==="running"?0:1):hosts.filter((h) => !h.available).length),
+          replicas.unavailable ??
+          replicas.failed ??
+          (type === "azure_vm"
+            ? v.powerState === "running"
+              ? 0
+              : 1
+            : hosts.filter((h) => !h.available).length),
         minimumAvailableInstances:
           number(a.minimum_available_instances) ?? number(expected.minimum_available_replicas) ?? 1,
         consecutiveSuccessfulSamples: consecutive,

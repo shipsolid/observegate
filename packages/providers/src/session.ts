@@ -18,12 +18,7 @@ import {
 } from "./transport/guarded-fetch.js";
 import { UrlPolicy } from "./transport/url-policy.js";
 import { resolveArtifact } from "./resolvers/artifacts.js";
-import {
-  resolveTelemetry,
-  metric,
-  traceRecords,
-  logRecords
-} from "./resolvers/telemetry.js";
+import { resolveTelemetry, metric, traceRecords, logRecords } from "./resolvers/telemetry.js";
 import { resolveComparison } from "./resolvers/comparison.js";
 import { resolveGrafana } from "./resolvers/grafana.js";
 import { createRuntimeResolver, type RuntimeClients } from "./resolvers/runtime.js";
@@ -129,17 +124,47 @@ export function createPolicyProviderSession(
         configuration("Provider query exceeds limits.maximum_query_length");
       return guarded.request({
         ...request,
+        ...(options.policy.execution.retries === undefined
+          ? {}
+          : {
+              retry: {
+                attempts:
+                  number(record(options.policy.execution.retries).attempts) ??
+                  request.retry.attempts,
+                initialBackoffMs: durationMs(
+                  record(options.policy.execution.retries).initial_backoff,
+                  request.retry.initialBackoffMs
+                ),
+                maximumBackoffMs: durationMs(
+                  record(options.policy.execution.retries).maximum_backoff,
+                  request.retry.maximumBackoffMs
+                ),
+                retryStatuses: array(record(options.policy.execution.retries).retry_on).flatMap(
+                  (item) =>
+                    typeof item === "string" && /^http_\d{3}$/u.test(item)
+                      ? [Number(item.slice(5))]
+                      : []
+                ),
+                retryOn: array(record(options.policy.execution.retries).retry_on).map(String)
+              }
+            }),
         maximumResponseBytes: Math.min(request.maximumResponseBytes, maximumResponseBytes)
       });
     }
   };
-  const maximumFutureSkewMs = durationMs(
-    record(record(options.policy.execution).clock).maximum_clock_skew,
-    30_000
+  const maximumFutureSkewMs = Math.min(
+    durationMs(record(record(options.policy.execution).clock).maximum_clock_skew, 30_000),
+    durationMs(record(options.policy.security.evidence).reject_future_timestamps_beyond, Infinity)
   );
   const fileLoader = new SafeEvidenceFileLoader({
     workspaceRoot: options.workspaceRoot,
-    maximumBytes: maximumResponseBytes,
+    maximumBytes: Math.min(
+      maximumResponseBytes,
+      parseByteSize(
+        record(options.policy.security.files).maximum_evidence_file_size,
+        25 * 1024 * 1024
+      )
+    ),
     clock: now
   });
 
@@ -262,11 +287,30 @@ export function createPolicyProviderSession(
       const expected = record(activeRuntime(options.policy).expected),
         imageDigest = field(expected, "image_digest", options.environment),
         artifactDigest = field(expected, "artifact_digest", options.environment);
-      const queried=typeof source.runtime_release_query === "string" ? await metric(base,source.runtime_release_query,context) : undefined;
-      const samples=queried?.value?.samples??[];
-      const single=(values:readonly unknown[])=>{const unique=[...new Set(values.filter(v=>typeof v==="string"&&v.length>0))];return unique.length===1?unique[0]:undefined;};
-      const observedRuntime={releaseId:queried===undefined?(releaseIds.length===1?releaseIds[0]:revision.suffix):single(samples.map(s=>s.identity.serviceVersion)),imageDigest:revision.imageDigest??(digests.length===1?digests[0]:single(samples.map(s=>s.labels.image_digest))),artifactDigest:single(samples.map(s=>s.labels.artifact_digest)),deploymentId:single(samples.map(s=>s.labels.deployment_id))};
-      const requireDeploymentId=assertions.deployment_id!==undefined||observedRuntime.deploymentId!==undefined;
+      const queried =
+        typeof source.runtime_release_query === "string"
+          ? await metric(base, source.runtime_release_query, context)
+          : undefined;
+      const samples = queried?.value?.samples ?? [];
+      const single = (values: readonly unknown[]) => {
+        const unique = [...new Set(values.filter((v) => typeof v === "string" && v.length > 0))];
+        return unique.length === 1 ? unique[0] : undefined;
+      };
+      const observedRuntime = {
+        releaseId:
+          queried === undefined
+            ? releaseIds.length === 1
+              ? releaseIds[0]
+              : revision.suffix
+            : single(samples.map((s) => s.identity.serviceVersion)),
+        imageDigest:
+          revision.imageDigest ??
+          (digests.length === 1 ? digests[0] : single(samples.map((s) => s.labels.image_digest))),
+        artifactDigest: single(samples.map((s) => s.labels.artifact_digest)),
+        deploymentId: single(samples.map((s) => s.labels.deployment_id))
+      };
+      const requireDeploymentId =
+        assertions.deployment_id !== undefined || observedRuntime.deploymentId !== undefined;
       return [
         mapped(raw, gateType, {
           runtime: observedRuntime,
@@ -275,34 +319,88 @@ export function createPolicyProviderSession(
             ...(imageDigest === undefined
               ? { artifactDigest: attestation.artifactDigest }
               : { imageDigest: attestation.artifactDigest }),
-            ...(requireDeploymentId?{deploymentId:attestation.deploymentId}:{})
+            ...(requireDeploymentId ? { deploymentId: attestation.deploymentId } : {})
           },
           expected: {
             releaseId: context.releaseId,
             ...(imageDigest === undefined ? {} : { imageDigest }),
             ...(artifactDigest === undefined ? {} : { artifactDigest }),
-            ...(requireDeploymentId?{deploymentId:record(options.policy.identity.canonical).deployment_id}:{})
+            ...(requireDeploymentId
+              ? { deploymentId: record(options.policy.identity.canonical).deployment_id }
+              : {})
           }
         }),
-        evidence("deployment.verified",context,new Date(now()).toISOString(),attestation,"deployment","deployment.verified"),
-        ...(queried===undefined?[]:[queried])
+        evidence(
+          "deployment.verified",
+          context,
+          new Date(now()).toISOString(),
+          attestation,
+          "deployment",
+          "deployment.verified"
+        ),
+        ...(queried === undefined ? [] : [queried])
       ];
     }
-    if(gateType==="telemetry.identity_consistency") {
-      const telemetryEvidence=await resolveTelemetry(base,gateType,definition,context)??[];
-      const releases=await resolve("runtime.release_identity",definition,context),release=record(releases[0]?.value),expectedReleaseId=context.releaseId;
-      const identities=[...array(record(telemetryEvidence[0]?.value).identities),...(["runtime","attestation"] as const).map(source=>({source,releaseId:record(release[source]).releaseId,consistent:record(release[source]).releaseId===expectedReleaseId}))];
-      return [combined([...telemetryEvidence,...releases],gateType,{expectedReleaseId,identities}),...telemetryEvidence,...releases];
+    if (gateType === "telemetry.identity_consistency") {
+      const telemetryEvidence = (await resolveTelemetry(base, gateType, definition, context)) ?? [];
+      const releases = await resolve("runtime.release_identity", definition, context),
+        release = record(releases[0]?.value),
+        expectedReleaseId = context.releaseId;
+      const identities = [
+        ...array(record(telemetryEvidence[0]?.value).identities),
+        ...(["runtime", "attestation"] as const).map((source) => ({
+          source,
+          releaseId: record(release[source]).releaseId,
+          consistent: record(release[source]).releaseId === expectedReleaseId
+        }))
+      ];
+      return [
+        combined([...telemetryEvidence, ...releases], gateType, { expectedReleaseId, identities }),
+        ...telemetryEvidence,
+        ...releases
+      ];
     }
-    if(gateType==="azure_container_apps.replica_health"){
-      const raw=await runtime.resolve(gateType,definition,context)??[],queries=record(source.queries),value=record(raw[0]?.value),replicas=record(value.replicas),measured:Record<string,unknown>={},queriesRaw:Evidence<unknown>[]=[];
-      for(const[name,key]of [["activationFailures","activation_failures"],["deactivationFailures","deactivation_failures"]]){const query=queries[key??""];if(typeof query!=="string")configuration("Container Apps replica lifecycle assertions require source.queries.activation_failures and deactivation_failures");const evidence=await metric(base,query,context);queriesRaw.push(evidence);measured[String(name)]=evidence.value?.samples.length===1?evidence.value.samples[0]?.value:undefined;}
-      const all=[...raw,...queriesRaw];return [combined(all,gateType,{...value,replicas:{...replicas,...measured}}),...all];
+    if (gateType === "azure_container_apps.replica_health") {
+      const raw = (await runtime.resolve(gateType, definition, context)) ?? [],
+        queries = record(source.queries),
+        value = record(raw[0]?.value),
+        replicas = record(value.replicas),
+        measured: Record<string, unknown> = {},
+        queriesRaw: Evidence<unknown>[] = [];
+      for (const [name, key] of [
+        ["activationFailures", "activation_failures"],
+        ["deactivationFailures", "deactivation_failures"]
+      ]) {
+        const query = queries[key ?? ""];
+        if (typeof query !== "string")
+          configuration(
+            "Container Apps replica lifecycle assertions require source.queries.activation_failures and deactivation_failures"
+          );
+        const evidence = await metric(base, query, context);
+        queriesRaw.push(evidence);
+        measured[String(name)] =
+          evidence.value?.samples.length === 1 ? evidence.value.samples[0]?.value : undefined;
+      }
+      const all = [...raw, ...queriesRaw];
+      return [
+        combined(all, gateType, { ...value, replicas: { ...replicas, ...measured } }),
+        ...all
+      ];
     }
-    if(gateType==="deployment.concurrency"&&source.provider==="metrics"){
-      const raw=await metric(base,source.query,context);
-      const deployments=(raw.value?.samples??[]).map(sample=>{const id=sample.labels.deployment_id;if(id===undefined)configuration("Deployment concurrency query must retain deployment_id label");return {id,active:sample.value>0};});
-      return [mapped(raw,gateType,{deployments,currentDeploymentId:record(options.policy.identity.canonical).deployment_id})];
+    if (gateType === "deployment.concurrency" && source.provider === "metrics") {
+      const raw = await metric(base, source.query, context);
+      const deployments = (raw.value?.samples ?? []).map((sample) => {
+        const id = sample.labels.deployment_id;
+        if (id === undefined)
+          configuration("Deployment concurrency query must retain deployment_id label");
+        return { id, active: sample.value > 0 };
+      });
+      return [
+        mapped(raw, gateType, {
+          deployments,
+          currentDeploymentId: record(options.policy.identity.canonical).deployment_id
+        })
+      ];
     }
     if (gateType === "providers.health") {
       const probes = record(source.probes ?? assertions.probes),
@@ -439,14 +537,21 @@ export function createPolicyProviderSession(
         signal: context.signal
       });
       return [
-        mapped(raw, gateType, {
-          status: raw.value?.status,
-          expectedStatuses,
-          durationMs: now() - started,
-          maximumDurationMs: durationMs(assertions.maximum_duration, 10000),
-          headersMatch: raw.value?.headersMatch ?? false,
-          jsonMatches: raw.value?.jsonMatches ?? true
-        })
+        {
+          ...mapped(raw, gateType, {
+            status: raw.value?.status,
+            expectedStatuses,
+            durationMs: now() - started,
+            maximumDurationMs: durationMs(assertions.maximum_duration, 10000),
+            headersMatch: raw.value?.headersMatch ?? false,
+            jsonMatches: raw.value?.jsonMatches ?? true
+          }),
+          target: context.targetId,
+          ...(context.releaseId === undefined ? {} : { releaseId: context.releaseId }),
+          ...(raw.value !== undefined && raw.diagnostics.length === 0
+            ? { state: "valid" as const }
+            : {})
+        }
       ];
     }
     for (const resolver of [
@@ -463,7 +568,17 @@ export function createPolicyProviderSession(
       `${gateType} has no complete evidence acquisition contract; configure a supported adapter and gate-specific source parameters`
     );
   };
-  const postGates = array(options.policy.gates.post_deployment)
+  const postGates = (
+    options.plan === undefined
+      ? array(options.policy.gates.post_deployment)
+      : options.plan.phase === "post_deployment"
+        ? options.plan.gates
+            .filter(
+              (gate) => gate.applicability === "applicable" && gate.enforcement === "blocking"
+            )
+            .map((gate) => gate.definition)
+        : []
+  )
     .map(record)
     .filter((g) => g.enabled !== false && g.enforcement !== "advisory");
   let generation = 0;
@@ -487,7 +602,14 @@ export function createPolicyProviderSession(
                 clock: () => new Date(now())
               };
             generation += 1;
-            if(postGates.some(g=>["runtime.","vm.","kubernetes.","azure_container_apps.","azure_vm."].some(prefix=>String(g.type).startsWith(prefix))||g.type==="telemetry.identity_consistency"))
+            if (
+              postGates.some(
+                (g) =>
+                  ["runtime.", "vm.", "kubernetes.", "azure_container_apps.", "azure_vm."].some(
+                    (prefix) => String(g.type).startsWith(prefix)
+                  ) || g.type === "telemetry.identity_consistency"
+              )
+            )
               await runtime.snapshot(context, true);
             let successful = true;
             for (const gate of postGates) {

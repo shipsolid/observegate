@@ -66,14 +66,22 @@ function deduplicateRequirements(
 }
 
 function gateEnforcement(policy: RawPolicy, gateEnforcement: string | undefined): Enforcement {
-  const enforcement = gateEnforcement ?? policy.gate_defaults.enforcement ?? policy.execution.enforcement?.default ?? "blocking";
+  const enforcement =
+    gateEnforcement ??
+    policy.gate_defaults.enforcement ??
+    policy.execution.enforcement?.default ??
+    "blocking";
   return enforcement === "advisory" ? "advisory" : "blocking";
 }
 
 export function createExecutionPlan(input: CreateExecutionPlanInput): ExecutionPlan {
   const { policy, phase, catalog } = input;
   if (policy.gates[phase].length > (policy.limits.maximum_gates ?? 1000)) {
-    throw new GateError({ code: "CONFIG_SCHEMA", safeMessage: "The policy exceeds maximum_gates.", retryable: false });
+    throw new GateError({
+      code: "CONFIG_SCHEMA",
+      safeMessage: "The policy exceeds maximum_gates.",
+      retryable: false
+    });
   }
   const targetId = policy.execution.active_target;
   const target = policy.targets.definitions[targetId];
@@ -174,11 +182,19 @@ export function createExecutionPlan(input: CreateExecutionPlanInput): ExecutionP
     runtimeType,
     gates: Object.freeze(gates),
     requiredProviders,
-    deadlineMs: Math.min(parseDuration(policy.execution.phases[phase].timeout), parseDuration(policy.limits.maximum_total_runtime ?? policy.execution.phases[phase].timeout)),
-    maximumTotalRuntimeMs: parseDuration(policy.limits.maximum_total_runtime ?? policy.execution.phases[phase].timeout),
+    deadlineMs: Math.min(
+      parseDuration(policy.execution.phases[phase].timeout),
+      parseDuration(policy.limits.maximum_total_runtime ?? policy.execution.phases[phase].timeout)
+    ),
+    maximumTotalRuntimeMs: parseDuration(
+      policy.limits.maximum_total_runtime ?? policy.execution.phases[phase].timeout
+    ),
     maximumQueries: policy.limits.maximum_queries ?? 1000,
     maximumQueryLengthBytes: parseByteSize(policy.limits.maximum_query_length, 16 * 1024),
-    maximumResponseBytes: parseByteSize(policy.limits.maximum_provider_response_size, 2 * 1024 * 1024),
+    maximumResponseBytes: parseByteSize(
+      policy.limits.maximum_provider_response_size,
+      2 * 1024 * 1024
+    ),
     concurrency: policy.execution.phases[phase].concurrency,
     perProviderConcurrency: policy.limits.maximum_parallel_requests_per_provider ?? 4,
     failFast: policy.execution.enforcement?.fail_fast ?? false

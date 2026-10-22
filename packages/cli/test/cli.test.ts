@@ -233,7 +233,9 @@ describe("observability-gate CLI", () => {
     const value = harness();
     expect(await runCli(["catalog", "--json"], value.dependencies)).toBe(0);
     expect(JSON.parse(value.stdout())[0].type).toBe("policy.self_check");
-    expect(JSON.parse(value.stdout())[0].definitionContract.assertions.require_sections).toEqual(["string"]);
+    expect(JSON.parse(value.stdout())[0].definitionContract.assertions.require_sections).toEqual([
+      "string"
+    ]);
   });
 
   it("returns cancellation exit code when the root signal is aborted", async () => {

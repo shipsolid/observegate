@@ -5,6 +5,7 @@ export interface RetryPolicy {
   readonly initialBackoffMs: number;
   readonly maximumBackoffMs: number;
   readonly retryStatuses: readonly number[];
+  readonly retryOn?: readonly string[];
 }
 
 export function exponentialBackoff(

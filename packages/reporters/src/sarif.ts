@@ -32,27 +32,47 @@ function sarifReportDto(result: ExecutionResult): Readonly<Record<string, unknow
     runs: [
       {
         tool: { driver: { name: "Observability Gate", rules } },
-        ...((result.decision === "error" || result.diagnostics.length > 0 || (result.gates.length === 0 && ["fail", "inconclusive"].includes(result.decision))) ? { invocations: [{ executionSuccessful: false, toolExecutionNotifications: result.diagnostics.map((item) => ({ level: "error", message: { text: `${item.code}: ${item.message}` } })) }] } : {}),
-        results: [...result.diagnostics.map((diagnostic) => ({ level: "error", message: { text: `${diagnostic.code}: ${diagnostic.message}` } })), ...findings.map(({ gateId, level, diagnostic }) => ({
-          ruleId: gateId,
-          level,
-          message: { text: diagnostic.message },
-          locations: [
-            {
-              physicalLocation: {
-                artifactLocation: { uri: diagnostic.artifactLocation.uri },
-                region: {
-                  ...(diagnostic.artifactLocation.line === undefined
-                    ? {}
-                    : { startLine: diagnostic.artifactLocation.line }),
-                  ...(diagnostic.artifactLocation.column === undefined
-                    ? {}
-                    : { startColumn: diagnostic.artifactLocation.column })
+        ...(result.decision === "error" ||
+        result.diagnostics.length > 0 ||
+        (result.gates.length === 0 && ["fail", "inconclusive"].includes(result.decision))
+          ? {
+              invocations: [
+                {
+                  executionSuccessful: false,
+                  toolExecutionNotifications: result.diagnostics.map((item) => ({
+                    level: "error",
+                    message: { text: `${item.code}: ${item.message}` }
+                  }))
+                }
+              ]
+            }
+          : {}),
+        results: [
+          ...result.diagnostics.map((diagnostic) => ({
+            level: "error",
+            message: { text: `${diagnostic.code}: ${diagnostic.message}` }
+          })),
+          ...findings.map(({ gateId, level, diagnostic }) => ({
+            ruleId: gateId,
+            level,
+            message: { text: diagnostic.message },
+            locations: [
+              {
+                physicalLocation: {
+                  artifactLocation: { uri: diagnostic.artifactLocation.uri },
+                  region: {
+                    ...(diagnostic.artifactLocation.line === undefined
+                      ? {}
+                      : { startLine: diagnostic.artifactLocation.line }),
+                    ...(diagnostic.artifactLocation.column === undefined
+                      ? {}
+                      : { startColumn: diagnostic.artifactLocation.column })
+                  }
                 }
               }
-            }
-          ]
-        }))]
+            ]
+          }))
+        ]
       }
     ]
   };

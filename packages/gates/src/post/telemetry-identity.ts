@@ -35,7 +35,6 @@ export const telemetryIdentityGate = createEvidenceGate({
               typeof identity.source === "string" &&
               identity.source.length > 0
           ) &&
-          new Set(sources).size === sources.length &&
           requiredSources.every((source) => sources.includes(source)),
         "Canonical identity fields agree across every source",
         observed

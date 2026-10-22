@@ -6,12 +6,28 @@ import type { GateCatalogMetadata } from "@observability-gate/core";
 
 type Policy = ReturnType<typeof parsePolicy>;
 
+function present<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("Required test fixture value is missing.");
+  return value;
+}
+
 async function minimal(): Promise<Policy> {
   return parse(await readFile("fixtures/configs/minimal-valid.yml", "utf8"));
 }
 
 describe("complete policy validation", () => {
   it.each([
+    [
+      "invalid no-data behavior",
+      (p: Policy) => {
+        p.observation.no_data = {
+          blocking_gate: "ignore",
+          advisory_gate: "warn",
+          comparison_gate: "inconclusive",
+          synthetic_gate: "fail"
+        } as unknown as NonNullable<Policy["observation"]["no_data"]>;
+      }
+    ],
     [
       "provider authentication",
       (p: Policy) => {
@@ -23,7 +39,10 @@ describe("complete policy validation", () => {
     [
       "runtime workload",
       (p: Policy) => {
-        p.targets.definitions.test!.runtime.workload = { kind: "Deployment", naem_env: "WORKLOAD" };
+        present(p.targets.definitions.test).runtime.workload = {
+          kind: "Deployment",
+          naem_env: "WORKLOAD"
+        };
       }
     ],
     [
@@ -67,25 +86,25 @@ describe("complete policy validation", () => {
     [
       "unimplemented metric operator",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.assertions!.operator = "not_equals";
+        present(present(p.gates.post_deployment[0]).assertions).operator = "not_equals";
       }
     ],
     [
       "invalid query descriptor",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.source!.queries = { cpu: { candiate: "up" } };
+        present(present(p.gates.post_deployment[0]).source).queries = { cpu: { candiate: "up" } };
       }
     ],
     [
       "invalid probe descriptor",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.source!.probes = { metrics: { qurey: "up" } };
+        present(present(p.gates.post_deployment[0]).source).probes = { metrics: { qurey: "up" } };
       }
     ],
     [
       "object condition",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.when = { runtime_type: { type: "kubernetes" } };
+        present(p.gates.post_deployment[0]).when = { runtime_type: { type: "kubernetes" } };
       }
     ],
     [
@@ -126,55 +145,55 @@ describe("complete policy validation", () => {
     [
       "missing metric assertions",
       (p: Policy) => {
-        delete p.gates.post_deployment[0]!.assertions;
+        delete present(p.gates.post_deployment[0]).assertions;
       }
     ],
     [
       "missing metric operator",
       (p: Policy) => {
-        delete p.gates.post_deployment[0]!.assertions!.operator;
+        delete present(present(p.gates.post_deployment[0]).assertions).operator;
       }
     ],
     [
       "unknown metric operator",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.assertions!.operator = "approximately";
+        present(present(p.gates.post_deployment[0]).assertions).operator = "approximately";
       }
     ],
     [
       "nonnumeric threshold",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.assertions!.threshold = "high";
+        present(present(p.gates.post_deployment[0]).assertions).threshold = "high";
       }
     ],
     [
       "negative sample count",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.assertions!.minimum_samples = -1;
+        present(present(p.gates.post_deployment[0]).assertions).minimum_samples = -1;
       }
     ],
     [
       "fractional request count",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.assertions!.minimum_requests = 1.5;
+        present(present(p.gates.post_deployment[0]).assertions).minimum_requests = 1.5;
       }
     ],
     [
       "numeric query",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.source!.query = 42;
+        present(present(p.gates.post_deployment[0]).source).query = 42;
       }
     ],
     [
       "unknown trace query field",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.source!.query = { unknown: "value" };
+        present(present(p.gates.post_deployment[0]).source).query = { unknown: "value" };
       }
     ],
     [
       "nonstring trace identity",
       (p: Policy) => {
-        p.gates.post_deployment[0]!.source!.query = { "resource.service.name": 42 };
+        present(present(p.gates.post_deployment[0]).source).query = { "resource.service.name": 42 };
       }
     ],
     [
@@ -215,7 +234,7 @@ describe("complete policy validation", () => {
     [
       "unknown runtime type",
       (p: Policy) => {
-        p.targets.definitions.test!.runtime.type = "magic_cloud";
+        present(p.targets.definitions.test).runtime.type = "magic_cloud";
       }
     ],
     [

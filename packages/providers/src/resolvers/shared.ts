@@ -21,7 +21,8 @@ export function durationMs(value: unknown, fallback: number): number {
   const match = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/u.exec(value);
   return match === null
     ? fallback
-    : Number(match[1]) * ({ ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 }[match[2] ?? ""] ?? 1);
+    : Number(match[1]) *
+        ({ ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 }[match[2] ?? ""] ?? 1);
 }
 export function configuration(message: string): never {
   throw new GateError({ code: "CONFIG_REFERENCE", safeMessage: message, retryable: false });
@@ -110,11 +111,13 @@ export async function loadFiles(
   const source = record(definition.source);
   const provider = record(record(base.policy.providers.evidence)[String(source.provider)]);
   const paths =
-    typeof source.file === "string" ? [source.file] : array(source.files).length > 0
-      ? array(source.files)
-      : array(provider.files).length > 0
-        ? array(provider.files)
-        : (fallback ?? []);
+    typeof source.file === "string"
+      ? [source.file]
+      : array(source.files).length > 0
+        ? array(source.files)
+        : array(provider.files).length > 0
+          ? array(provider.files)
+          : (fallback ?? []);
   if (paths.length === 0)
     configuration(
       `${String(definition.type ?? "Gate")} requires source.files or a provider with explicit files`

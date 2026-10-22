@@ -62,14 +62,8 @@ export async function resolveComparison(
       configuration(
         `${kind} requires independent candidate and baseline request_count_query for traffic checks or normalization`
       );
-    const cr =
-        typeof crq === "string"
-          ? await metric(base, crq, candidateContext)
-          : undefined,
-      br =
-        typeof brq === "string"
-          ? await metric(base, brq, baselineContext)
-          : undefined;
+    const cr = typeof crq === "string" ? await metric(base, crq, candidateContext) : undefined,
+      br = typeof brq === "string" ? await metric(base, brq, baselineContext) : undefined;
     if (cr) raws.push(cr);
     if (br) raws.push(br);
     const unit = string(config.unit ?? a.unit ?? record(a.absolute_increase).unit) ?? "value";
@@ -137,12 +131,12 @@ export async function resolveComparison(
             c.value?.traces
               .flatMap((t) => t.spans)
               .filter((s) => s.peerService === name && s.durationMs !== undefined)
-              .flatMap((s) => s.durationMs === undefined ? [] : [s.durationMs]) ?? [],
+              .flatMap((s) => (s.durationMs === undefined ? [] : [s.durationMs])) ?? [],
           bv =
             b.value?.traces
               .flatMap((t) => t.spans)
               .filter((s) => s.peerService === name && s.durationMs !== undefined)
-              .flatMap((s) => s.durationMs === undefined ? [] : [s.durationMs]) ?? [];
+              .flatMap((s) => (s.durationMs === undefined ? [] : [s.durationMs])) ?? [];
         return {
           name,
           comparison: {

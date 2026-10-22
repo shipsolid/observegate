@@ -102,7 +102,13 @@ export class FakeObservabilityStack {
               ? []
               : [
                   {
-                    stream: { service: "checkout" },
+                    stream: {
+                      service: "checkout",
+                      resource_service_name: "checkout",
+                      resource_service_namespace: "commerce",
+                      resource_service_version: "release-candidate",
+                      resource_deployment_environment_name: "production"
+                    },
                     values: [
                       [
                         String(BigInt(Date.parse(this.timestamp)) * 1_000_000n),
@@ -160,7 +166,19 @@ export class FakeObservabilityStack {
     }
     if (url.pathname === "/api/v1/provisioning/alert-rules") return [];
     if (url.pathname === "/api/v1/provisioning/policies") {
-      return { routes: [], mute_windows: [] };
+      return {
+        routes: [
+          {
+            receiver: "oncall",
+            object_matchers: [
+              ["service", "=", "checkout"],
+              ["environment", "=", "production"]
+            ],
+            mute_time_intervals: []
+          }
+        ],
+        mute_windows: []
+      };
     }
     if (url.pathname.includes("/resources/v1/slo/")) {
       return {

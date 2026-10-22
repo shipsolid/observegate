@@ -35,7 +35,15 @@ export async function runCommand(options: RunOptions, context: CommandContext): 
             cause: error
           });
     context.output.stderr(`${reportError.code}: ${reportError.safeMessage}\n`);
-    writeResult({ ...result, decision: result.decision === "fail" ? "fail" : "error", diagnostics: [...result.diagnostics, reportError.toDiagnostic()] }, context.output, options.json === true);
+    writeResult(
+      {
+        ...result,
+        decision: result.decision === "fail" ? "fail" : "error",
+        diagnostics: [...result.diagnostics, reportError.toDiagnostic()]
+      },
+      context.output,
+      options.json === true
+    );
     return result.decision === "fail" ? 1 : 3;
   }
   writeResult(result, context.output, options.json === true);

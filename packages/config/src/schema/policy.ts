@@ -22,10 +22,10 @@ const executionSchema = z
     active_target: z.string().min(1),
     environment_substitution: z
       .object({
-        syntax: z.string(),
-        scope: z.string(),
-        missing_required_variable: z.string(),
-        allow_default_values: z.boolean()
+        syntax: z.literal("${VARIABLE_NAME}"),
+        scope: z.literal("active_target_and_selected_phase"),
+        missing_required_variable: z.literal("error"),
+        allow_default_values: z.literal(false)
       })
       .strict()
       .optional(),
@@ -37,10 +37,12 @@ const executionSchema = z
       .strict(),
     retries: z
       .object({
-        attempts: z.number().int().nonnegative(),
+        attempts: z.number().int().positive().max(10),
         initial_backoff: durationSchema,
         maximum_backoff: durationSchema,
-        retry_on: z.array(z.string())
+        retry_on: z.array(
+          z.enum(["timeout", "connection_reset", "http_429", "http_502", "http_503", "http_504"])
+        )
       })
       .strict()
       .optional(),
@@ -49,9 +51,9 @@ const executionSchema = z
         default: z.enum(["blocking", "advisory"]),
         fail_fast: z.boolean(),
         minimum_evidence_coverage_percent: z.number().min(0).max(100),
-        missing_blocking_evidence: z.string(),
-        provider_unavailable: z.string(),
-        unsupported_gate: z.string()
+        missing_blocking_evidence: z.enum(["fail", "warn", "inconclusive"]),
+        provider_unavailable: z.literal("fail"),
+        unsupported_gate: z.literal("fail")
       })
       .strict()
       .optional(),
@@ -137,10 +139,10 @@ const observationSchema = z
       .strict(),
     no_data: z
       .object({
-        blocking_gate: z.string(),
-        advisory_gate: z.string(),
-        comparison_gate: z.string(),
-        synthetic_gate: z.string()
+        blocking_gate: z.enum(["fail", "warn", "inconclusive"]),
+        advisory_gate: z.enum(["fail", "warn", "inconclusive"]),
+        comparison_gate: z.enum(["fail", "warn", "inconclusive"]),
+        synthetic_gate: z.enum(["fail", "warn", "inconclusive"])
       })
       .strict()
       .optional()
@@ -176,11 +178,21 @@ const decisionSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    const expected = { pass: [0, "success"], warn: [0, "neutral"], fail: [1, "failure"], inconclusive: [2, "failure"], error: [3, "failure"] } as const;
+    const expected = {
+      pass: [0, "success"],
+      warn: [0, "neutral"],
+      fail: [1, "failure"],
+      inconclusive: [2, "failure"],
+      error: [3, "failure"]
+    } as const;
     for (const [decision, [exitCode, conclusion]] of Object.entries(expected)) {
       const outcome = value.outcomes[decision as keyof typeof expected];
       if (outcome.exit_code !== exitCode || outcome.conclusion !== conclusion) {
-        context.addIssue({ code: "custom", path: ["outcomes", decision], message: `Decision ${decision} requires exit_code ${exitCode} and conclusion ${conclusion}.` });
+        context.addIssue({
+          code: "custom",
+          path: ["outcomes", decision],
+          message: `Decision ${decision} requires exit_code ${exitCode} and conclusion ${conclusion}.`
+        });
       }
     }
   });

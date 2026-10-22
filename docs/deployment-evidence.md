@@ -23,6 +23,12 @@ The verifier defaults to a one-hour maximum completion age and five seconds of c
 provider policy may choose a shorter maximum age. Tokens issued before the deployment completes
 beyond the allowed skew cannot attest that deployment.
 
+Configure `providers.evidence.deployment.signature` with `trusted_issuer`, `jwks_url`,
+`workflow_identity` (or their `_env` references), and `audience`. Set its `files` to the transferred
+compact JWS. The active runtime supplies the expected image/artifact digest; the candidate supplies
+`commit`/`commit_env` when the commit differs from the release ID. The key resolver uses guarded
+HTTPS and never accepts a symmetric signing secret from policy.
+
 ## Producer responsibilities
 
 The deployment job owns mutation and creates the attestation only after deployment succeeds. Store

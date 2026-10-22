@@ -76,6 +76,125 @@ function metric(value: number, labels: Record<string, string> = {}) {
 }
 
 describe("default provider session truthfulness", () => {
+  it("preserves a failing equality sample in a metric range", async () => {
+    const provider = session(async () =>
+      Response.json({
+        status: "success",
+        data: {
+          resultType: "matrix",
+          result: [
+            {
+              metric: {},
+              values: [
+                [time / 1000 - 1, "1"],
+                [time / 1000, "2"]
+              ]
+            }
+          ]
+        }
+      })
+    );
+    const evidence = await provider.resolveEvidence?.(
+      "metric.threshold",
+      {
+        window: "1m",
+        source: { provider: "metrics", query: "up" },
+        assertions: { operator: "equal", threshold: 1, minimum_samples: 2 }
+      },
+      context()
+    );
+    expect(evidence?.[0]?.value).toMatchObject({ value: 2, sampleCount: 2 });
+  });
+  it("honors the configured total retry attempts", async () => {
+    let calls = 0;
+    const input = policy();
+    const provider = session(
+      async () => {
+        calls++;
+        return Response.json({}, { status: 503 });
+      },
+      {
+        ...input,
+        execution: {
+          retries: {
+            attempts: 1,
+            initial_backoff: "1ms",
+            maximum_backoff: "1ms",
+            retry_on: ["http_503"]
+          }
+        }
+      }
+    );
+    const raw = await provider.resolveEvidence?.(
+      "metric.threshold",
+      { source: { provider: "metrics", query: "up" } },
+      context()
+    );
+    expect(raw?.[0]?.state).toBe("unavailable");
+    expect(calls).toBe(1);
+  });
+  it("samples only applicable gates from the selected plan", async () => {
+    const input = policy();
+    const selected = {
+      id: "selected",
+      type: "metric.threshold",
+      source: { provider: "metrics", query: "up" },
+      assertions: { operator: "equal", threshold: 1 }
+    };
+    const skipped = {
+      id: "windows-only",
+      type: "vm.host_health",
+      when: { operating_system: "windows" }
+    };
+    const provider = createPolicyProviderSession({
+      policy: { ...input, gates: { post_deployment: [skipped, selected] } },
+      workspaceRoot: process.cwd(),
+      environment: {},
+      fetch: async () => metric(1),
+      resolveHostname: async () => ["203.0.113.10"],
+      clock: () => time,
+      plan: {
+        phase: "post_deployment",
+        targetId: "target",
+        runtimeType: "generic",
+        deadlineMs: 1000,
+        requiredProviders: [],
+        gates: [skipped, selected].map((definition, index) => ({
+          index,
+          id: definition.id,
+          name: definition.id,
+          type: definition.type,
+          definition,
+          enforcement: "blocking",
+          applicability: index === 0 ? "skipped" : "applicable",
+          timeoutMs: 1000,
+          providerRequirements: []
+        }))
+      }
+    });
+    await expect(provider.sample?.(new AbortController().signal)).resolves.toBe(true);
+  });
+
+  it("applies the evidence file size limit independently of provider responses", async () => {
+    const input = policy();
+    const provider = session(async () => metric(1), {
+      ...input,
+      providers: {
+        evidence: { synthetic: { files: ["fixtures/evidence/synthetic/results.json"] } }
+      },
+      security: { files: { maximum_evidence_file_size: "32B" } }
+    });
+    await expect(
+      provider.resolveEvidence?.(
+        "synthetic.result",
+        { source: { provider: "synthetic" }, assertions: { required_tests: ["checkout-health"] } },
+        context()
+      )
+    ).rejects.toMatchObject({
+      code: "EVIDENCE_INVALID",
+      safeMessage: "Evidence file exceeds the configured size limit"
+    });
+  });
   it("does not equate nonempty metric results with canonical identity", async () => {
     const provider = session(async () => metric(1, { service_name: "other" }));
     const evidence = await provider.resolveEvidence?.(
@@ -121,7 +240,11 @@ describe("default provider session truthfulness", () => {
         { source: { provider: "metrics", query: "up" } },
         context()
       )
-    ).rejects.toMatchObject({ code: "EVIDENCE_INVALID" });
+    ).rejects.toMatchObject({
+      code: "EVIDENCE_INVALID",
+      safeMessage:
+        "Scalar gate query must return exactly one metric sample; aggregate or filter the query"
+    });
   });
   it("turns incomplete acquisition definitions into actionable configuration errors", async () => {
     const provider = session(async () => metric(1));

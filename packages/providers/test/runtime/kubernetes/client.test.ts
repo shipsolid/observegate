@@ -3,6 +3,28 @@ import { describe, expect, it } from "vitest";
 import { buildKubernetesReadClient } from "../../../src/runtime/kubernetes/client.js";
 
 describe("Kubernetes SDK cancellation binding", () => {
+  it("rejects command-based kubeconfig authentication before constructing a client", () => {
+    const kubeConfig = {
+      getCurrentUser: () => ({ exec: { command: "credential-command" } }),
+      makeApiClient: () => {
+        throw new Error("Client must not be constructed");
+      }
+    } as unknown as KubeConfig;
+    expect(() => buildKubernetesReadClient({ kubeConfig })).toThrowError(
+      expect.objectContaining({ code: "SECURITY_POLICY" })
+    );
+  });
+  it("rejects a kubeconfig that disables TLS verification", () => {
+    const kubeConfig = {
+      getCurrentCluster: () => ({ skipTLSVerify: true }),
+      makeApiClient: () => {
+        throw new Error("Client must not be constructed");
+      }
+    } as unknown as KubeConfig;
+    expect(() => buildKubernetesReadClient({ kubeConfig })).toThrowError(
+      expect.objectContaining({ code: "SECURITY_POLICY" })
+    );
+  });
   it.each(["Deployment", "StatefulSet", "DaemonSet", "replicaSets", "pods", "events"] as const)(
     "passes cancellation into the SDK HTTP context for %s",
     async (kind) => {
