@@ -6,6 +6,7 @@ export interface GateContext {
   readonly phase: Phase;
   readonly targetId: string;
   readonly releaseId?: string;
+  readonly baselineReleaseId?: string;
   readonly evidenceStore: EvidenceStore;
   readonly signal: AbortSignal;
   readonly clock: () => Date;
@@ -17,5 +18,7 @@ export interface GateContext {
   readonly missingEvidenceBehavior: {
     readonly blocking: MissingEvidenceBehavior;
     readonly advisory: MissingEvidenceBehavior;
+    readonly comparison?: MissingEvidenceBehavior;
+    readonly synthetic?: MissingEvidenceBehavior;
   };
 }

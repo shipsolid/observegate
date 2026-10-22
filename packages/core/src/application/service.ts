@@ -7,7 +7,7 @@ import type { ExecutionPlan, ProviderRequirement } from "../domain/planning.js";
 import type { Evidence } from "../evidence/types.js";
 import type { EvidenceStore } from "../evidence/store.js";
 import { GateError } from "../errors/gate-error.js";
-import { abortPromise, cancellationError } from "../execution/deadline.js";
+import { raceWithSignal, createDeadline } from "../execution/deadline.js";
 import type { GateRunContext } from "./run-gate.js";
 import { runPhase, type ObservationSchedule } from "./run-phase.js";
 
@@ -19,10 +19,13 @@ export interface PreparedExecution {
   readonly missingEvidenceBehavior: {
     readonly blocking: "fail" | "warn" | "inconclusive";
     readonly advisory: "fail" | "warn" | "inconclusive";
+    readonly comparison?: "fail" | "warn" | "inconclusive";
+    readonly synthetic?: "fail" | "warn" | "inconclusive";
   };
   readonly observation: ObservationSchedule;
   readonly links: Readonly<Record<string, string>>;
   readonly configurationFingerprint?: string;
+  readonly artifactRetentionDays?: number;
 }
 
 export interface ApplicationPolicyAdapter<TPolicy> {
@@ -50,7 +53,7 @@ export interface ProviderSession {
       readonly clock: () => Date;
     }
   ) => Promise<readonly Evidence<unknown>[]>;
-  readonly close?: () => Promise<void>;
+  readonly close?: (signal?: AbortSignal) => Promise<void>;
 }
 
 export interface ProviderFactory<TPolicy> {
@@ -143,21 +146,36 @@ function failedExecution(
 
 function coverageRequirements(
   plan: ExecutionPlan,
-  gates: readonly GateResult[]
+  gates: readonly GateResult[],
+  execution: PreparedExecution,
+  now: Date
 ): readonly EvidenceRequirementCoverage[] {
   const results = new Map(gates.map((gate) => [gate.id, gate]));
   return Object.freeze(
     plan.gates.flatMap((gate) =>
-      gate.providerRequirements.map((requirement) =>
-        Object.freeze({
-          gateId: gate.id,
-          requirementId: `${requirement.provider}:${requirement.capability}`,
-          satisfied:
-            results
-              .get(gate.id)
-              ?.evidence.some((evidence) => evidence.provider === requirement.provider) === true
-        })
-      )
+      gate.providerRequirements
+        .filter((requirement) => requirement.required)
+        .map((requirement) =>
+          Object.freeze({
+            gateId: gate.id,
+            requirementId: `${requirement.provider}:${requirement.capability}`,
+            satisfied:
+              results
+                .get(gate.id)
+                ?.evidence.some(
+                  (evidence) =>
+                    evidence.provider === requirement.provider &&
+                    evidence.capability === requirement.capability &&
+                    evidence.state === "valid" &&
+                    evidence.target === execution.target.id &&
+                    (evidence.releaseId === undefined ||
+                      evidence.releaseId === execution.release.candidateId) &&
+                    Number.isFinite(Date.parse(evidence.acquiredAt)) &&
+                    (evidence.expiresAt === undefined ||
+                      Date.parse(evidence.expiresAt) >= now.getTime())
+                ) === true
+          })
+        )
     )
   );
 }
@@ -192,23 +210,56 @@ export class ObservabilityGateService<TPolicy> {
     }
 
     const identity = { target: prepared.execution.target, release: prepared.execution.release };
+    const budgetMs = Math.min(
+      prepared.plan.deadlineMs,
+      prepared.plan.maximumTotalRuntimeMs ?? prepared.plan.deadlineMs
+    );
+    const elapsedMs = Math.max(0, this.clock().getTime() - startedAt.getTime());
+    const deadline = createDeadline(request.cancellationSignal, Math.max(0, budgetMs - elapsedMs));
     let providers: ProviderSession | undefined;
+    let initialization: ReturnType<typeof createDeadline> | undefined;
+    let result: ExecutionResult;
     try {
-      if (request.cancellationSignal.aborted) throw cancellationError();
-      providers = await Promise.race([
-        this.dependencies.providers.initialize(prepared.plan.requiredProviders, {
+      if (deadline.signal.aborted) throw deadline.signal.reason;
+      if (elapsedMs >= budgetMs)
+        throw new GateError({
+          code: "GATE_EVALUATION",
+          safeMessage: "Execution exceeded its total runtime budget.",
+          retryable: false
+        });
+      initialization = createDeadline(
+        deadline.signal,
+        prepared.plan.providerInitializationTimeoutMs ?? Math.min(budgetMs, 30_000),
+        {
+          code: "PROVIDER_UNAVAILABLE",
+          message: "Provider initialization exceeded its deadline."
+        }
+      );
+      let accepted = false;
+      try {
+        const pending = this.dependencies.providers.initialize(prepared.plan.requiredProviders, {
           policy: prepared.policy,
           plan: prepared.plan,
           request,
-          signal: request.cancellationSignal
-        }),
-        abortPromise(request.cancellationSignal)
-      ]);
-
+          signal: initialization.signal
+        });
+        // An uncooperative factory may resolve after its deadline. Dispose that late session too.
+        void pending
+          .then(async (session) => {
+            if (!accepted && initialization?.signal.aborted) {
+              await this.closeProviders(session, prepared.plan.providerCleanupTimeoutMs ?? 5_000);
+            }
+          })
+          .catch(() => undefined);
+        providers = await raceWithSignal(pending, initialization.signal);
+        accepted = true;
+      } finally {
+        initialization.stopTimer();
+      }
       const gates = await runPhase({
         plan: prepared.plan,
         observation: prepared.execution.observation,
-        signal: request.cancellationSignal,
+        signal: deadline.signal,
         clock: this.clock,
         ...(providers.sample === undefined ? {} : { sample: providers.sample }),
         executeGate: (gate, context) =>
@@ -222,9 +273,14 @@ export class ObservabilityGateService<TPolicy> {
         gates,
         configurationOrder: prepared.plan.gates.map((gate) => gate.id),
         policy: prepared.execution.decisionPolicy,
-        evidenceRequirements: coverageRequirements(prepared.plan, gates)
+        evidenceRequirements: coverageRequirements(
+          prepared.plan,
+          gates,
+          prepared.execution,
+          this.clock()
+        )
       });
-      let result = freezeResult({
+      result = freezeResult({
         decision: summary.decision,
         phase: request.phase,
         target: prepared.execution.target,
@@ -232,6 +288,7 @@ export class ObservabilityGateService<TPolicy> {
         startedAt: startedAt.toISOString(),
         completedAt: this.clock().toISOString(),
         evidenceCoveragePercent: summary.evidenceCoveragePercent,
+        ...(prepared.execution.artifactRetentionDays === undefined ? {} : { artifactRetentionDays: prepared.execution.artifactRetentionDays }),
         ...(prepared.execution.configurationFingerprint === undefined
           ? {}
           : { configurationFingerprint: prepared.execution.configurationFingerprint }),
@@ -239,47 +296,90 @@ export class ObservabilityGateService<TPolicy> {
         diagnostics: Object.freeze([]),
         links: prepared.execution.links
       });
-
-      try {
-        for (const reporter of this.dependencies.reporters ?? []) {
-          await Promise.race([
-            reporter(result, request.cancellationSignal),
-            abortPromise(request.cancellationSignal)
-          ]);
-        }
-      } catch (error) {
-        const reportDiagnostic = request.cancellationSignal.aborted
-          ? diagnostic(cancellationError("Reporting was cancelled."))
-          : diagnostic(
-              error instanceof GateError
-                ? error
-                : new GateError({
-                    code: "REPORTING",
-                    safeMessage: "Report publication failed.",
-                    retryable: false,
-                    cause: error
-                  })
-            );
-        result = freezeResult({
-          ...result,
-          decision: result.decision === "fail" ? "fail" : "error",
-          completedAt: this.clock().toISOString(),
-          diagnostics: Object.freeze([...result.diagnostics, reportDiagnostic])
-        });
-      }
-      return result;
     } catch (error) {
-      return failedExecution(
+      result = failedExecution(
         request,
         startedAt,
         this.clock(),
-        request.cancellationSignal.aborted ? cancellationError() : error,
+        deadline.signal.aborted ? deadline.signal.reason : error,
         identity,
         [],
         prepared.execution.links
       );
+    }
+
+    if (providers !== undefined) {
+      const remaining = Math.max(0, budgetMs - (this.clock().getTime() - startedAt.getTime()));
+      const closeDiagnostic = await this.closeProviders(
+        providers,
+        Math.min(prepared.plan.providerCleanupTimeoutMs ?? 5_000, remaining),
+        deadline.signal
+      );
+      if (closeDiagnostic !== undefined) result = this.addFailure(result, closeDiagnostic);
+    }
+    try {
+      if (deadline.signal.aborted) throw deadline.signal.reason;
+      for (const reporter of this.dependencies.reporters ?? []) {
+        await raceWithSignal(reporter(result, deadline.signal), deadline.signal);
+      }
+      if (deadline.signal.aborted) throw deadline.signal.reason;
+    } catch (error) {
+      const failure = deadline.signal.aborted
+        ? diagnostic(deadline.signal.reason)
+        : diagnostic(
+            error instanceof GateError
+              ? error
+              : new GateError({
+                  code: "REPORTING",
+                  safeMessage: "Report publication failed.",
+                  retryable: false,
+                  cause: error
+                })
+          );
+      result = this.addFailure(result, failure);
     } finally {
-      await providers?.close?.();
+      initialization?.dispose();
+      deadline.dispose();
+    }
+    return result;
+  }
+
+  private addFailure(result: ExecutionResult, failure: Diagnostic): ExecutionResult {
+    return freezeResult({
+      ...result,
+      decision: result.decision === "fail" ? "fail" : "error",
+      completedAt: this.clock().toISOString(),
+      diagnostics: [...result.diagnostics, failure]
+    });
+  }
+
+  private async closeProviders(
+    providers: ProviderSession,
+    timeoutMs: number,
+    parent = new AbortController().signal
+  ): Promise<Diagnostic | undefined> {
+    if (providers.close === undefined) return undefined;
+    const cleanup = createDeadline(parent, timeoutMs, {
+      code: "PROVIDER_UNAVAILABLE",
+      message: "Provider cleanup exceeded its deadline."
+    });
+    try {
+      await raceWithSignal(providers.close(cleanup.signal), cleanup.signal);
+      if (cleanup.signal.aborted) throw cleanup.signal.reason;
+      return undefined;
+    } catch (error) {
+      return diagnostic(
+        error instanceof GateError
+          ? error
+          : new GateError({
+              code: "PROVIDER_UNAVAILABLE",
+              safeMessage: "Provider cleanup failed.",
+              retryable: false,
+              cause: error
+            })
+      );
+    } finally {
+      cleanup.dispose();
     }
   }
 

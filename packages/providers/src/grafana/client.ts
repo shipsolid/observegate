@@ -7,11 +7,16 @@ import {
   type EvidenceState
 } from "@observability-gate/core";
 import type { TransportRequest } from "../transport/guarded-fetch.js";
-import { normalizeAlertRules, normalizeNotificationRoute } from "./alerts.js";
+import {
+  normalizeActiveAlerts,
+  normalizeAlertRules,
+  normalizeNotificationRoute
+} from "./alerts.js";
 import { normalizeDashboard } from "./dashboard.js";
 import { normalizeSlo } from "./slo.js";
 import type {
   AlertRuleSnapshot,
+  ActiveAlertSnapshot,
   AlertRulesRequest,
   DashboardRequest,
   DashboardSnapshot,
@@ -81,6 +86,25 @@ export class GrafanaClient implements GrafanaProvider {
             latest === undefined || rule.evaluatedAt > latest ? rule.evaluatedAt : latest,
           undefined
         ),
+      true
+    );
+  }
+
+  public async getActiveAlerts(
+    request: AlertRulesRequest
+  ): Promise<Evidence<readonly ActiveAlertSnapshot[]>> {
+    return this.load(
+      request,
+      "api/prometheus/grafana/api/v1/alerts",
+      "grafana.active-alerts",
+      "alerting.state.read",
+      (payload) =>
+        normalizeActiveAlerts(
+          payload,
+          request.selector,
+          this.clock() + request.maximumFutureSkewMs
+        ),
+      () => new Date(this.clock()).toISOString(),
       true
     );
   }

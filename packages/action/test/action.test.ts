@@ -130,10 +130,96 @@ describe("GitHub Action adapter", () => {
     vi.mocked(github.getOctokit).mockReturnValue({
       rest: { checks: { create: vi.fn(async () => Promise.reject(new Error("forbidden"))) } }
     } as never);
-    await runAction({ service: { run: async () => result("pass") }, runtime });
+    await runAction({
+      service: {
+        run: async () => result("pass"),
+        reportingOptions: async () => ({
+          checkRun: true,
+          pullRequestComment: true,
+          stepSummary: true
+        })
+      },
+      runtime
+    });
     expect(mocks.warning).toHaveBeenCalledWith(
       "GitHub report publication was not authorized; local reports are available."
     );
     expect(mocks.setFailed).not.toHaveBeenCalled();
+  });
+
+  it("honors disabled publication even with a token", async () => {
+    mocks.inputs.set("github-token", "token");
+    const github = await import("@actions/github");
+    vi.mocked(github.getOctokit).mockClear();
+    await runAction({
+      service: {
+        run: async () => result("pass"),
+        reportingOptions: async () => ({
+          checkRun: false,
+          pullRequestComment: false,
+          stepSummary: false
+        })
+      },
+      runtime
+    });
+    expect(mocks.writeSummary).not.toHaveBeenCalled();
+    expect(github.getOctokit).not.toHaveBeenCalled();
+  });
+
+  it("does not publish success outputs after cancellation during summary publication", async () => {
+    mocks.writeSummary.mockImplementationOnce(async () => {
+      process.emit("SIGTERM");
+    });
+    await runAction({ service: { run: async () => result("pass") }, runtime });
+    expect(mocks.setFailed).toHaveBeenCalledWith("Action publication was cancelled.");
+    expect(mocks.outputs.has("decision")).toBe(false);
+  });
+});
+
+describe("Action artifact publication contract", () => {
+  beforeEach(() => {
+    mocks.inputs.clear();
+    mocks.inputs.set("config", "observability-gate.yml");
+    mocks.inputs.set("phase", "post_deployment");
+    mocks.outputs.clear();
+    mocks.writeReports.mockClear();
+    mocks.writeSummary.mockClear();
+    mocks.setFailed.mockClear();
+  });
+  it("uses configured artifact directory/formats when input is empty", async () => {
+    await runAction({
+      runtime,
+      service: {
+        run: async () => result("pass"),
+        publicationOptions: async () => ({
+          github: { checkRun: false, stepSummary: false, pullRequestComment: false },
+          directory: "/tmp/configured",
+          formats: ["junit"]
+        })
+      }
+    });
+    expect(mocks.writeReports).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ directory: "/tmp/configured", formats: ["junit"] })
+    );
+    expect(mocks.writeSummary).not.toHaveBeenCalled();
+  });
+  it("gives the Action input priority over configured artifact directory", async () => {
+    mocks.inputs.set("output-directory", "/tmp/explicit");
+    await runAction({
+      runtime,
+      service: {
+        run: async () => result("pass"),
+        publicationOptions: async () => ({
+          github: { checkRun: false, stepSummary: false, pullRequestComment: false },
+          directory: "/tmp/configured",
+          formats: ["markdown"]
+        })
+      }
+    });
+    expect(mocks.writeReports).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ directory: "/tmp/explicit", formats: ["markdown"] })
+    );
   });
 });

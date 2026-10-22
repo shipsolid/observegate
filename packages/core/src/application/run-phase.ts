@@ -1,6 +1,6 @@
 import { createGateResult, type GateResult } from "../domain/gates.js";
 import type { ExecutionPlan, PlannedGate } from "../domain/planning.js";
-import { abortPromise, createDeadline, sleep } from "../execution/deadline.js";
+import { raceWithSignal, createDeadline, sleep } from "../execution/deadline.js";
 import { ExecutionScheduler } from "../execution/scheduler.js";
 import type { GateExecutor } from "./run-gate.js";
 
@@ -66,9 +66,20 @@ export async function runPhase(input: RunPhaseInput): Promise<readonly GateResul
       await (input.wait ?? sleep)(input.observation.warmupMs, deadline.signal);
     }
 
+    if (
+      input.sample === undefined &&
+      input.plan.phase === "post_deployment" &&
+      ((input.observation.evaluationWindowMs ?? 0) > 0 ||
+        input.observation.minimumSuccessfulSamples > 1)
+    ) {
+      return Object.freeze(
+        input.plan.gates.map((gate) => insufficientSampleResult(gate, input.plan.phase, clock()))
+      );
+    }
+
     if (input.sample !== undefined) {
       if (input.plan.phase === "pre_deployment") {
-        await Promise.race([input.sample(deadline.signal), abortPromise(deadline.signal)]);
+        await raceWithSignal(input.sample(deadline.signal), deadline.signal);
       } else {
         let successfulSamples = 0;
         const sampleBudget =
@@ -76,20 +87,32 @@ export async function runPhase(input: RunPhaseInput): Promise<readonly GateResul
         const sampleDeadline =
           sampleBudget > 0 ? Math.min(input.plan.deadlineMs, sampleBudget) : input.plan.deadlineMs;
         const sampleStartedAt = clock().getTime();
-        while (
-          successfulSamples < input.observation.minimumSuccessfulSamples &&
-          clock().getTime() - sampleStartedAt <= sampleDeadline
-        ) {
-          const successful = await Promise.race([
-            input.sample(deadline.signal),
-            abortPromise(deadline.signal)
-          ]);
-          if (successful) successfulSamples += 1;
-          if (successfulSamples < input.observation.minimumSuccessfulSamples) {
-            await (input.wait ?? sleep)(input.observation.sampleIntervalMs, deadline.signal);
+        const evaluationWindow = input.observation.evaluationWindowMs ?? 0;
+        const sampling = createDeadline(deadline.signal, sampleDeadline);
+        let interrupted = false;
+        try {
+          while (clock().getTime() - sampleStartedAt <= sampleDeadline) {
+            const successful = await raceWithSignal(input.sample(sampling.signal), sampling.signal);
+            if (successful) successfulSamples += 1;
+            const elapsed = Math.max(0, clock().getTime() - sampleStartedAt);
+            if (
+              elapsed >= evaluationWindow &&
+              successfulSamples >= input.observation.minimumSuccessfulSamples
+            )
+              break;
+            if (elapsed >= sampleDeadline) break;
+            await (input.wait ?? sleep)(
+              Math.min(Math.max(1, input.observation.sampleIntervalMs), sampleDeadline - elapsed),
+              sampling.signal
+            );
           }
+        } catch (error) {
+          if (!sampling.signal.aborted || deadline.signal.aborted) throw error;
+          interrupted = true;
+        } finally {
+          sampling.dispose();
         }
-        if (successfulSamples < input.observation.minimumSuccessfulSamples) {
+        if (interrupted || successfulSamples < input.observation.minimumSuccessfulSamples) {
           const now = clock();
           return Object.freeze(
             input.plan.gates.map((gate) => insufficientSampleResult(gate, input.plan.phase, now))
@@ -116,6 +139,7 @@ export async function runPhase(input: RunPhaseInput): Promise<readonly GateResul
       gates: input.plan.gates,
       phaseDeadlineMs: remainingMs,
       signal: deadline.signal,
+      ...(input.plan.failFast === undefined ? {} : { failFast: input.plan.failFast }),
       execute: input.executeGate
     });
   } finally {

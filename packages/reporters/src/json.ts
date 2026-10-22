@@ -35,6 +35,11 @@ function evidenceDto(evidence: EvidenceReference): Readonly<Record<string, unkno
     id: evidence.id,
     kind: evidence.kind,
     provider: evidence.provider,
+    ...(evidence.state === undefined ? {} : { state: evidence.state }),
+    ...(evidence.capability === undefined ? {} : { capability: evidence.capability }),
+    ...(evidence.target === undefined ? {} : { target: evidence.target }),
+    ...(evidence.releaseId === undefined ? {} : { releaseId: evidence.releaseId }),
+    ...(evidence.expiresAt === undefined ? {} : { expiresAt: evidence.expiresAt }),
     ...(evidence.observedAt === undefined ? {} : { observedAt: evidence.observedAt }),
     acquiredAt: evidence.acquiredAt,
     ...(evidence.ageMs === undefined ? {} : { ageMs: evidence.ageMs }),
@@ -90,6 +95,7 @@ export function executionReportDto(result: ExecutionResult): Readonly<Record<str
     startedAt: result.startedAt,
     completedAt: result.completedAt,
     evidenceCoveragePercent: result.evidenceCoveragePercent,
+    ...(result.artifactRetentionDays === undefined ? {} : { artifactRetentionDays: result.artifactRetentionDays }),
     ...(result.configurationFingerprint === undefined
       ? {}
       : { configurationFingerprint: result.configurationFingerprint }),

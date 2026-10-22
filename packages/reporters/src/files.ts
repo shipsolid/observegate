@@ -125,6 +125,7 @@ export async function writeReports(
     }
     checkCancellation(options.signal);
     for (const report of staged) {
+      checkCancellation(options.signal);
       try {
         const status = await lstat(report.path);
         if (!status.isFile()) {
@@ -137,6 +138,7 @@ export async function writeReports(
         const backup = `${report.path}.backup-${process.pid}-${crypto.randomUUID()}`;
         await rename(report.path, backup);
         backups.push({ path: report.path, backup });
+        checkCancellation(options.signal);
       } catch (error) {
         if (!(
           typeof error === "object" &&
@@ -149,8 +151,10 @@ export async function writeReports(
       }
     }
     for (const report of staged) {
+      checkCancellation(options.signal);
       await rename(report.temporary, report.path);
       installed.push(report.path);
+      checkCancellation(options.signal);
     }
   } catch (error) {
     const removalResults = await Promise.allSettled(

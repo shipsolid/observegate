@@ -147,6 +147,89 @@ describe("post-deployment reliability catalogue", () => {
     expect(results.filter((result) => result.status === "failed").length).toBeGreaterThanOrEqual(3);
   });
 
+  it("rejects synthetic evidence without requirements, duplicate names, or valid durations", () => {
+    expect(
+      assertionsFor("synthetic.result", { tests: [] }).some((result) => result.status !== "passed")
+    ).toBe(true);
+    const test = {
+      name: "journey",
+      passed: true,
+      durationMs: -1,
+      maximumDurationMs: 100,
+      releaseHeader: "candidate",
+      expectedReleaseHeader: "candidate"
+    };
+    expect(
+      assertionsFor("synthetic.result", { requiredTests: ["journey"], tests: [test] }).some(
+        (result) => result.status !== "passed"
+      )
+    ).toBe(true);
+    expect(
+      assertionsFor("synthetic.result", {
+        requiredTests: ["journey"],
+        tests: [
+          { ...test, durationMs: 1 },
+          { ...test, durationMs: 1 }
+        ]
+      }).some((result) => result.status !== "passed")
+    ).toBe(true);
+  });
+
+  it("requires distinct trace dependency records for each expected peer", () => {
+    const comparison = {
+      candidate: { value: 1, unit: "seconds", samples: 10, releaseId: "candidate" },
+      baseline: { value: 1, unit: "seconds", samples: 10, releaseId: "baseline" },
+      maximumRelativeRegressionPercent: 25
+    };
+    expect(
+      assertionsFor("comparison.trace_metrics", {
+        expectedDependencies: ["a", "b"],
+        dependencies: [
+          { name: "a", comparison },
+          { name: "a", comparison }
+        ]
+      }).some((result) => result.status !== "passed")
+    ).toBe(true);
+  });
+
+  it("uses policy-required synthetic tests rather than an evidence-supplied subset", () => {
+    const catalog = registerPostReliabilityGates(new GateCatalog());
+    const results = catalog
+      .require("synthetic.result", "post_deployment", {
+        assertions: { required_tests: ["health", "journey"] }
+      })
+      .evaluate(
+        [
+          {
+            id: "e",
+            kind: "synthetic.result",
+            state: "valid",
+            source: { provider: "fixture", capability: "synthetic.result" },
+            target: context.targetId,
+            acquiredAt: context.clock().toISOString(),
+            diagnostics: [],
+            value: {
+              requiredTests: ["health"],
+              tests: [
+                {
+                  name: "health",
+                  passed: true,
+                  durationMs: 1,
+                  maximumDurationMs: 10,
+                  releaseHeader: "candidate",
+                  expectedReleaseHeader: "candidate"
+                }
+              ]
+            }
+          }
+        ],
+        context
+      );
+    expect(results).toContainEqual(
+      expect.objectContaining({ assertion: "journey exists", status: "failed" })
+    );
+  });
+
   it("evaluates guarded HTTP probe evidence", () => {
     expect(
       assertionsFor("http.assertion", {

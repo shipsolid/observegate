@@ -55,7 +55,28 @@ function* lines(values: Iterable<string>): Iterable<string> {
   }
 }
 
-export function* markdownReportChunks(result: ExecutionResult): Iterable<string> {
+export interface MarkdownReportOptions {
+  readonly sections?: readonly (
+    | "decision"
+    | "identity"
+    | "target"
+    | "evidence_coverage"
+    | "blocking_gates"
+    | "advisory_gates"
+    | "skipped_gates"
+    | "comparisons"
+    | "links"
+  )[];
+}
+
+export function* markdownReportChunks(
+  result: ExecutionResult,
+  options: MarkdownReportOptions = {}
+): Iterable<string> {
+  if (options.sections !== undefined) {
+    yield* selectedMarkdownChunks(result, options.sections);
+    return;
+  }
   yield* lines([
     "# Observability Gate",
     "",
@@ -69,6 +90,14 @@ export function* markdownReportChunks(result: ExecutionResult): Iterable<string>
       : [`- Baseline release: ${result.release.baselineId}`]),
     `- Evidence coverage: ${result.evidenceCoveragePercent}%`,
     "",
+    ...(result.diagnostics.length === 0
+      ? []
+      : [
+          "## Execution diagnostics",
+          "",
+          ...result.diagnostics.map((diagnostic) => `- ${diagnostic.code}: ${diagnostic.message}`),
+          ""
+        ]),
     "## Gates",
     ""
   ]);
@@ -89,6 +118,66 @@ export function* markdownReportChunks(result: ExecutionResult): Iterable<string>
   }
 }
 
-export function renderMarkdown(result: ExecutionResult): string {
-  return collectChunks(markdownReportChunks(result));
+export function renderMarkdown(
+  result: ExecutionResult,
+  options: MarkdownReportOptions = {}
+): string {
+  return collectChunks(markdownReportChunks(result, options));
+}
+
+function* selectedMarkdownChunks(
+  result: ExecutionResult,
+  sections: NonNullable<MarkdownReportOptions["sections"]>
+): Iterable<string> {
+  yield* lines(["# Observability Gate", ""]);
+  for (const section of sections) {
+    if (section === "decision")
+      yield* lines([`**Decision:** ${result.decision}`, "", `- Phase: ${result.phase}`, ""]);
+    else if (section === "identity")
+      yield* lines([
+        `- Release: ${result.release.candidateId}`,
+        `- Deployment: ${result.release.deploymentId}`,
+        ...(result.release.baselineId === undefined
+          ? []
+          : [`- Baseline release: ${result.release.baselineId}`]),
+        ""
+      ]);
+    else if (section === "target")
+      yield* lines([
+        `- Target: ${result.target.id} (${result.target.runtimeType}, ${result.target.provider})`,
+        ""
+      ]);
+    else if (section === "evidence_coverage")
+      yield* lines([`- Evidence coverage: ${result.evidenceCoveragePercent}%`, ""]);
+    else if (section === "links") {
+      yield* lines(["## Links", ""]);
+      for (const [name, url] of Object.entries(result.links).sort(([left], [right]) =>
+        left.localeCompare(right)
+      ))
+        yield* lines([`- [${name.replaceAll("[", "\\[").replaceAll("]", "\\]")}](${url})`]);
+      if (Object.keys(result.links).length === 0) yield* lines(["No links configured."]);
+    } else {
+      const selected = result.gates
+        .filter((gate) => {
+          if (gate.status === "skipped") return section === "skipped_gates";
+          if (/compar(?:e|ison)/u.test(gate.type)) return section === "comparisons";
+          return (
+            section === (gate.enforcement === "blocking" ? "blocking_gates" : "advisory_gates")
+          );
+        })
+        .map((gate, index) => ({ gate, index }))
+        .sort(
+          (left, right) => priority(left.gate) - priority(right.gate) || left.index - right.index
+        );
+      yield* lines([`## ${section.replaceAll("_", " ")}`, ""]);
+      for (const { gate } of selected) yield* lines(gateSection(gate));
+    }
+  }
+  if (result.diagnostics.length > 0)
+    yield* lines([
+      "## Execution diagnostics",
+      "",
+      ...result.diagnostics.map((diagnostic) => `- ${diagnostic.code}: ${diagnostic.message}`),
+      ""
+    ]);
 }

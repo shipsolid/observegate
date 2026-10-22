@@ -1,5 +1,6 @@
 import type {
   AlertRuleSnapshot,
+  ActiveAlertSnapshot,
   NotificationRouteRequest,
   NotificationRouteSnapshot
 } from "./types.js";
@@ -109,4 +110,45 @@ export function normalizeNotificationRoute(
     muteTimeIntervals: Object.freeze([...(muteTimeIntervals as string[])]),
     mutedDuringDeployment
   });
+}
+
+export function normalizeActiveAlerts(
+  payload: unknown,
+  selector: Readonly<Record<string, string>>,
+  maximumStartAtMs: number
+): readonly ActiveAlertSnapshot[] | undefined {
+  if (
+    !isRecord(payload) ||
+    payload.status !== "success" ||
+    !isRecord(payload.data) ||
+    !Array.isArray(payload.data.alerts) ||
+    payload.data.alerts.length > 10_000
+  )
+    return undefined;
+  const alerts: ActiveAlertSnapshot[] = [];
+  for (const value of payload.data.alerts) {
+    if (!isRecord(value)) return undefined;
+    const labels = stringLabels(value.labels);
+    const start = value.activeAt ?? value.startsAt;
+    if (
+      labels === undefined ||
+      typeof labels.alertname !== "string" ||
+      labels.alertname.length === 0 ||
+      (value.state !== "pending" && value.state !== "firing") ||
+      typeof start !== "string" ||
+      !Number.isFinite(Date.parse(start)) ||
+      Date.parse(start) > maximumStartAtMs
+    )
+      return undefined;
+    if (Object.entries(selector).some(([key, expected]) => labels[key] !== expected)) continue;
+    alerts.push(
+      Object.freeze({
+        name: labels.alertname,
+        labels,
+        state: value.state,
+        startsAt: new Date(start).toISOString()
+      })
+    );
+  }
+  return Object.freeze(alerts);
 }

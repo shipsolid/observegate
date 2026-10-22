@@ -193,6 +193,7 @@ describe("observability-gate CLI", () => {
             "policy.yml",
             "--phase",
             "post_deployment",
+            "--json",
             "--output-directory",
             directory
           ],
@@ -202,6 +203,7 @@ describe("observability-gate CLI", () => {
       expect(value.reportLimitRequests).toHaveLength(1);
       expect(value.reportLimitRequests[0]?.configPath).toBe("policy.yml");
       expect(value.stderr()).toContain("REPORTING");
+      expect(JSON.parse(value.stdout()).decision).toBe("error");
     } finally {
       await rm(directory, { recursive: true });
     }
@@ -211,6 +213,8 @@ describe("observability-gate CLI", () => {
     const known = harness();
     expect(await runCli(["explain", "policy.self_check"], known.dependencies)).toBe(0);
     expect(known.stdout()).toContain("Validates the policy.");
+    expect(known.stdout()).toContain("Assertions:");
+    expect(known.stdout()).toContain("Evidence:");
 
     const configured = harness();
     expect(
@@ -229,6 +233,7 @@ describe("observability-gate CLI", () => {
     const value = harness();
     expect(await runCli(["catalog", "--json"], value.dependencies)).toBe(0);
     expect(JSON.parse(value.stdout())[0].type).toBe("policy.self_check");
+    expect(JSON.parse(value.stdout())[0].definitionContract.assertions.require_sections).toEqual(["string"]);
   });
 
   it("returns cancellation exit code when the root signal is aborted", async () => {

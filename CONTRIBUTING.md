@@ -68,7 +68,7 @@ Edit the metadata or source document that owns a generated section, then run:
 
 ```bash
 npm run docs:generate
-git diff --exit-code docs/configuration.md docs/gates.md docs/providers.md docs/errors.md
+git diff --exit-code -- docs/configuration.md docs/gates.md docs/providers.md docs/troubleshooting.md
 ```
 
 Document public configuration, evidence semantics, permissions, limits, failure classification, and
@@ -88,6 +88,7 @@ npm run test:performance
 npm run bundle
 npm run verify:bundle
 npm run verify:read-only
+npm run verify:reproducible
 git diff --exit-code
 ```
 

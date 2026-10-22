@@ -1,0 +1,10 @@
+{
+  "tests": [
+    {
+      "name": "checkout-health",
+      "status": "passed",
+      "durationMs": 15,
+      "observedRelease": "demo-release-v1"
+    }
+  ]
+}

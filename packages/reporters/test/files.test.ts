@@ -9,6 +9,7 @@ const fileSystem = vi.hoisted(() => ({
   failMarkdownInstall: false,
   failMarkdownRestore: false,
   failBackupCleanup: false
+  , abortInstall: undefined as (() => void) | undefined
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -34,6 +35,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         throw Object.assign(new Error("injected restore failure"), { code: "EACCES" });
       }
       await original.rename(oldPath, newPath);
+      if (String(oldPath).includes(".tmp-") && fileSystem.abortInstall !== undefined) {
+        const abort = fileSystem.abortInstall;
+        fileSystem.abortInstall = undefined;
+        abort();
+      }
     },
     async rm(path: Parameters<typeof original.rm>[0], options: Parameters<typeof original.rm>[1]) {
       if (fileSystem.failBackupCleanup && String(path).includes(".backup-")) {
@@ -56,6 +62,7 @@ describe("writeReports", () => {
     fileSystem.failMarkdownInstall = false;
     fileSystem.failMarkdownRestore = false;
     fileSystem.failBackupCleanup = false;
+    fileSystem.abortInstall = undefined;
   });
 
   it("atomically writes every requested projection", async () => {
@@ -69,6 +76,16 @@ describe("writeReports", () => {
 
     expect(Object.keys(publication.paths).sort()).toEqual(["json", "junit", "markdown", "sarif"]);
     expect((await readdir(directory)).every((name) => !name.includes(".tmp-"))).toBe(true);
+  });
+
+  it("restores the prior report set when cancelled during installation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "observegate-cancel-"));
+    await writeFile(join(directory, "observability-gate.json"), "prior");
+    const controller = new AbortController();
+    fileSystem.abortInstall = () => controller.abort();
+    await expect(writeReports(await fixture(), { directory, formats: ["json", "markdown"], maximumTotalBytes: 1_000_000, signal: controller.signal })).rejects.toMatchObject({ code: "CANCELLED" });
+    expect(await readFile(join(directory, "observability-gate.json"), "utf8")).toBe("prior");
+    expect(await readdir(directory)).toEqual(["observability-gate.json"]);
   });
 
   it("leaves no target or partial file when cancelled before rename", async () => {

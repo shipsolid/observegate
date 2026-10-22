@@ -44,8 +44,8 @@ targets:
           minimum_available_replicas: 1
 providers:
   runtime:
-    azure-runtime: { type: azure }
-    generic-runtime: { type: generic }
+    azure-runtime: { type: azure_resource_manager }
+    generic-runtime: { type: evidence_only }
   telemetry:
     metrics: { type: prometheus }
 gate_defaults:
@@ -59,7 +59,8 @@ gates:
     - id: metric.first
       name: First metric
       type: metric.threshold
-      source: { provider: metrics }
+      source: { provider: metrics, query: up }
+      assertions: { operator: greater_than_or_equal, threshold: 1 }
     - id: kubernetes.only
       name: Kubernetes only
       type: kubernetes.manifest
@@ -79,8 +80,8 @@ gates:
     - id: post.metric
       name: Post metric
       type: metric.threshold
-      source: { provider: metrics }
-reporting:
-  outputs: [decision, phase, target_id, report_path]
+      source: { provider: metrics, query: up }
+      assertions: { operator: greater_than_or_equal, threshold: 1 }
+reporting: {}
 security: {}
 limits: {}

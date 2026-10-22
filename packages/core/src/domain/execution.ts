@@ -19,6 +19,7 @@ export interface ExecutionResult {
   readonly completedAt: string;
   readonly evidenceCoveragePercent: number;
   readonly configurationFingerprint?: string;
+  readonly artifactRetentionDays?: number;
   readonly gates: readonly GateResult[];
   readonly diagnostics: readonly Diagnostic[];
   readonly links: Readonly<Record<string, string>>;

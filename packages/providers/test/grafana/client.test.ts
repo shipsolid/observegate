@@ -213,3 +213,104 @@ describe("GrafanaClient SLO", () => {
     ).resolves.toMatchObject({ state: "valid", value: { status } });
   });
 });
+
+describe("GrafanaClient active alerts", () => {
+  const activePath = "/api/prometheus/grafana/api/v1/alerts";
+  it("reads actual active alert state and start time with exact service labels", async () => {
+    const controller = new AbortController();
+    const { grafana, request } = client({
+      [activePath]: {
+        status: "success",
+        data: {
+          alerts: [
+            {
+              labels: { alertname: "CheckoutErrors", service: "checkout", severity: "critical" },
+              state: "firing",
+              activeAt: "2026-10-06T07:59:00Z",
+              value: "1"
+            },
+            {
+              labels: { alertname: "OtherErrors", service: "other" },
+              state: "firing",
+              activeAt: "2026-10-06T07:59:00Z"
+            },
+            {
+              labels: { alertname: "CheckoutLatency", service: "checkout" },
+              state: "pending",
+              startsAt: "2026-10-06T08:00:00Z"
+            }
+          ]
+        }
+      }
+    });
+    await expect(
+      grafana.getActiveAlerts({
+        ...common,
+        selector: { service: "checkout" },
+        signal: controller.signal,
+        deadlineAtMs: now + 1000
+      })
+    ).resolves.toMatchObject({
+      state: "valid",
+      source: { capability: "alerting.state.read" },
+      value: [
+        {
+          name: "CheckoutErrors",
+          labels: { service: "checkout", severity: "critical" },
+          state: "firing",
+          startsAt: "2026-10-06T07:59:00.000Z"
+        },
+        { name: "CheckoutLatency", state: "pending", startsAt: "2026-10-06T08:00:00.000Z" }
+      ]
+    });
+    expect(request.mock.calls[0]?.[0]).toMatchObject({
+      signal: controller.signal,
+      deadlineAtMs: now + 1000,
+      maximumResponseBytes: 2097152
+    });
+  });
+  it("accepts an empty active-alert set as a fresh read", async () => {
+    const { grafana } = client({ [activePath]: { status: "success", data: { alerts: [] } } });
+    await expect(grafana.getActiveAlerts({ ...common, selector: {} })).resolves.toMatchObject({
+      state: "valid",
+      value: [],
+      observedAt: new Date(now).toISOString()
+    });
+  });
+  it.each([
+    { status: "error", data: { alerts: [] } },
+    { status: "success", data: { alerts: [{ labels: { alertname: "Bad" }, state: "firing" }] } },
+    {
+      status: "success",
+      data: {
+        alerts: [
+          { labels: { alertname: "Bad" }, state: "normal", activeAt: "2026-10-06T08:00:00Z" }
+        ]
+      }
+    },
+    {
+      status: "success",
+      data: { alerts: [{ labels: { alertname: "Bad" }, state: "firing", activeAt: "bad-time" }] }
+    },
+    {
+      status: "success",
+      data: {
+        alerts: [
+          { labels: { alertname: "Future" }, state: "firing", activeAt: "2027-10-06T08:00:00Z" }
+        ]
+      }
+    }
+  ])("rejects malformed/unknown active state without inventing start times %s", async (payload) => {
+    const { grafana } = client({ [activePath]: payload });
+    await expect(grafana.getActiveAlerts({ ...common, selector: {} })).resolves.toMatchObject({
+      state: "invalid"
+    });
+  });
+  it("preserves cancellation as cancellation", async () => {
+    const error = new GateError({ code: "CANCELLED", safeMessage: "Cancelled", retryable: false });
+    const { grafana } = client({ [activePath]: error });
+    await expect(grafana.getActiveAlerts({ ...common, selector: {} })).rejects.toMatchObject({
+      code: "CANCELLED"
+    });
+  });
+});

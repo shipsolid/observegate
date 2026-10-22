@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
+import { withCancellation } from "./retry.js";
 import { GateError } from "@observability-gate/core";
 
 export type UrlKind = "provider" | "probe";
@@ -48,19 +49,19 @@ function isForbiddenIpv4(address: string): boolean {
 }
 
 function isForbiddenIpv6(address: string): boolean {
-  const normalized = address.toLowerCase().split("%")[0] ?? address.toLowerCase();
-  if (normalized === "::" || normalized === "::1") {
-    return true;
-  }
-  if (normalized.startsWith("fc") || normalized.startsWith("fd")) {
-    return true;
-  }
+  const normalized = new URL(`https://[${address}]/`).hostname.slice(1, -1).toLowerCase();
+  if (normalized === "::" || normalized === "::1" || normalized.startsWith("ff")) return true;
+  if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
   const firstGroup = Number.parseInt(normalized.split(":")[0] ?? "", 16);
-  if (Number.isFinite(firstGroup) && firstGroup >= 0xfe80 && firstGroup <= 0xfebf) {
-    return true;
+  if (firstGroup >= 0xfe80 && firstGroup <= 0xfebf) return true;
+  if (normalized.startsWith("::ffff:")) {
+    const groups = normalized.slice(7).split(":");
+    const high = Number.parseInt(groups[0] ?? "", 16);
+    const low = Number.parseInt(groups[1] ?? "", 16);
+    return isForbiddenIpv4(`${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`);
   }
-  const mappedIpv4 = normalized.match(/(?:^|:)ffff:(\d+\.\d+\.\d+\.\d+)$/u)?.[1];
-  return mappedIpv4 !== undefined && isForbiddenIpv4(mappedIpv4);
+  // IPv4-compatible, translated and well-known NAT64 addresses can hide IPv4 destinations.
+  return normalized.startsWith("::") || normalized.startsWith("64:ff9b:");
 }
 
 function isForbiddenAddress(address: string): boolean {
@@ -90,7 +91,15 @@ export class UrlPolicy {
         (await lookup(hostname, { all: true, verbatim: true })).map((answer) => answer.address));
   }
 
-  public async validate(input: string | URL, kind: UrlKind): Promise<URL> {
+  public async validate(input: string | URL, kind: UrlKind, signal?: AbortSignal): Promise<URL> {
+    return (await this.resolve(input, kind, signal)).url;
+  }
+
+  public async resolve(
+    input: string | URL,
+    kind: UrlKind,
+    signal?: AbortSignal
+  ): Promise<{ readonly url: URL; readonly addresses: readonly string[] }> {
     let url: URL;
     try {
       url = new URL(input);
@@ -127,8 +136,12 @@ export class UrlPolicy {
       addresses = [hostname];
     } else {
       try {
-        addresses = await this.resolveHostname(hostname);
+        addresses =
+          signal === undefined
+            ? await this.resolveHostname(hostname)
+            : await withCancellation(() => this.resolveHostname(hostname), signal);
       } catch (cause) {
+        if (signal?.aborted) throw cause;
         throw new GateError({
           code: "PROVIDER_UNAVAILABLE",
           safeMessage: "Provider hostname could not be resolved",
@@ -149,6 +162,6 @@ export class UrlPolicy {
       throw securityViolation("Provider URL resolves to a forbidden network address");
     }
 
-    return url;
+    return { url, addresses: Object.freeze([...addresses]) };
   }
 }

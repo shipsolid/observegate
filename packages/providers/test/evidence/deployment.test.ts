@@ -27,7 +27,7 @@ describe("CompactDeploymentVerifier", () => {
       previousReleaseId: "2026.10.5",
       deployedAt: "2026-10-06T07:55:00.000Z",
       workflowIdentity: "shipsolid/observegate/.github/workflows/deploy.yml@refs/heads/main",
-      iat: 1791273000,
+      iat: 1791273360,
       exp: 1791277200
     };
     const body = encoded(payload);
@@ -93,5 +93,76 @@ describe("CompactDeploymentVerifier", () => {
     await expect(resolver.resolve("release-key")).resolves.toMatchObject({ kid: "release-key" });
     expect(requests[0]).toMatchObject({ kind: "provider", maximumResponseBytes: 262_144 });
     expect(String(requests[0]?.url)).toBe("https://issuer.example.com/.well-known/jwks.json");
+  });
+});
+
+describe("deployment JOSE and completion-time constraints", () => {
+  const now = Date.parse("2026-10-06T08:00:00Z");
+  const expected = {
+    target: "target",
+    releaseId: "release",
+    commit: "commit",
+    artifactDigest: "sha256:digest"
+  };
+  const claims = {
+    iss: "issuer",
+    aud: "audience",
+    sub: "subject",
+    workflowIdentity: "workflow",
+    deploymentId: "deployment",
+    ...expected,
+    deployedAt: new Date(now - 60_000).toISOString(),
+    iat: (now - 30_000) / 1000,
+    exp: (now + 120_000) / 1000
+  };
+  const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  async function check(
+    overrides: Record<string, unknown>,
+    algorithm = "RS256",
+    key = rsa,
+    metadata: Record<string, unknown> = {}
+  ) {
+    const header = encoded({ alg: algorithm, kid: "key" });
+    const body = encoded({ ...claims, ...overrides });
+    const signature = sign("sha256", Buffer.from(`${header}.${body}`), {
+      key: key.privateKey,
+      ...(algorithm === "ES256" ? { dsaEncoding: "ieee-p1363" as const } : {})
+    }).toString("base64url");
+    const verifier = new CompactDeploymentVerifier({
+      trustedIssuer: "issuer",
+      audience: "audience",
+      expectedWorkflowIdentity: "workflow",
+      clock: () => now,
+      keyResolver: async () => ({ ...key.publicKey.export({ format: "jwk" }), ...metadata })
+    });
+    return verifier.verify(`${header}.${body}.${signature}`, expected);
+  }
+  it.each([
+    { deployedAt: new Date(now + 60_000).toISOString() },
+    { deployedAt: new Date(now - 86_400_000).toISOString() },
+    { iat: (now - 180_000) / 1000 },
+    { deployedAt: new Date(now + 240_000).toISOString() },
+    { iat: (now + 60_000) / 1000, exp: (now - 60_000) / 1000 },
+    { exp: 1e100 }
+  ])("rejects completion time outside token/current freshness bounds %s", async (overrides) => {
+    await expect(check(overrides)).rejects.toMatchObject({ code: "SECURITY_POLICY" });
+  });
+  it("rejects ES256 signatures made with P-384", async () => {
+    const key = generateKeyPairSync("ec", { namedCurve: "P-384" });
+    await expect(check({}, "ES256", key)).rejects.toMatchObject({ code: "SECURITY_POLICY" });
+  });
+  it("rejects keys declaring another algorithm or non-verification use", async () => {
+    await expect(check({}, "RS256", rsa, { alg: "RS512" })).rejects.toMatchObject({
+      code: "SECURITY_POLICY"
+    });
+    await expect(check({}, "RS256", rsa, { key_ops: ["encrypt"] })).rejects.toMatchObject({
+      code: "SECURITY_POLICY"
+    });
+  });
+  it("accepts ES256 with a P-256 verification key", async () => {
+    const key = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    await expect(
+      check({}, "ES256", key, { alg: "ES256", key_ops: ["verify"] })
+    ).resolves.toMatchObject({ deploymentId: "deployment" });
   });
 });

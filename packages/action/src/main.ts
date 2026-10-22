@@ -1,4 +1,5 @@
-import type { ExecutionRequest, ExecutionResult } from "@observability-gate/core";
+import { GateError, type ExecutionRequest, type ExecutionResult } from "@observability-gate/core";
+import type { GithubReportingOptions, PublicationOptions } from "@observability-gate/config";
 import { writeReports } from "@observability-gate/reporters";
 import { publishCheck, updatePullRequestComment, writeStepSummary } from "./github-reporter.js";
 import { readInputs } from "./inputs.js";
@@ -9,6 +10,8 @@ import { githubActionsRuntime, type ActionRuntime } from "./actions-runtime.js";
 export interface ActionService {
   readonly run: (request: ExecutionRequest) => Promise<ExecutionResult>;
   readonly maximumReportBytes?: (request: ExecutionRequest) => Promise<number>;
+  readonly publicationOptions?: (request: ExecutionRequest) => Promise<PublicationOptions>;
+  readonly reportingOptions?: (request: ExecutionRequest) => Promise<GithubReportingOptions>;
 }
 
 export interface RunActionDependencies {
@@ -42,25 +45,55 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
       cancellationSignal: controller.signal
     };
     const result = await service.run(request);
+    const checkCancellation = () => {
+      if (controller.signal.aborted)
+        throw new GateError({
+          code: "CANCELLED",
+          safeMessage: "Action publication was cancelled.",
+          retryable: false
+        });
+    };
+    checkCancellation();
+    const publicationSettings = await service.publicationOptions?.(request);
+    const reporting = publicationSettings?.github ??
+      (await service.reportingOptions?.(request)) ?? {
+        checkRun: false,
+        stepSummary: true,
+        pullRequestComment: false
+      };
+    checkCancellation();
     const maximumTotalBytes = (await service.maximumReportBytes?.(request)) ?? 25 * 1024 * 1024;
     const publication = await writeReports(result, {
-      directory: inputs.outputDirectory,
-      formats: ["json", "markdown", "junit", "sarif"],
+      directory:
+        runtime.getInput("output-directory") ||
+        publicationSettings?.directory ||
+        inputs.outputDirectory,
+      formats: publicationSettings?.formats ?? ["json", "markdown", "junit", "sarif"],
       maximumTotalBytes,
       signal: controller.signal
     });
-    setActionOutputs(result, publication.paths.json ?? "", runtime);
-    await writeStepSummary(result, runtime);
+    checkCancellation();
+    if (reporting.stepSummary) await writeStepSummary(result, runtime, reporting);
+    checkCancellation();
     if (inputs.githubToken !== undefined) {
       try {
-        await publishCheck(result, inputs.githubToken);
-        await updatePullRequestComment(result, inputs.githubToken);
+        if (reporting.checkRun)
+          await publishCheck(result, inputs.githubToken, controller.signal, reporting);
+        checkCancellation();
+        if (reporting.pullRequestComment)
+          await updatePullRequestComment(result, inputs.githubToken, controller.signal, reporting);
       } catch {
         runtime.warning(
           "GitHub report publication was not authorized; local reports are available."
         );
       }
     }
+    checkCancellation();
+    setActionOutputs(
+      result,
+      publication.paths.json ?? "",
+      runtime
+    );
     if (shouldFail(result)) runtime.setFailed(`Observability Gate decision: ${result.decision}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Observability Gate Action failed.";

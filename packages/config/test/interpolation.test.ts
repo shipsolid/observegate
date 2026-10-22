@@ -48,7 +48,7 @@ describe("interpolatePolicy", () => {
     });
 
     expect(Object.keys(result.targets.definitions)).toEqual(["test"]);
-    expect(result.gates.post_deployment).toEqual([]);
+    expect(result.gates.post_deployment).toEqual(input.gates.post_deployment);
   });
 
   it("uses a target override without requiring active-target interpolation", () => {

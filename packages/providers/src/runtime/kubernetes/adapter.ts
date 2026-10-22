@@ -1,3 +1,4 @@
+import { withCancellation } from "../../transport/retry.js";
 import { GateError, stableFingerprint, type Evidence } from "@observability-gate/core";
 import type { RuntimeAdapter } from "../types.js";
 import type {
@@ -54,7 +55,10 @@ export class KubernetesRuntimeAdapter implements RuntimeAdapter<
   ): Promise<Evidence<KubernetesSnapshot>> {
     cancelled(request.signal);
     try {
-      const workload = await this.client.readWorkload(request);
+      const workload = await withCancellation(
+        () => this.client.readWorkload(request),
+        request.signal
+      );
       cancelled(request.signal);
       const selector = this.selectorFor(workload);
       const replicaSets =
@@ -86,6 +90,7 @@ export class KubernetesRuntimeAdapter implements RuntimeAdapter<
         },
         request.signal
       );
+      cancelled(request.signal);
       const acquiredAt = new Date(this.clock()).toISOString();
       const value = normalizeKubernetesSnapshot({
         target: request.target,
@@ -96,6 +101,7 @@ export class KubernetesRuntimeAdapter implements RuntimeAdapter<
         observedAt: acquiredAt,
         deploymentStartedAt: request.deploymentStartedAt
       });
+      cancelled(request.signal);
       return Object.freeze({
         id: stableFingerprint({
           target: request.target,
@@ -159,14 +165,43 @@ export class KubernetesRuntimeAdapter implements RuntimeAdapter<
   ): Promise<readonly unknown[]> {
     const items: unknown[] = [];
     let continueToken: string | undefined;
+    const seenTokens = new Set<string>();
+    let pages = 0;
     do {
       cancelled(signal);
-      const page = await list({
-        ...base,
-        ...(continueToken === undefined ? {} : { continueToken })
-      });
+      if (++pages > 100)
+        throw new GateError({
+          code: "PROVIDER_PROTOCOL",
+          safeMessage: "Kubernetes pagination exceeded its page limit",
+          retryable: false
+        });
+      const page = await withCancellation(
+        () =>
+          list({
+            ...base,
+            signal,
+            ...(continueToken === undefined ? {} : { continueToken })
+          }),
+        signal
+      );
+      cancelled(signal);
+      if (!Array.isArray(page.items) || items.length + page.items.length > 10_000)
+        throw new GateError({
+          code: "PROVIDER_PROTOCOL",
+          safeMessage: "Kubernetes pagination exceeded its item limit",
+          retryable: false
+        });
       items.push(...page.items);
       continueToken = page.continueToken;
+      if (continueToken !== undefined && continueToken.length > 0) {
+        if (seenTokens.has(continueToken))
+          throw new GateError({
+            code: "PROVIDER_PROTOCOL",
+            safeMessage: "Kubernetes pagination repeated a continuation token",
+            retryable: false
+          });
+        seenTokens.add(continueToken);
+      }
     } while (continueToken !== undefined && continueToken.length > 0);
     return items;
   }

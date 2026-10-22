@@ -110,6 +110,64 @@ describe("common post-deployment gate catalogue", () => {
     expect(serialized).not.toContain("<script>");
   });
 
+  it("requires all identity sources and compares full identities before display sanitization", () => {
+    for (const runtime of [
+      undefined,
+      { releaseId: "candidate?" },
+      { releaseId: "a".repeat(128) + "x" }
+    ]) {
+      const expected = runtime?.releaseId?.startsWith("a") ? "a".repeat(128) + "y" : "candidate!";
+      expect(
+        assertionsFor("runtime.release_identity", {
+          runtime,
+          attestation: { releaseId: expected },
+          expected: { releaseId: expected }
+        }).some((result) => result.status !== "passed")
+      ).toBe(true);
+    }
+    expect(
+      assertionsFor("telemetry.identity_consistency", {
+        identities: [{ source: "runtime", consistent: true }]
+      }).some((result) => result.status !== "passed")
+    ).toBe(true);
+    expect(
+      assertionsFor("telemetry.identity_consistency", {
+        expectedReleaseId: "candidate!",
+        identities: [{ source: "runtime", releaseId: "candidate?", consistent: true }]
+      }).some((result) => result.status !== "passed")
+    ).toBe(true);
+  });
+
+  it("requires each mandatory telemetry identity source", () => {
+    expect(
+      assertionsFor("telemetry.identity_consistency", {
+        expectedReleaseId: "candidate",
+        identities: [{ source: "runtime", releaseId: "candidate", consistent: true }]
+      }).some((result) => result.status !== "passed")
+    ).toBe(true);
+  });
+
+  it("requires policy-mandated release digest fields even when all evidence omits them", () => {
+    const catalog = registerPostCommonGates(new GateCatalog());
+    const results = catalog
+      .require("runtime.release_identity", "post_deployment", {
+        assertions: { expected_image_digest_env: "IMAGE_DIGEST" }
+      })
+      .evaluate(
+        [
+          evidence("runtime.release_identity", {
+            runtime: { releaseId: "candidate" },
+            attestation: { releaseId: "candidate" },
+            expected: { releaseId: "candidate" }
+          })
+        ],
+        context
+      );
+    expect(results).toContainEqual(
+      expect.objectContaining({ assertion: "image digest", status: "failed" })
+    );
+  });
+
   it("reports each stale signal independently", () => {
     const results = assertionsFor("telemetry.freshness", {
       signals: [

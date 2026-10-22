@@ -23,12 +23,6 @@ function selectScope(policy: RawPolicy, request: InterpolationRequest): RawPolic
   const selected = structuredClone(policy);
   selected.execution.active_target = activeTarget;
   selected.targets.definitions = { [activeTarget]: structuredClone(target) };
-  selected.gates = {
-    pre_deployment:
-      request.phase === "pre_deployment" ? structuredClone(policy.gates.pre_deployment) : [],
-    post_deployment:
-      request.phase === "post_deployment" ? structuredClone(policy.gates.post_deployment) : []
-  };
   return selected;
 }
 

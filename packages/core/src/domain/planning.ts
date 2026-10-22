@@ -41,4 +41,10 @@ export interface ExecutionPlan {
   readonly concurrency?: number;
   readonly perProviderConcurrency?: number;
   readonly failFast?: boolean;
+  readonly maximumQueries?: number;
+  readonly maximumQueryLengthBytes?: number;
+  readonly maximumResponseBytes?: number;
+  readonly maximumTotalRuntimeMs?: number;
+  readonly providerInitializationTimeoutMs?: number;
+  readonly providerCleanupTimeoutMs?: number;
 }

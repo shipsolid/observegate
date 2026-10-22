@@ -1,39 +1,62 @@
 import {
+  EvidenceStore,
   parseByteSize,
-  stableFingerprint,
   type Evidence,
+  type ExecutionPlan,
   type ProviderSession
 } from "@observability-gate/core";
-import { parseIncidentEvidence } from "./evidence/incidents.js";
 import { SafeEvidenceFileLoader } from "./evidence/files.js";
-import { parseOtlpContract } from "./evidence/otlp-contract.js";
-import { parseSarifEvidence } from "./evidence/sarif.js";
-import { parseSyntheticEvidence } from "./evidence/synthetic.js";
 import { GrafanaClient } from "./grafana/client.js";
 import { HttpProbe } from "./http/probe.js";
 import { LokiClient } from "./logs/loki-client.js";
 import { PrometheusMetricsProvider } from "./metrics/prometheus-client.js";
-import type { MetricVector } from "./metrics/types.js";
 import { TempoClient } from "./traces/tempo-client.js";
-import type { TraceSearchEvidence } from "./traces/types.js";
-import { GuardedTransport, type FetchLike } from "./transport/guarded-fetch.js";
+import {
+  GuardedTransport,
+  type FetchLike,
+  type TransportRequest
+} from "./transport/guarded-fetch.js";
 import { UrlPolicy } from "./transport/url-policy.js";
-
-type RecordValue = Readonly<Record<string, unknown>>;
-
+import { resolveArtifact } from "./resolvers/artifacts.js";
+import {
+  resolveTelemetry,
+  metric,
+  traceRecords,
+  logRecords
+} from "./resolvers/telemetry.js";
+import { resolveComparison } from "./resolvers/comparison.js";
+import { resolveGrafana } from "./resolvers/grafana.js";
+import { createRuntimeResolver, type RuntimeClients } from "./resolvers/runtime.js";
+import { verifiedDeployment } from "./resolvers/deployment.js";
+import {
+  activeRuntime,
+  array,
+  combined,
+  configuration,
+  durationMs,
+  evidence,
+  field,
+  mapped,
+  number,
+  record,
+  string,
+  type Data,
+  type Context
+} from "./resolvers/shared.js";
+export { bindAcquisitionPlan, validateProviderAcquisition } from "./resolvers/contracts.js";
+type RecordValue = Data;
 export interface ProviderPolicy {
-  readonly identity: RecordValue;
-  readonly release: RecordValue;
-  readonly observation: RecordValue;
-  readonly execution: RecordValue;
-  readonly targets: RecordValue;
-  readonly providers: RecordValue;
-  readonly gates: RecordValue;
-  readonly reporting: RecordValue;
-  readonly security: RecordValue;
-  readonly limits: RecordValue;
+  readonly identity: Data;
+  readonly release: Data;
+  readonly observation: Data;
+  readonly execution: Data;
+  readonly targets: Data;
+  readonly providers: Data;
+  readonly gates: Data;
+  readonly reporting: Data;
+  readonly security: Data;
+  readonly limits: Data;
 }
-
 export interface PolicyProviderSessionOptions {
   readonly policy: ProviderPolicy;
   readonly workspaceRoot: string;
@@ -41,161 +64,23 @@ export interface PolicyProviderSessionOptions {
   readonly fetch?: FetchLike;
   readonly resolveHostname?: (hostname: string) => Promise<readonly string[]>;
   readonly clock?: () => number;
+  readonly runtimeClients?: RuntimeClients;
+  readonly plan?: ExecutionPlan;
 }
-
-function record(value: unknown): RecordValue {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as RecordValue)
-    : {};
-}
-
-function array(value: unknown): readonly unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function string(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function number(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function durationMs(value: unknown, fallback: number): number {
-  if (typeof value !== "string") return fallback;
-  const match = /^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/u.exec(value);
-  if (match?.[1] === undefined || match[2] === undefined) return fallback;
-  const multiplier = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]];
-  return Number(match[1]) * (multiplier ?? 1);
-}
-
 function bearerHeaders(
-  configuration: RecordValue,
+  configuration: Data,
   environment: Readonly<Record<string, string | undefined>>
 ): HeadersInit {
-  const authentication = record(configuration.authentication);
-  const tokenName = string(authentication.bearer_token_env);
-  const token = tokenName === undefined ? undefined : environment[tokenName];
+  const name = string(record(configuration.authentication).bearer_token_env),
+    token = name === undefined ? undefined : environment[name];
   return token === undefined ? {} : { authorization: `Bearer ${token}` };
 }
-
-function mapEvidence<T, U>(
-  evidence: Evidence<T>,
-  kind: string,
-  value: U,
-  provider = evidence.source.provider
-): Evidence<U> {
-  return Object.freeze({
-    ...evidence,
-    id: stableFingerprint({ source: evidence.id, kind, value }),
-    kind,
-    source: Object.freeze({ ...evidence.source, provider }),
-    value: Object.freeze(value),
-    diagnostics: evidence.diagnostics
-  });
-}
-
-function localEvidence(
-  gateType: string,
-  target: string,
-  acquiredAt: string,
-  value: unknown
-): Evidence<unknown> {
-  return Object.freeze({
-    id: stableFingerprint({ gateType, target, acquiredAt, value }),
-    kind: gateType,
-    state: "valid",
-    source: Object.freeze({ provider: "policy", capability: gateType }),
-    target,
-    acquiredAt,
-    value,
-    diagnostics: Object.freeze([])
-  });
-}
-
-function unsupported(gateType: string, target: string, acquiredAt: string): Evidence<unknown> {
-  return Object.freeze({
-    id: stableFingerprint({ gateType, target, acquiredAt, state: "unsupported" }),
-    kind: gateType,
-    state: "unsupported",
-    source: Object.freeze({ provider: "unresolved", capability: gateType }),
-    target,
-    acquiredAt,
-    diagnostics: Object.freeze([
-      {
-        code: "CAPABILITY_UNSUPPORTED",
-        message: `No read-only evidence adapter is available for ${gateType}.`,
-        retryable: false
-      }
-    ])
-  });
-}
-
 function endpointFor(
-  configuration: RecordValue,
+  configuration: Data,
   environment: Readonly<Record<string, string | undefined>>
 ): string | undefined {
-  const endpoint = string(configuration.endpoint);
-  if (endpoint !== undefined) return endpoint;
-  const name = string(configuration.endpoint_env);
-  return name === undefined ? undefined : environment[name];
+  return field(configuration, "endpoint", environment);
 }
-
-function expectedWindow(
-  policy: ProviderPolicy,
-  phase: string,
-  now: number
-): { start: string; end: string } {
-  const observation = record(policy.observation);
-  const phaseObservation = record(observation[phase]);
-  const window = durationMs(
-    phase === "post_deployment"
-      ? phaseObservation.evaluation_window
-      : phaseObservation.current_health_window,
-    15 * 60_000
-  );
-  return { start: new Date(now - window).toISOString(), end: new Date(now).toISOString() };
-}
-
-function assertionRecord(definition: RecordValue): RecordValue {
-  return record(definition.assertions);
-}
-
-function identityValue(policy: ProviderPolicy): RecordValue {
-  const canonical = record(record(policy.identity).canonical);
-  return Object.freeze({
-    serviceName: canonical.service_name,
-    serviceNamespace: canonical.service_namespace,
-    environment: canonical.environment,
-    releaseId: canonical.release_id
-  });
-}
-
-function policySelfCheckValue(policy: ProviderPolicy): RecordValue {
-  const gates = record(policy.gates);
-  const allGates = [...array(gates.pre_deployment), ...array(gates.post_deployment)].map(record);
-  const ids = allGates
-    .map((gate) => string(gate.id))
-    .filter((id): id is string => id !== undefined);
-  return Object.freeze({
-    sections: Object.freeze([
-      "identity",
-      "targets",
-      "providers",
-      "gates.pre_deployment",
-      "gates.post_deployment",
-      "reporting",
-      "security"
-    ]),
-    uniqueGateIds: new Set(ids).size === ids.length,
-    unknownFields: 0,
-    inlineSecrets: 0,
-    blockingPostGates: array(gates.post_deployment)
-      .map(record)
-      .filter((gate) => gate.enforcement !== "advisory").length
-  });
-}
-
 export function createPolicyProviderSession(
   options: PolicyProviderSessionOptions
 ): ProviderSession {
@@ -207,6 +92,9 @@ export function createPolicyProviderSession(
     .map(record)
     .map((configuration) => endpointFor(configuration, options.environment))
     .filter((value): value is string => value !== undefined);
+  const deploymentSignature = record(record(record(providerGroups.evidence).deployment).signature);
+  const jwksEndpoint = field(deploymentSignature, "jwks_url", options.environment);
+  if (jwksEndpoint !== undefined) providerEndpoints.push(jwksEndpoint);
   const probeHosts = Object.values(httpProviders).flatMap((value) =>
     array(record(value).allowed_hosts).filter((host): host is string => typeof host === "string")
   );
@@ -215,15 +103,36 @@ export function createPolicyProviderSession(
     probeHosts,
     ...(options.resolveHostname === undefined ? {} : { resolve: options.resolveHostname })
   });
-  const transport = new GuardedTransport({
+  const guarded = new GuardedTransport({
     urlPolicy,
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     clock: now
   });
-  const maximumResponseBytes = parseByteSize(
-    record(options.policy.limits).maximum_provider_response_size,
-    2 * 1024 * 1024
-  );
+  const maximumResponseBytes =
+    options.plan?.maximumResponseBytes ??
+    parseByteSize(record(options.policy.limits).maximum_provider_response_size, 2 * 1024 * 1024);
+  let requests = 0;
+  const transport = {
+    request: (request: TransportRequest) => {
+      if (
+        ++requests >
+        (options.plan?.maximumQueries ?? number(options.policy.limits.maximum_queries) ?? 1000)
+      )
+        configuration("Provider read count exceeds limits.maximum_queries");
+      const url = new URL(request.url);
+      const query = url.searchParams.get("query") ?? url.searchParams.get("q") ?? "";
+      if (
+        Buffer.byteLength(query) >
+        (options.plan?.maximumQueryLengthBytes ??
+          parseByteSize(options.policy.limits.maximum_query_length, 16 * 1024))
+      )
+        configuration("Provider query exceeds limits.maximum_query_length");
+      return guarded.request({
+        ...request,
+        maximumResponseBytes: Math.min(request.maximumResponseBytes, maximumResponseBytes)
+      });
+    }
+  };
   const maximumFutureSkewMs = durationMs(
     record(record(options.policy.execution).clock).maximum_clock_skew,
     30_000
@@ -239,7 +148,6 @@ export function createPolicyProviderSession(
   const logsConfiguration = clientFor("logs");
   const tracesConfiguration = clientFor("traces");
   const grafanaConfiguration = clientFor("grafana");
-  const identity = identityValue(options.policy);
   const metricLabels = record(record(options.policy.identity).provider_mappings).metrics;
 
   const metricsEndpoint = endpointFor(metricsConfiguration, options.environment);
@@ -321,406 +229,281 @@ export function createPolicyProviderSession(
         });
   const probe = new HttpProbe({ transport, clock: now });
 
-  return {
-    async resolveEvidence(gateType, definition, context) {
-      const acquiredAt = new Date(now()).toISOString();
-      if (gateType === "policy.self_check") {
+  const base = {
+    policy: options.policy,
+    environment: options.environment,
+    files: fileLoader,
+    now,
+    maximumFutureSkewMs,
+    ...(metrics === undefined ? {} : { metrics }),
+    ...(logs === undefined ? {} : { logs }),
+    ...(traces === undefined ? {} : { traces })
+  };
+  const runtime = createRuntimeResolver(base, options.runtimeClients);
+  const resolve: NonNullable<ProviderSession["resolveEvidence"]> = async (
+    gateType,
+    definition,
+    context
+  ) => {
+    if (context.signal.aborted) throw context.signal.reason;
+    const source = record(definition.source),
+      assertions = record(definition.assertions);
+    if (gateType === "runtime.release_identity") {
+      const [raw, attestation] = await Promise.all([
+        runtime.snapshot(context),
+        verifiedDeployment(base, transport, context)
+      ]);
+      const value = record(raw.value),
+        observed = array(value.releaseIdentities).map(record),
+        releaseIds = [...new Set(observed.map((v) => v.releaseId))];
+      const revision = record(value.revision),
+        pods = array(value.pods).map(record),
+        digests = [...new Set(pods.map((p) => p.imageDigest).filter((v) => typeof v === "string"))];
+      const expected = record(activeRuntime(options.policy).expected),
+        imageDigest = field(expected, "image_digest", options.environment),
+        artifactDigest = field(expected, "artifact_digest", options.environment);
+      const queried=typeof source.runtime_release_query === "string" ? await metric(base,source.runtime_release_query,context) : undefined;
+      const samples=queried?.value?.samples??[];
+      const single=(values:readonly unknown[])=>{const unique=[...new Set(values.filter(v=>typeof v==="string"&&v.length>0))];return unique.length===1?unique[0]:undefined;};
+      const observedRuntime={releaseId:queried===undefined?(releaseIds.length===1?releaseIds[0]:revision.suffix):single(samples.map(s=>s.identity.serviceVersion)),imageDigest:revision.imageDigest??(digests.length===1?digests[0]:single(samples.map(s=>s.labels.image_digest))),artifactDigest:single(samples.map(s=>s.labels.artifact_digest)),deploymentId:single(samples.map(s=>s.labels.deployment_id))};
+      const requireDeploymentId=assertions.deployment_id!==undefined||observedRuntime.deploymentId!==undefined;
+      return [
+        mapped(raw, gateType, {
+          runtime: observedRuntime,
+          attestation: {
+            releaseId: attestation.releaseId,
+            ...(imageDigest === undefined
+              ? { artifactDigest: attestation.artifactDigest }
+              : { imageDigest: attestation.artifactDigest }),
+            ...(requireDeploymentId?{deploymentId:attestation.deploymentId}:{})
+          },
+          expected: {
+            releaseId: context.releaseId,
+            ...(imageDigest === undefined ? {} : { imageDigest }),
+            ...(artifactDigest === undefined ? {} : { artifactDigest }),
+            ...(requireDeploymentId?{deploymentId:record(options.policy.identity.canonical).deployment_id}:{})
+          }
+        }),
+        evidence("deployment.verified",context,new Date(now()).toISOString(),attestation,"deployment","deployment.verified"),
+        ...(queried===undefined?[]:[queried])
+      ];
+    }
+    if(gateType==="telemetry.identity_consistency") {
+      const telemetryEvidence=await resolveTelemetry(base,gateType,definition,context)??[];
+      const releases=await resolve("runtime.release_identity",definition,context),release=record(releases[0]?.value),expectedReleaseId=context.releaseId;
+      const identities=[...array(record(telemetryEvidence[0]?.value).identities),...(["runtime","attestation"] as const).map(source=>({source,releaseId:record(release[source]).releaseId,consistent:record(release[source]).releaseId===expectedReleaseId}))];
+      return [combined([...telemetryEvidence,...releases],gateType,{expectedReleaseId,identities}),...telemetryEvidence,...releases];
+    }
+    if(gateType==="azure_container_apps.replica_health"){
+      const raw=await runtime.resolve(gateType,definition,context)??[],queries=record(source.queries),value=record(raw[0]?.value),replicas=record(value.replicas),measured:Record<string,unknown>={},queriesRaw:Evidence<unknown>[]=[];
+      for(const[name,key]of [["activationFailures","activation_failures"],["deactivationFailures","deactivation_failures"]]){const query=queries[key??""];if(typeof query!=="string")configuration("Container Apps replica lifecycle assertions require source.queries.activation_failures and deactivation_failures");const evidence=await metric(base,query,context);queriesRaw.push(evidence);measured[String(name)]=evidence.value?.samples.length===1?evidence.value.samples[0]?.value:undefined;}
+      const all=[...raw,...queriesRaw];return [combined(all,gateType,{...value,replicas:{...replicas,...measured}}),...all];
+    }
+    if(gateType==="deployment.concurrency"&&source.provider==="metrics"){
+      const raw=await metric(base,source.query,context);
+      const deployments=(raw.value?.samples??[]).map(sample=>{const id=sample.labels.deployment_id;if(id===undefined)configuration("Deployment concurrency query must retain deployment_id label");return {id,active:sample.value>0};});
+      return [mapped(raw,gateType,{deployments,currentDeploymentId:record(options.policy.identity.canonical).deployment_id})];
+    }
+    if (gateType === "providers.health") {
+      const probes = record(source.probes ?? assertions.probes),
+        raws: Evidence<unknown>[] = [],
+        providers = [];
+      if (Object.keys(probes).length === 0)
+        configuration(
+          "providers.health requires source.probes mapping metrics/logs/traces to bounded queries or grafana to dashboard uid"
+        );
+      for (const [name, config] of Object.entries(probes)) {
+        const started = now(),
+          probeConfig = record(config);
+        let raw: Evidence<unknown>;
+        if (name === "metrics") raw = await metric(base, probeConfig.query, context);
+        else if (name === "logs") raw = await logRecords(base, probeConfig.query, context);
+        else if (name === "traces") raw = await traceRecords(base, probeConfig, context);
+        else if (name === "grafana" && grafana !== undefined && typeof probeConfig.uid === "string")
+          raw = await grafana.getDashboard({
+            target: context.targetId,
+            uid: probeConfig.uid,
+            maximumAgeMs: 600000,
+            maximumFutureSkewMs,
+            signal: context.signal
+          });
+        else
+          configuration(
+            "Provider health probes require a supported provider and explicit read parameters"
+          );
+        raws.push(raw);
+        providers.push({
+          name,
+          reachable: raw.state === "valid",
+          authenticated: raw.state === "valid",
+          authorized: raw.state === "valid",
+          latencyMs: now() - started,
+          maximumLatencyMs: durationMs(assertions.maximum_latency, 5000)
+        });
+      }
+      return [combined(raws, gateType, { providers }), ...raws];
+    }
+    if (gateType === "telemetry.query_validation") {
+      const definitions = [
+          ...array(options.policy.gates.pre_deployment),
+          ...array(options.policy.gates.post_deployment)
+        ].map(record),
+        raws: Evidence<unknown>[] = [],
+        queries = [];
+      for (const gate of definitions) {
+        const s = record(gate.source);
+        if (typeof s.query !== "string" || !["metrics", "logs"].includes(String(s.provider)))
+          continue;
+        const raw =
+          s.provider === "metrics"
+            ? await metric(base, s.query, context)
+            : await logRecords(base, s.query, context);
+        raws.push(raw);
+        const vector = record(raw.value),
+          samples = array(vector.samples);
+        const mappings = record(
+          record(options.policy.identity.provider_mappings)[String(s.provider)]
+        );
+        const service = String(mappings["service.name"] ?? "service_name"),
+          environment = String(mappings["deployment.environment.name"] ?? "deployment_environment");
+        const groupBy = [...s.query.matchAll(/(?:by|without)\s*\(([^)]*)\)/gu)].flatMap((match) =>
+          String(match[1])
+            .split(",")
+            .map((v) => v.trim())
+        );
+        queries.push({
+          valid: raw.state === "valid",
+          threshold: gate.type === "metric.threshold",
+          shape: s.provider === "metrics" && samples.length === 1 ? "scalar" : "records",
+          production: record(options.policy.identity.canonical).environment === "production",
+          scoped: s.query.includes(`${service}=`) && s.query.includes(`${environment}=`),
+          groupBy
+        });
+      }
+      if (raws.length === 0)
+        configuration(
+          "telemetry.query_validation requires configured telemetry query gates to validate"
+        );
+      return [combined(raws, gateType, { queries }), ...raws];
+    }
+    if (gateType === "http.assertion" || gateType === "asset.url") {
+      const providerName = string(source.provider) ?? string(source.adapter) ?? "public-probe",
+        provider = record(httpProviders[providerName]),
+        url = field(source, "url", options.environment);
+      if (url === undefined) configuration(`${gateType} requires source.url or source.url_env`);
+      const statuses = array(assertions.expected_status ?? assertions.expected_statuses).filter(
+        (v): v is number => typeof v === "number"
+      );
+      const expectedStatuses = statuses.length ? statuses : [200],
+        started = now();
+      const headers = record(assertions.expected_headers ?? assertions.response_headers),
+        json = record(assertions.expected_json ?? assertions.response_json);
+      if (gateType === "asset.url") {
+        const response = await transport.request({
+          url,
+          kind: "probe",
+          method: "GET",
+          timeoutMs: durationMs(provider.timeout, 10000),
+          maximumResponseBytes,
+          responseType: "text",
+          retry: { attempts: 1, initialBackoffMs: 0, maximumBackoffMs: 0, retryStatuses: [] },
+          signal: context.signal
+        });
         return [
-          localEvidence(
+          evidence(
             gateType,
-            context.targetId,
-            acquiredAt,
-            policySelfCheckValue(options.policy)
+            context,
+            new Date(now()).toISOString(),
+            {
+              reachable: expectedStatuses.includes(response.status),
+              scheme: new URL(url).protocol.slice(0, -1),
+              nonempty: typeof response.data === "string" && Buffer.byteLength(response.data) > 0
+            },
+            "http",
+            "probe"
           )
         ];
       }
-      if (gateType === "identity.contract") {
-        return [localEvidence(gateType, context.targetId, acquiredAt, identity)];
-      }
-
-      const source = record(definition.source);
-      const assertions = assertionRecord(definition);
-      const sourceProvider = string(source.provider);
-      const window = expectedWindow(options.policy, context.phase, now());
-
-      if (
-        metrics !== undefined &&
-        sourceProvider === "metrics" &&
-        typeof source.query === "string"
-      ) {
-        const raw = await context.evidenceStore.getOrLoad(
-          {
-            kind: "metrics.vector",
-            provider: "metrics",
-            capability: "metrics.query.instant",
-            target: context.targetId,
-            ...(context.releaseId === undefined ? {} : { releaseId: context.releaseId }),
-            query: source.query
-          },
-          () =>
-            metrics.queryInstant({
-              query: source.query as string,
-              target: context.targetId,
-              ...(context.releaseId === undefined ? {} : { releaseId: context.releaseId }),
-              minimumSamples: 1,
-              maximumAgeMs: durationMs(
-                record(options.policy.observation).maximum_evidence_age,
-                2 * 60_000
-              ),
-              maximumFutureSkewMs,
-              signal: context.signal
-            })
-        );
-        const vector = raw.value as MetricVector | undefined;
-        const first = vector?.samples[0];
-        if (gateType === "metric.threshold") {
-          return [
-            mapEvidence(raw, gateType, {
-              value: first?.value,
-              sampleCount: vector?.sampleCount ?? 0,
-              minimumSamples: number(assertions.minimum_samples) ?? 1,
-              operator: assertions.operator,
-              threshold: assertions.threshold,
-              minimumTotalRequests: assertions.minimum_total_requests,
-              requestCount: vector?.sampleCount ?? 0
-            })
-          ];
-        }
-        if (gateType === "telemetry.presence") {
-          return [
-            mapEvidence(raw, gateType, {
-              identityMatches: first !== undefined,
-              records: vector?.sampleCount ?? 0,
-              minimumRecords: number(assertions.minimum_records) ?? 1
-            })
-          ];
-        }
-      }
-
-      if (logs !== undefined && sourceProvider === "logs" && typeof source.query === "string") {
-        const raw = await context.evidenceStore.getOrLoad(
-          {
-            kind: "logs.records",
-            provider: "logs",
-            capability: "logs.query.range",
-            target: context.targetId,
-            query: source.query,
-            range: window
-          },
-          () =>
-            logs.queryRange({
-              query: source.query as string,
-              target: context.targetId,
-              ...(context.releaseId === undefined ? {} : { releaseId: context.releaseId }),
-              ...window,
-              direction: "backward",
-              limit: 1_000,
-              minimumRecords: number(assertions.minimum_records) ?? 1,
-              maximumAgeMs: 2 * 60_000,
-              maximumFutureSkewMs,
-              structuredMetadataFields: ["trace_id", "span_id"],
-              signal: context.signal
-            })
-        );
-        if (gateType === "telemetry.presence") {
-          const count = raw.value?.recordCount ?? 0;
-          return [
-            mapEvidence(raw, gateType, {
-              identityMatches: count > 0,
-              records: count,
-              minimumRecords: number(assertions.minimum_records) ?? 1
-            })
-          ];
-        }
-      }
-
-      if (traces !== undefined && sourceProvider === "traces") {
-        const query = record(source.query);
-        const namespace =
-          string(query["resource.service.namespace"]) ?? string(identity.serviceNamespace);
-        const version = string(query["resource.service.version"]) ?? context.releaseId;
-        const environment =
-          string(query["resource.deployment.environment.name"]) ?? string(identity.environment);
-        const raw = await context.evidenceStore.getOrLoad(
-          {
-            kind: "traces.summaries",
-            provider: "traces",
-            capability: "traces.search",
-            target: context.targetId,
-            parameters: { identity, window }
-          },
-          () =>
-            traces.search({
-              target: context.targetId,
-              service: {
-                name: string(query["resource.service.name"]) ?? String(identity.serviceName ?? ""),
-                ...(namespace === undefined ? {} : { namespace }),
-                ...(version === undefined ? {} : { version }),
-                ...(environment === undefined ? {} : { environment })
-              },
-              ...window,
-              limit: 100,
-              minimumTraces: number(assertions.minimum_traces) ?? 1,
-              maximumAgeMs: 3 * 60_000,
-              maximumFutureSkewMs,
-              trafficObserved: true,
-              samplingProbability: 1,
-              signal: context.signal
-            })
-        );
-        if (gateType === "telemetry.presence") {
-          const traceEvidence = raw.value as TraceSearchEvidence | undefined;
-          return [
-            mapEvidence(raw, gateType, {
-              identityMatches: (traceEvidence?.traceCount ?? 0) > 0,
-              records: traceEvidence?.traceCount ?? 0,
-              minimumRecords: number(assertions.minimum_traces) ?? 1
-            })
-          ];
-        }
-        if (gateType === "telemetry.service_graph") {
-          const traceEvidence = raw.value as TraceSearchEvidence | undefined;
-          const peers = new Set(
-            traceEvidence?.traces.flatMap((trace) =>
-              trace.spans
-                .map((span) => span.peerService)
-                .filter((peer): peer is string => peer !== undefined)
-            ) ?? []
-          );
-          return [
-            mapEvidence(raw, gateType, {
-              callerPresent: (traceEvidence?.traceCount ?? 0) > 0,
-              observedDependencies: [...peers],
-              requiredDependencies: array(assertions.required_dependencies),
-              unknownPeerPercent: 0,
-              maximumUnknownPeerPercent: number(assertions.maximum_unknown_peer_percent) ?? 0
-            })
-          ];
-        }
-      }
-
-      if (grafana !== undefined && sourceProvider === "grafana") {
-        const maximumAgeMs = 10 * 60_000;
-        const base = {
-          target: context.targetId,
-          maximumAgeMs,
-          maximumFutureSkewMs,
-          signal: context.signal
-        };
-        if (gateType === "grafana.dashboard") {
-          const uid =
-            string(source.uid) ??
-            (string(source.uid_env) === undefined
-              ? undefined
-              : options.environment[string(source.uid_env) as string]);
-          if (uid !== undefined)
-            return [
-              await grafana.getDashboard({
-                ...base,
-                uid,
-                ...(string(assertions.title_contains) === undefined
-                  ? {}
-                  : { expectedTitle: string(assertions.title_contains) as string })
-              })
-            ];
-        }
-        if (gateType === "grafana.alert_rules" || gateType === "grafana.alert_state") {
-          const raw = await grafana.getAlertRules({
-            ...base,
-            selector: Object.fromEntries(
-              Object.entries(record(source.labels)).filter(
-                (entry): entry is [string, string] => typeof entry[1] === "string"
-              )
-            )
-          });
-          const rules = raw.value ?? [];
-          return [
-            mapEvidence(
-              raw,
-              gateType,
-              gateType === "grafana.alert_rules"
-                ? { rules }
-                : { fresh: raw.state === "valid", alerts: rules }
-            )
-          ];
-        }
-        if (gateType === "grafana.notification_policy") {
-          const instant = new Date(now()).toISOString();
-          return [
-            await grafana.getNotificationRoute({
-              ...base,
-              selector: Object.fromEntries(
-                Object.entries(record(source.match)).filter(
-                  (entry): entry is [string, string] => typeof entry[1] === "string"
-                )
-              ),
-              deploymentStart: instant,
-              deploymentEnd: instant
-            })
-          ];
-        }
-        if (
-          [
-            "grafana.slo_definition",
-            "grafana.slo_status",
-            "grafana.error_budget",
-            "grafana.burn_rate"
-          ].includes(gateType)
-        ) {
-          const uid =
-            string(source.uid) ??
-            (string(source.uid_env) === undefined
-              ? undefined
-              : options.environment[string(source.uid_env) as string]);
-          if (uid !== undefined) {
-            const raw = await grafana.getSlo({ ...base, uid });
-            const slo = raw.value;
-            if (gateType === "grafana.slo_definition")
-              return [
-                mapEvidence(raw, gateType, { ...slo, labelsMatchIdentity: slo !== undefined })
-              ];
-            if (gateType === "grafana.slo_status")
-              return [
-                mapEvidence(raw, gateType, { fresh: raw.state === "valid", status: slo?.status })
-              ];
-            if (gateType === "grafana.error_budget")
-              return [
-                mapEvidence(raw, gateType, {
-                  fresh: raw.state === "valid",
-                  remainingPercent: slo?.remainingBudgetPercent,
-                  minimumRemainingPercent: assertions.minimum_remaining_percent,
-                  consumedDuringReleasePercent: slo?.consumedBudgetPercent,
-                  maximumConsumedDuringReleasePercent:
-                    assertions.maximum_consumed_during_release_percent
-                })
-              ];
-            return [
-              mapEvidence(raw, gateType, {
-                fresh: raw.state === "valid",
-                pairs:
-                  slo?.burnRates.map((rate) => ({
-                    shortValue: rate.value,
-                    longValue: rate.value,
-                    maximum: number(assertions.maximum) ?? Number.POSITIVE_INFINITY
-                  })) ?? []
-              })
-            ];
-          }
-        }
-      }
-
-      if (gateType === "http.assertion" || gateType === "asset.url") {
-        const providerName = sourceProvider ?? string(source.adapter) ?? "public-probe";
-        const provider = record(httpProviders[providerName]);
-        const url =
-          string(source.url) ??
-          (string(source.url_env) === undefined
-            ? undefined
-            : options.environment[string(source.url_env) as string]);
-        if (url !== undefined) {
-          const started = now();
-          const statuses = array(assertions.expected_status).filter(
-            (value): value is number => typeof value === "number"
-          );
-          const expectedStatuses =
-            statuses.length > 0
-              ? statuses
-              : array(assertions.expected_statuses).filter(
-                  (value): value is number => typeof value === "number"
-                );
-          const raw = await probe.check({
-            url,
-            method: assertions.method === "HEAD" ? "HEAD" : "GET",
-            expectedStatus: expectedStatuses[0] ?? 200,
-            expectedHeaders: Object.fromEntries(
-              Object.entries(record(assertions.expected_headers)).filter(
-                (entry): entry is [string, string] => typeof entry[1] === "string"
-              )
-            ),
-            expectedJson: record(assertions.expected_json) as Readonly<
-              Record<string, string | number | boolean | null>
-            >,
-            timeoutMs: durationMs(provider.timeout, 10_000),
-            maximumResponseBytes,
-            signal: context.signal
-          });
-          if (gateType === "asset.url")
-            return [
-              mapEvidence(raw, gateType, {
-                reachable: raw.state === "valid",
-                scheme: new URL(url).protocol.slice(0, -1),
-                nonempty: raw.value !== undefined
-              })
-            ];
-          return [
-            mapEvidence(
-              raw,
-              gateType,
-              {
-                status: raw.value?.status,
-                expectedStatuses,
-                durationMs: now() - started,
-                maximumDurationMs: durationMs(assertions.maximum_duration, 10_000),
-                headersMatch: raw.value?.headersMatch ?? false,
-                jsonMatches: raw.value?.jsonMatches ?? true
-              },
-              "http"
-            )
-          ];
-        }
-      }
-
-      const evidenceProviders = record(providerGroups.evidence);
-      if (sourceProvider !== undefined && sourceProvider in evidenceProviders) {
-        const provider = record(evidenceProviders[sourceProvider]);
-        const paths = array(provider.files).filter(
-          (value): value is string => typeof value === "string"
-        );
-        const path = paths.find(
-          (candidate) => gateType !== "synthetic.result" || /\.(?:json|xml)$/iu.test(candidate)
-        );
-        if (path !== undefined) {
-          const loaded = await fileLoader.load({
-            path,
-            blocking: definition.enforcement !== "advisory",
-            maximumAgeMs: durationMs(provider.maximum_age, 24 * 60 * 60_000),
-            maximumFutureSkewMs
-          });
-          let value: unknown;
-          if (gateType === "evidence.sarif")
-            value = parseSarifEvidence(loaded.content, { acceptedRulePrefixes: [""] });
-          else if (gateType === "evidence.incident_state")
-            value = parseIncidentEvidence(loaded.content);
-          else if (gateType === "evidence.otlp_contract") {
-            const canonical = record(record(options.policy.identity).canonical);
-            value = parseOtlpContract(loaded.content, {
-              commit: string(canonical.release_id) ?? "",
-              workflow: string(canonical.deployment_id) ?? ""
-            });
-          } else if (gateType === "synthetic.result") {
-            const parsed = parseSyntheticEvidence(loaded.content);
-            const required = array(assertions.required_tests).map(String);
-            value = {
-              requiredTests: required,
-              tests: parsed.tests.map((test) => ({
-                name: test.name,
-                passed: test.status === "passed",
-                durationMs: test.durationMs,
-                maximumDurationMs: durationMs(
-                  assertions.maximum_duration,
-                  Number.POSITIVE_INFINITY
-                ),
-                releaseHeader: test.observedRelease,
-                expectedReleaseHeader: context.releaseId
-              }))
-            };
-          }
-          if (value !== undefined)
-            return [localEvidence(gateType, context.targetId, loaded.modifiedAt, value)];
-        }
-      }
-
-      return [unsupported(gateType, context.targetId, acquiredAt)];
+      const raw = await probe.check({
+        url,
+        method: assertions.method === "HEAD" ? "HEAD" : "GET",
+        expectedStatus: expectedStatuses[0] ?? 200,
+        expectedHeaders: Object.fromEntries(
+          Object.entries(headers).filter((e): e is [string, string] => typeof e[1] === "string")
+        ),
+        ...(Object.keys(json).length
+          ? { expectedJson: json as Readonly<Record<string, string | number | boolean | null>> }
+          : {}),
+        timeoutMs: durationMs(provider.timeout, 10000),
+        maximumResponseBytes,
+        signal: context.signal
+      });
+      return [
+        mapped(raw, gateType, {
+          status: raw.value?.status,
+          expectedStatuses,
+          durationMs: now() - started,
+          maximumDurationMs: durationMs(assertions.maximum_duration, 10000),
+          headersMatch: raw.value?.headersMatch ?? false,
+          jsonMatches: raw.value?.jsonMatches ?? true
+        })
+      ];
     }
+    for (const resolver of [
+      () => resolveTelemetry(base, gateType, definition, context),
+      () => resolveComparison(base, gateType, definition, context),
+      () => resolveGrafana(base, grafana, gateType, definition, context),
+      () => resolveArtifact(base, gateType, definition, context),
+      () => runtime.resolve(gateType, definition, context)
+    ]) {
+      const resolved = await resolver();
+      if (resolved !== undefined) return resolved;
+    }
+    configuration(
+      `${gateType} has no complete evidence acquisition contract; configure a supported adapter and gate-specific source parameters`
+    );
+  };
+  const postGates = array(options.policy.gates.post_deployment)
+    .map(record)
+    .filter((g) => g.enabled !== false && g.enforcement !== "advisory");
+  let generation = 0;
+  return {
+    resolveEvidence: resolve,
+    ...(postGates.length === 0 || options.plan?.phase === "pre_deployment"
+      ? {}
+      : {
+          sample: async (signal: AbortSignal) => {
+            const targetId =
+                string(options.policy.execution.active_target) ??
+                options.plan?.targetId ??
+                "active",
+              releaseId = string(record(options.policy.identity.canonical).release_id),
+              context: Context = {
+                phase: "post_deployment",
+                targetId,
+                ...(releaseId === undefined ? {} : { releaseId }),
+                evidenceStore: new EvidenceStore(() => new Date(now())),
+                signal,
+                clock: () => new Date(now())
+              };
+            generation += 1;
+            if(postGates.some(g=>["runtime.","vm.","kubernetes.","azure_container_apps.","azure_vm."].some(prefix=>String(g.type).startsWith(prefix))||g.type==="telemetry.identity_consistency"))
+              await runtime.snapshot(context, true);
+            let successful = true;
+            for (const gate of postGates) {
+              const when = record(gate.when),
+                type = activeRuntime(options.policy).type;
+              if (
+                (typeof when.runtime_type === "string" && when.runtime_type !== type) ||
+                (Array.isArray(when.runtime_type) && !when.runtime_type.includes(type))
+              )
+                continue;
+              const raw = await resolve(String(gate.type), gate, context);
+              if (raw.length === 0 || raw.some((item) => item.state !== "valid"))
+                successful = false;
+            }
+            return successful && generation > 0;
+          }
+        })
   };
 }

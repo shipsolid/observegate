@@ -42,6 +42,13 @@ export interface AlertRuleSnapshot {
   readonly evaluatedAt: string;
 }
 
+export interface ActiveAlertSnapshot {
+  readonly name: string;
+  readonly labels: Readonly<Record<string, string>>;
+  readonly state: "pending" | "firing";
+  readonly startsAt: string;
+}
+
 export interface AlertRulesRequest extends GrafanaRequestBase {
   readonly selector: Readonly<Record<string, string>>;
 }
@@ -82,6 +89,7 @@ export interface SloRequest extends GrafanaRequestBase {
 
 export interface GrafanaProvider {
   getDashboard(request: DashboardRequest): Promise<Evidence<DashboardSnapshot>>;
+  getActiveAlerts?(request: AlertRulesRequest): Promise<Evidence<readonly ActiveAlertSnapshot[]>>;
   getAlertRules(request: AlertRulesRequest): Promise<Evidence<readonly AlertRuleSnapshot[]>>;
   getNotificationRoute(
     request: NotificationRouteRequest

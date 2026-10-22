@@ -94,3 +94,29 @@ describe("file evidence contracts", () => {
     });
   });
 });
+
+describe("strict synthetic evidence", () => {
+  it("treats JUnit errors as failed and ignores comment and CDATA markup", () => {
+    const xml = `<testsuite><!-- <testcase name="fake" time="1"/> --><testcase name='real &amp; named' time='0.2'><error><![CDATA[<testcase name="fake2" time="1"/>]]></error></testcase></testsuite>`;
+    expect(parseSyntheticEvidence(Buffer.from(xml))).toEqual({
+      tests: [{ name: "real & named", status: "failed", durationMs: 200 }]
+    });
+  });
+  it.each([
+    '<testsuite><testcase name="ok" time="1"/></wrong>',
+    '<testsuite><!-- <testcase name="fake" time="1"/> --></testsuite>',
+    '<testsuite><testcase name="same" time="1"/><testcase name="same" time="1"/></testsuite>',
+    JSON.stringify({ tests: [{ name: "bad", status: "passed", durationMs: -1 }] }),
+    JSON.stringify({ tests: [{ name: "bad", status: "passed", durationMs: 1, timestamp: "bad" }] }),
+    JSON.stringify({
+      tests: [
+        { name: "bad", status: "passed", durationMs: 1 },
+        { name: "bad", status: "failed", durationMs: 1 }
+      ]
+    })
+  ])("rejects malformed or ambiguous evidence %s", (content) => {
+    expect(() => parseSyntheticEvidence(Buffer.from(content))).toThrowError(
+      expect.objectContaining({ code: "EVIDENCE_INVALID" })
+    );
+  });
+});

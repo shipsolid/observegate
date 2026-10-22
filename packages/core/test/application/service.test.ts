@@ -124,11 +124,241 @@ describe("ObservabilityGateService", () => {
       "validate-and-plan",
       "providers",
       "gate",
-      "report",
-      "close"
+      "close",
+      "report"
     ]);
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.gates)).toBe(true);
+  });
+
+  it.each([
+    { state: "stale", capability: "query", target: "production", releaseId: "release-1" },
+    {
+      state: "valid",
+      capability: "wrong-capability",
+      target: "production",
+      releaseId: "release-1"
+    },
+    { state: "valid", capability: "query", target: "wrong-target", releaseId: "release-1" },
+    { state: "valid", capability: "query", target: "production", releaseId: "wrong-release" },
+    {
+      state: "valid",
+      capability: "query",
+      target: "production",
+      releaseId: "release-1",
+      expiresAt: "2000-01-01T00:00:00Z"
+    }
+  ] as const)(
+    "does not count invalid requirement evidence toward coverage: %j",
+    async (metadata) => {
+      const policy = adapter([]);
+      const service = new ObservabilityGateService({
+        policy: {
+          ...policy,
+          describeExecution(...args) {
+            const execution = policy.describeExecution(...args);
+            return {
+              ...execution,
+              decisionPolicy: { ...execution.decisionPolicy, minimumEvidenceCoveragePercent: 100 }
+            };
+          }
+        },
+        providers: {
+          async initialize() {
+            return {};
+          }
+        },
+        async executeGate() {
+          return {
+            ...passingResult(),
+            evidence: [
+              {
+                id: "e",
+                kind: "metric",
+                provider: "metrics",
+                acquiredAt: "2026-01-01T00:00:00Z",
+                fingerprint: "e",
+                ...metadata
+              }
+            ]
+          };
+        }
+      });
+      const result = await service.run(request());
+      expect(result.evidenceCoveragePercent).toBe(0);
+      expect(result.decision).toBe("fail");
+    }
+  );
+
+  it("counts valid capabilities separately for a matching workload", async () => {
+    const policy = adapter([]);
+    const service = new ObservabilityGateService({
+      policy: {
+        ...policy,
+        createPlan() {
+          return {
+            ...plan,
+            gates: [
+              {
+                ...plannedGate,
+                providerRequirements: [
+                  ...plannedGate.providerRequirements,
+                  { provider: "metrics", capability: "range", required: true }
+                ]
+              }
+            ]
+          };
+        }
+      },
+      providers: {
+        async initialize() {
+          return {};
+        }
+      },
+      async executeGate() {
+        return {
+          ...passingResult(),
+          evidence: [
+            {
+              id: "e",
+              kind: "metric",
+              provider: "metrics",
+              state: "valid",
+              capability: "query",
+              target: "production",
+              releaseId: "release-1",
+              acquiredAt: "2026-01-01T00:00:00Z",
+              fingerprint: "e"
+            }
+          ]
+        };
+      }
+    });
+    expect((await service.run(request())).evidenceCoveragePercent).toBe(50);
+  });
+
+  it("contains throwing cleanup and reports its structured failure", async () => {
+    const published: unknown[] = [];
+    const service = new ObservabilityGateService({
+      policy: adapter([]),
+      providers: {
+        async initialize() {
+          return {
+            async close() {
+              throw new Error("Bearer secret-value");
+            }
+          };
+        }
+      },
+      executeGate: async () => passingResult(),
+      reporters: [
+        async (result) => {
+          published.push(result.decision);
+        }
+      ]
+    });
+    const result = await service.run(request());
+    expect(result.decision).toBe("error");
+    expect(result.diagnostics[0]?.code).toBe("PROVIDER_UNAVAILABLE");
+    expect(JSON.stringify(result)).not.toContain("secret-value");
+    expect(published).toEqual(["error"]);
+  });
+
+  it("bounds uncooperative initialization and cleanup", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const stage of ["initialize", "close"] as const) {
+        const policy = adapter([]);
+        const service = new ObservabilityGateService({
+          policy: {
+            ...policy,
+            createPlan() {
+              return { ...plan, providerInitializationTimeoutMs: 5, providerCleanupTimeoutMs: 5 };
+            }
+          },
+          providers: {
+            async initialize() {
+              if (stage === "initialize") return new Promise(() => undefined);
+              return {
+                async close() {
+                  return new Promise<void>(() => undefined);
+                }
+              };
+            }
+          },
+          executeGate: async () => passingResult()
+        });
+        const running = service.run(request());
+        await vi.advanceTimersByTimeAsync(10);
+        const result = await running;
+        expect(result.decision).toBe("error");
+        expect(result.diagnostics.length).toBeGreaterThan(0);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps provider lifecycle cancellation connected after initialization", async () => {
+    const controller = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    const service = new ObservabilityGateService({
+      policy: adapter([]),
+      providers: {
+        async initialize(_requirements, context) {
+          providerSignal = context.signal;
+          return {};
+        }
+      },
+      async executeGate() {
+        controller.abort();
+        return passingResult();
+      }
+    });
+    await service.run(request(controller.signal));
+    expect(providerSignal?.aborted).toBe(true);
+  });
+
+  it("keeps an existing failed decision and evidence when cleanup fails", async () => {
+    const failed = { ...passingResult(), status: "failed" as const };
+    const service = new ObservabilityGateService({
+      policy: adapter([]),
+      providers: {
+        async initialize() {
+          return {
+            async close() {
+              throw new Error("cleanup");
+            }
+          };
+        }
+      },
+      executeGate: async () => failed
+    });
+    const result = await service.run(request());
+    expect(result.decision).toBe("fail");
+    expect(result.gates).toEqual([failed]);
+    expect(result.diagnostics[0]?.code).toBe("PROVIDER_UNAVAILABLE");
+  });
+
+  it("does not initialize providers after the total runtime budget is spent in preparation", async () => {
+    let now = 0;
+    const initialize = vi.fn(async () => ({}));
+    const policy = adapter([]);
+    const service = new ObservabilityGateService({
+      policy: {
+        ...policy,
+        createPlan() {
+          now = 10;
+          return { ...plan, maximumTotalRuntimeMs: 5 };
+        }
+      },
+      providers: { initialize },
+      executeGate: async () => passingResult(),
+      clock: () => new Date(now)
+    });
+    const result = await service.run(request());
+    expect(result.decision).toBe("error");
+    expect(initialize).not.toHaveBeenCalled();
   });
 
   it("validates and plans without initializing providers", async () => {

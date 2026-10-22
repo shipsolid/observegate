@@ -56,28 +56,42 @@ Requires Node.js 24.
 ```bash
 npm ci
 npm run build
-node packages/cli/dist/main.js validate --config examples/observability-gate.yml
-node packages/cli/dist/main.js plan --config examples/observability-gate.yml --phase pre_deployment
-node packages/cli/dist/main.js run --config examples/observability-gate.yml --phase post_deployment --output-directory observability-gate-results
-node packages/cli/dist/main.js explain telemetry.release_identity
+node packages/cli/dist/main.js validate --config examples/offline.yml
+node packages/cli/dist/main.js plan --config examples/offline.yml --phase pre_deployment
+node packages/cli/dist/main.js run --config examples/offline.yml --phase post_deployment --output-directory observability-gate-results
+node packages/cli/dist/main.js explain runtime.release_identity
 node packages/cli/dist/main.js catalog --json
 ```
+
+The offline sample requires no credentials or provider access. It checks a local synthetic result
+against the intended release and returns `pass`. To exercise a deployment-blocking mismatch:
+
+```bash
+sed 's/demo-release-v1/demo-release-v2/g' examples/offline.yml > observegate-demo-failure.yml
+node packages/cli/dist/main.js run --config observegate-demo-failure.yml --phase post_deployment
+# Expected: decision fail, exit 1. The evidence still identifies demo-release-v1.
+```
+
+The exhaustive reference policy is a contract catalogue. Before using it against a service,
+provide its environment variables, artifact paths, signed evidence, and explicit acquisition queries.
+`validate` reports missing acquisition contracts without contacting providers. A registered gate
+requires compatible sources and assertions; unknown facts cannot substitute for measurements.
 
 `validate` and `plan` do not contact providers. Standard output is user-facing; diagnostics go to
 standard error. Plans omit credentials, gate definitions, and raw queries.
 
-Published releases also include a self-contained CLI archive, CycloneDX SBOM, checksums, and GitHub
-attestations. After downloading the three release assets:
+The release workflow produces a self-contained CLI archive, CycloneDX SBOM, checksums, and GitHub
+attestations. For a published release, download its three assets and verify them:
 
 ```bash
-sha256sum --check observegate-v1.0.0.sha256
-gh attestation verify observegate-cli-v1.0.0.tar.gz --repo shipsolid/observegate
+sha256sum --check observegate-v0.1.0.sha256
+gh attestation verify observegate-cli-v0.1.0.tar.gz --repo shipsolid/observegate
 mkdir observegate-cli
-tar -xzf observegate-cli-v1.0.0.tar.gz -C observegate-cli
+tar -xzf observegate-cli-v0.1.0.tar.gz -C observegate-cli
 node observegate-cli/observegate.js catalog
 ```
 
-Replace `v1.0.0` with the release tag. The archive has no production npm dependencies; Node.js 24
+Replace `v0.1.0` with the published release tag. The archive has no production npm dependencies; Node.js 24
 is the only runtime requirement.
 
 ## Configuration and operations
@@ -111,11 +125,22 @@ npm run test:performance
 npm run bundle
 npm run verify:bundle
 npm run verify:read-only
+npm run verify:reproducible
 ```
 
 Generated configuration, gate, provider, and error-code tables are checked for drift in contract
 tests. `npm run bundle` rebuilds the checked-in Action and the standalone CLI under `dist/cli`; both
 must pass bundle and read-only verification without producing uncommitted Action changes.
+
+`verify:reproducible` installs the lockfile and builds in two independent temporary directories,
+then compares the Action, standalone CLI, and deterministic CLI archives. Use `-- --offline` when
+the complete npm cache is available. Publication remains a separate, manually authorized workflow.
+
+CLI `--output-directory` overrides the policy artifact directory. The Action's `output-directory`
+input (including its declared default) overrides the policy directory. Remote checks and PR comments
+require both a token and explicit policy enablement. `retention_days` is recorded as
+`artifactRetentionDays` in canonical JSON for the workflow-owned uploader; configure that uploader's
+`retention-days` to apply it. ObserveGate does not upload or delete historical report artifacts.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for extension contracts and [SECURITY.md](SECURITY.md) for
 vulnerability reporting, artifact verification, and the trust boundary.

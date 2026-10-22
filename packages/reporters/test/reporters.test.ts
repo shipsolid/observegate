@@ -11,6 +11,36 @@ async function fixture(): Promise<ExecutionResult> {
 }
 
 describe("report projections", () => {
+  it("preserves declared artifact retention for the workflow uploader", async () => {
+    const rendered = JSON.parse(renderJson({ ...await fixture(), artifactRetentionDays: 14 }));
+    expect(rendered.artifactRetentionDays).toBe(14);
+  });
+  it("retains evidence validity and capability in canonical JSON", async () => {
+    const base = await fixture(), gate = base.gates[0]!, reference = gate.evidence[0]!;
+    const result = { ...base, gates: [{ ...gate, evidence: [{ ...reference, state: "valid" as const, capability: "metrics.query.instant", target: base.target.id, releaseId: base.release.candidateId }] }] };
+    expect(JSON.parse(renderJson(result)).gates[0].evidence[0]).toMatchObject({ state: "valid", capability: "metrics.query.instant", target: base.target.id, releaseId: base.release.candidateId });
+  });
+  it("represents a zero-gate execution failure in every projection", async () => {
+    const failed: ExecutionResult = { ...await fixture(), decision: "error", gates: [], diagnostics: [{ code: "AUTHENTICATION", message: "Credentials rejected", retryable: false }] };
+    expect(renderMarkdown(failed)).toContain("Credentials rejected");
+    expect(renderJunit(failed)).toContain('failures="1"');
+    expect(renderJunit(failed)).toContain("Credentials rejected");
+    const sarif = JSON.parse(renderSarif(failed));
+    expect(sarif.runs[0].invocations[0].executionSuccessful).toBe(false);
+    expect(sarif.runs[0].results[0].message.text).toContain("Credentials rejected");
+  });
+
+  it("removes XML-forbidden characters and retains valid Unicode", async () => {
+    const base = await fixture();
+    const gate = base.gates[0]!;
+    const value = { ...base, gates: [{ ...gate, id: "test\u0001\ud800😀", assertions: [], diagnostics: [{ code: "TEST", message: "bad\u0000 & <value>", retryable: false }] }] };
+    const junit = renderJunit(value);
+    expect(junit).not.toContain("\u0001");
+    expect(junit).not.toContain("\ud800");
+    expect(junit).not.toContain("\u0000");
+    expect(junit).toContain("😀");
+    expect(junit).toContain("&amp; &lt;value&gt;");
+  });
   it("renders stable canonical JSON without raw responses or secrets", async () => {
     const rendered = renderJson(await fixture());
     expect(rendered).toBe(await readFile(resolve("fixtures/reports/golden/report.json"), "utf8"));

@@ -28,7 +28,7 @@ Commands:
   validate --config <path> [--phase <phase>] [--target <id>] [--json]
   plan --config <path> --phase <phase> [--target <id>] [--json]
   run --config <path> --phase <phase> [--target <id>] [--output-directory <path>] [--json]
-  explain <gate> [--config <path>] [--phase <phase>] [--target <id>]
+  explain <gate> [--config <path>] [--phase <phase>] [--target <id>] [--json]
   catalog [--json]
 `;
 
@@ -140,7 +140,7 @@ export function parseCliArguments(argv: readonly string[]): ParsedCommand {
       return { name: command, options };
     }
     case "explain": {
-      const parsed = parseOptions(args, commonOptions, false);
+      const parsed = parseOptions(args, commonOptions, true);
       if (parsed.positional.length !== 1 || parsed.positional[0] === undefined) {
         throw new CliUsageError("error: command 'explain' requires exactly one gate identifier");
       }
@@ -148,6 +148,7 @@ export function parseCliArguments(argv: readonly string[]): ParsedCommand {
         name: command,
         identifier: parsed.positional[0],
         options: {
+          ...(parsed.json ? { json: true } : {}),
           ...(parsed.values.config === undefined ? {} : { config: parsed.values.config }),
           phase: parsed.values.phase ?? "pre_deployment",
           ...(parsed.values.target === undefined ? {} : { target: parsed.values.target })

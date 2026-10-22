@@ -23,12 +23,13 @@ export function exponentialBackoff(
 export async function sleepWithCancellation(
   delayMs: number,
   signal: AbortSignal,
-  sleep: (delayMs: number) => Promise<void>
+  sleep?: (delayMs: number) => Promise<void>
 ): Promise<void> {
   if (signal.aborted) {
     throw cancelled(signal.reason);
   }
 
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let removeAbortListener: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
     const onAbort = (): void => reject(cancelled(signal.reason));
@@ -37,8 +38,16 @@ export async function sleepWithCancellation(
   });
 
   try {
-    await Promise.race([sleep(delayMs), aborted]);
+    await Promise.race([
+      sleep === undefined
+        ? new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, delayMs);
+          })
+        : sleep(delayMs),
+      aborted
+    ]);
   } finally {
+    if (timer !== undefined) clearTimeout(timer);
     removeAbortListener?.();
   }
 }
@@ -50,4 +59,26 @@ export function cancelled(cause?: unknown): GateError {
     retryable: false,
     cause
   });
+}
+
+export async function withCancellation<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal
+): Promise<T> {
+  if (signal.aborted)
+    throw signal.reason instanceof GateError ? signal.reason : cancelled(signal.reason);
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () =>
+      reject(signal.reason instanceof GateError ? signal.reason : cancelled(signal.reason));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    const value = await Promise.race([operation(), aborted]);
+    if (signal.aborted)
+      throw signal.reason instanceof GateError ? signal.reason : cancelled(signal.reason);
+    return value;
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+  }
 }

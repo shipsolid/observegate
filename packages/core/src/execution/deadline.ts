@@ -4,6 +4,7 @@ import { GateError } from "../errors/gate-error.js";
 export interface Deadline {
   readonly signal: AbortSignal;
   readonly dispose: () => void;
+  readonly stopTimer: () => void;
 }
 
 export function cancellationError(message = "Execution was cancelled."): GateError {
@@ -40,6 +41,9 @@ export function createDeadline(
 
   return Object.freeze({
     signal: controller.signal,
+    stopTimer() {
+      clearTimeout(timeout);
+    },
     dispose() {
       clearTimeout(timeout);
       parent.removeEventListener("abort", cancel);
@@ -59,16 +63,34 @@ export function abortPromise(signal: AbortSignal): Promise<never> {
   });
 }
 
+export function raceWithSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const cancel = () => reject(signal.reason ?? cancellationError());
+    if (signal.aborted) cancel();
+    else signal.addEventListener("abort", cancel, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", cancel);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", cancel);
+        reject(error);
+      }
+    );
+  });
+}
+
 export async function sleep(ms: number, signal: AbortSignal): Promise<void> {
   if (ms <= 0) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
+    await raceWithSignal(
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, ms);
       }),
-      abortPromise(signal)
-    ]);
+      signal
+    );
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

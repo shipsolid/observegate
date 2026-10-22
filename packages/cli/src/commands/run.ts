@@ -11,30 +11,33 @@ export interface RunOptions extends CommonOptions {
 export async function runCommand(options: RunOptions, context: CommandContext): Promise<number> {
   const request = executionRequest(options, context);
   const result = await context.service.run(request);
-  writeResult(result, context.output, options.json === true);
-  if (options.outputDirectory !== undefined) {
-    try {
+  try {
+    const publication = await context.service.publicationOptions?.(request);
+    const directory = options.outputDirectory ?? publication?.directory;
+    if (directory !== undefined) {
       const maximumTotalBytes =
         (await context.service.maximumReportBytes?.(request)) ?? 25 * 1024 * 1024;
       await writeReports(result, {
-        directory: options.outputDirectory,
-        formats: ["json", "markdown", "junit", "sarif"],
+        directory,
+        formats: publication?.formats ?? ["json", "markdown", "junit", "sarif"],
         maximumTotalBytes,
         signal: context.signal
       });
-    } catch (error) {
-      const reportError =
-        error instanceof GateError
-          ? error
-          : new GateError({
-              code: "REPORTING",
-              safeMessage: "Report publication failed.",
-              retryable: false,
-              cause: error
-            });
-      context.output.stderr(`${reportError.code}: ${reportError.safeMessage}\n`);
-      return result.decision === "fail" ? 1 : 3;
     }
+  } catch (error) {
+    const reportError =
+      error instanceof GateError
+        ? error
+        : new GateError({
+            code: "REPORTING",
+            safeMessage: "Report publication failed.",
+            retryable: false,
+            cause: error
+          });
+    context.output.stderr(`${reportError.code}: ${reportError.safeMessage}\n`);
+    writeResult({ ...result, decision: result.decision === "fail" ? "fail" : "error", diagnostics: [...result.diagnostics, reportError.toDiagnostic()] }, context.output, options.json === true);
+    return result.decision === "fail" ? 1 : 3;
   }
+  writeResult(result, context.output, options.json === true);
   return exitCodeForDecision(result.decision);
 }

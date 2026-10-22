@@ -1,6 +1,6 @@
 import { EvidenceStore } from "../evidence/store.js";
 import { GateError } from "../errors/gate-error.js";
-import { createDeadline, abortPromise, cancellationError } from "./deadline.js";
+import { createDeadline, raceWithSignal, cancellationError } from "./deadline.js";
 import type { Phase, GateResult } from "../domain/gates.js";
 import type { PlannedGate } from "../domain/planning.js";
 
@@ -49,6 +49,7 @@ export interface SchedulerRunInput {
   readonly gates: readonly PlannedGate[];
   readonly phaseDeadlineMs: number;
   readonly signal: AbortSignal;
+  readonly failFast?: boolean;
   readonly execute: (gate: PlannedGate, context: ScheduledGateContext) => Promise<GateResult>;
 }
 
@@ -91,6 +92,31 @@ function errorResult(
   });
 }
 
+function skippedAfterFailure(phase: Phase, gate: PlannedGate, clock: () => Date): GateResult {
+  const now = clock().toISOString();
+  return Object.freeze({
+    id: gate.id,
+    name: gate.name,
+    type: gate.type,
+    phase,
+    enforcement: gate.enforcement,
+    status: "skipped",
+    startedAt: now,
+    completedAt: now,
+    durationMs: 0,
+    assertions: Object.freeze([]),
+    evidence: Object.freeze([]),
+    diagnostics: Object.freeze([
+      {
+        code: "GATE_EVALUATION",
+        message: "Gate was skipped after a blocking gate failed (failFast).",
+        retryable: false,
+        gateId: gate.id
+      }
+    ])
+  });
+}
+
 export class ExecutionScheduler {
   private readonly globalConcurrency: number;
   private readonly perProviderConcurrency: number;
@@ -110,9 +136,11 @@ export class ExecutionScheduler {
     const providerSemaphores = new Map<string, Semaphore>();
     const results: Array<GateResult | undefined> = new Array(input.gates.length);
     let nextIndex = 0;
+    let stoppedEarly = false;
 
     const takeNext = (): { gate: PlannedGate; position: number } | undefined => {
-      if (phaseDeadline.signal.aborted || nextIndex >= input.gates.length) return undefined;
+      if (stoppedEarly || phaseDeadline.signal.aborted || nextIndex >= input.gates.length)
+        return undefined;
       const position = nextIndex;
       nextIndex += 1;
       const gate = input.gates[position];
@@ -134,11 +162,22 @@ export class ExecutionScheduler {
           providerSemaphores.set(provider, semaphore);
           releases.push(await semaphore.acquire(gateDeadline.signal));
         }
-        return await Promise.race([
+        if (stoppedEarly) return skippedAfterFailure(input.phase, gate, this.clock);
+        const outcome = await raceWithSignal(
           input.execute(gate, { signal: gateDeadline.signal, evidenceStore }),
-          abortPromise(gateDeadline.signal)
-        ]);
+          gateDeadline.signal
+        );
+        if (
+          input.failFast === true &&
+          gate.enforcement === "blocking" &&
+          (outcome.status === "failed" ||
+            outcome.status === "error" ||
+            outcome.status === "inconclusive")
+        )
+          stoppedEarly = true;
+        return outcome;
       } catch (error) {
+        if (input.failFast === true && gate.enforcement === "blocking") stoppedEarly = true;
         return errorResult(input.phase, gate, error, this.clock);
       } finally {
         for (const release of releases.reverse()) release();
@@ -152,7 +191,8 @@ export class ExecutionScheduler {
         while (true) {
           const work = takeNext();
           if (work === undefined) return;
-          results[work.position] = await runOne(work.gate);
+          const outcome = await runOne(work.gate);
+          results[work.position] = outcome;
         }
       }
     );
@@ -163,7 +203,10 @@ export class ExecutionScheduler {
       if (results[index] === undefined) {
         const gate = input.gates[index];
         if (gate !== undefined) {
-          results[index] = errorResult(input.phase, gate, abortReason, this.clock);
+          results[index] =
+            stoppedEarly && !phaseDeadline.signal.aborted
+              ? skippedAfterFailure(input.phase, gate, this.clock)
+              : errorResult(input.phase, gate, abortReason, this.clock);
         }
       }
     }

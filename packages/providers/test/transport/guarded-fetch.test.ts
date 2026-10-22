@@ -280,3 +280,213 @@ describe("GuardedTransport", () => {
     });
   });
 });
+
+describe("transport security lifecycle regressions", () => {
+  it.each([
+    "::ffff:7f00:1",
+    "::ffff:a00:1",
+    "::ffff:a9fe:a9fe",
+    "0:0:0:0:0:ffff:c0a8:1",
+    "ff02::1"
+  ])("rejects canonical forbidden address %s", async (address) => {
+    await expect(
+      policy([address]).validate("https://api.example.com", "provider")
+    ).rejects.toMatchObject({ code: "SECURITY_POLICY" });
+  });
+
+  it.each(["dns", "fetch", "body"])("cancels an uncooperative %s stage promptly", async (stage) => {
+    const controller = new AbortController();
+    const transport = new GuardedTransport({
+      urlPolicy:
+        stage === "dns"
+          ? new UrlPolicy({
+              providerOrigins: ["https://api.example.com"],
+              probeHosts: [],
+              resolve: async () => new Promise(() => undefined)
+            })
+          : policy(),
+      fetch:
+        stage === "fetch"
+          ? async () => new Promise(() => undefined)
+          : async () =>
+              new Response(new ReadableStream({ pull: () => new Promise(() => undefined) }))
+    });
+    const pending = request(transport, {
+      signal: controller.signal,
+      retry: { attempts: 1, initialBackoffMs: 0, maximumBackoffMs: 0, retryStatuses: [] }
+    });
+    setTimeout(() => controller.abort(), 5);
+    const result = await Promise.race([
+      pending.catch((error: unknown) => error),
+      new Promise((resolve) => setTimeout(() => resolve({ code: "HUNG" }), 60))
+    ]);
+    expect(result).toMatchObject({ code: "CANCELLED" });
+  });
+
+  it("rejects expired absolute deadlines before DNS or fetch", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ ok: true }));
+    await expect(
+      request(new GuardedTransport({ urlPolicy: policy(), fetch, clock: () => 100 }), {
+        deadlineAtMs: 99
+      })
+    ).rejects.toMatchObject({ code: "PROVIDER_UNAVAILABLE" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("bounds an uncooperative DNS lookup by the request timeout", async () => {
+    const transport = new GuardedTransport({
+      urlPolicy: new UrlPolicy({
+        providerOrigins: ["https://api.example.com"],
+        probeHosts: [],
+        resolve: async () => new Promise(() => undefined)
+      }),
+      fetch: async () => jsonResponse({ ok: true })
+    });
+    const pending = request(transport, {
+      timeoutMs: 5,
+      retry: { attempts: 1, initialBackoffMs: 0, maximumBackoffMs: 0, retryStatuses: [] }
+    });
+    const result = await Promise.race([
+      pending.catch((error: unknown) => error),
+      new Promise((resolve) => setTimeout(() => resolve({ code: "HUNG" }), 60))
+    ]);
+    expect(result).toMatchObject({ code: "PROVIDER_UNAVAILABLE" });
+  });
+});
+
+describe("bounded retry cleanup", () => {
+  it("clears retry timers on cancellation", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const transport = new GuardedTransport({
+        urlPolicy: policy(),
+        fetch: async () => new Response("busy", { status: 429, headers: { "retry-after": "60" } })
+      });
+      const pending = request(transport, { signal: controller.signal }).catch(
+        (error: unknown) => error
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      controller.abort();
+      expect(await pending).toMatchObject({ code: "CANCELLED" });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("redirect and deadline lifecycle", () => {
+  it("cancels stalled DNS during redirect validation", async () => {
+    const controller = new AbortController();
+    let lookups = 0;
+    const transport = new GuardedTransport({
+      urlPolicy: new UrlPolicy({
+        providerOrigins: ["https://api.example.com"],
+        probeHosts: [],
+        resolve: async () => {
+          if (++lookups === 1) return ["93.184.216.34"];
+          queueMicrotask(() => controller.abort());
+          return new Promise(() => undefined);
+        }
+      }),
+      fetch: async () => new Response(null, { status: 302, headers: { location: "/next" } })
+    });
+    await expect(request(transport, { signal: controller.signal })).rejects.toMatchObject({
+      code: "CANCELLED"
+    });
+  });
+  it("caps a stalled first response by the absolute deadline", async () => {
+    const transport = new GuardedTransport({
+      urlPolicy: policy(),
+      fetch: async () => new Promise(() => undefined)
+    });
+    const pending = request(transport, { timeoutMs: 1000, deadlineAtMs: Date.now() + 10 });
+    expect(
+      await Promise.race([
+        pending.catch((error: unknown) => error),
+        new Promise((resolve) => setTimeout(() => resolve({ code: "HUNG" }), 100))
+      ])
+    ).toMatchObject({ code: "PROVIDER_UNAVAILABLE" });
+  });
+  it("times out stalled response bodies without reporting malformed JSON", async () => {
+    const transport = new GuardedTransport({
+      urlPolicy: policy(),
+      fetch: async () =>
+        new Response(new ReadableStream({ pull: () => new Promise(() => undefined) }))
+    });
+    await expect(
+      request(transport, {
+        timeoutMs: 5,
+        retry: { attempts: 1, initialBackoffMs: 0, maximumBackoffMs: 0, retryStatuses: [] }
+      })
+    ).rejects.toMatchObject({ code: "PROVIDER_UNAVAILABLE", retryable: true });
+  });
+});
+
+describe("deadline checks at publication", () => {
+  it("never publishes a successful response after the absolute deadline", async () => {
+    let now = 100;
+    const transport = new GuardedTransport({
+      urlPolicy: policy(),
+      clock: () => now,
+      fetch: async () => {
+        now = 201;
+        return jsonResponse({ ok: true });
+      }
+    });
+    await expect(request(transport, { deadlineAtMs: 200 })).rejects.toMatchObject({
+      code: "PROVIDER_UNAVAILABLE"
+    });
+  });
+});
+
+describe("allowlisted IP literal validation", () => {
+  it.each([
+    "::ffff:127.0.0.1",
+    "::ffff:10.0.0.1",
+    "::ffff:172.16.0.1",
+    "::ffff:192.168.0.1",
+    "::ffff:169.254.169.254"
+  ])("rejects mapped literal %s even when explicitly allowlisted", async (address) => {
+    const url = `https://[${address}]/`;
+    await expect(
+      new UrlPolicy({ providerOrigins: [url], probeHosts: [] }).validate(url, "provider")
+    ).rejects.toMatchObject({ code: "SECURITY_POLICY" });
+  });
+  it.each(["93.184.216.34", "[2606:4700:4700::1111]", "[::ffff:93.184.216.34]"])(
+    "allows a public IPv4/IPv6 literal %s",
+    async (address) => {
+      const url = `https://${address}/`;
+      await expect(
+        new UrlPolicy({ providerOrigins: [url], probeHosts: [] }).validate(url, "provider")
+      ).resolves.toEqual(new URL(url));
+    }
+  );
+});
+
+describe("bounded text responses", () => {
+  it("returns document text without treating it as JSON", async () => {
+    const transport = new GuardedTransport({
+      urlPolicy: policy(),
+      fetch: async () => new Response("<html>Runbook</html>")
+    });
+    await expect(request(transport, { responseType: "text" })).resolves.toMatchObject({
+      data: "<html>Runbook</html>"
+    });
+  });
+  it("bounds text responses and preserves an empty document", async () => {
+    const oversized = new GuardedTransport({
+      urlPolicy: policy(),
+      fetch: async () => new Response("too long")
+    });
+    await expect(
+      request(oversized, { responseType: "text", maximumResponseBytes: 2 })
+    ).rejects.toMatchObject({ code: "PROVIDER_PROTOCOL" });
+    const empty = new GuardedTransport({
+      urlPolicy: policy(),
+      fetch: async () => new Response("")
+    });
+    await expect(request(empty, { responseType: "text" })).resolves.toMatchObject({ data: "" });
+  });
+});

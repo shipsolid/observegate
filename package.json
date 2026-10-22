@@ -1,6 +1,6 @@
 {
   "name": "observability-gate",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -26,6 +26,7 @@
     "bundle": "tsc -b && rollup -c rollup.config.js",
     "verify:bundle": "node --experimental-strip-types scripts/verify-bundle.ts",
     "verify:read-only": "node --experimental-strip-types scripts/verify-read-only.ts",
+    "verify:reproducible": "node --experimental-strip-types scripts/verify-reproducible-build.ts",
     "ci": "npm run format:check && npm run lint && npm run typecheck && npm run test:coverage && npm run build"
   },
   "devDependencies": {

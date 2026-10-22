@@ -254,7 +254,29 @@ export function normalizeKubernetesSnapshot(
     target: input.target ?? metadata.name,
     runtimeType: "kubernetes",
     observedAt: input.observedAt,
-    releaseIdentities: Object.freeze([]),
+    releaseIdentities: Object.freeze(
+      [input.workload, ...input.pods].flatMap((raw) => {
+        const resource = object(raw);
+        const meta = optionalObject(resource.metadata);
+        if (resource !== input.workload && !selectedPods.some((pod) => pod.name === meta.name))
+          return [];
+        const labels = optionalObject(meta.labels);
+        return ["app.kubernetes.io/version", "service.version", "service_version"].flatMap(
+          (label) => {
+            const releaseId = labels[label];
+            return typeof releaseId !== "string" || releaseId.length === 0
+              ? []
+              : [
+                  Object.freeze({
+                    source: `kubernetes.label.${label}`,
+                    releaseId,
+                    ...(typeof meta.uid === "string" ? { instanceId: meta.uid } : {})
+                  })
+                ];
+          }
+        );
+      })
+    ),
     conditions: rolloutConditions,
     events: Object.freeze(warningEvents),
     namespace: metadata.namespace,

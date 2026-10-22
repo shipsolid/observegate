@@ -1,5 +1,12 @@
+import { pinnedFetch } from "./pinned-fetch.js";
 import { GateError } from "@observability-gate/core";
-import { cancelled, exponentialBackoff, sleepWithCancellation, type RetryPolicy } from "./retry.js";
+import {
+  cancelled,
+  exponentialBackoff,
+  sleepWithCancellation,
+  type RetryPolicy,
+  withCancellation
+} from "./retry.js";
 import { UrlPolicy, type UrlKind } from "./url-policy.js";
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -15,7 +22,7 @@ export interface TransportRequest {
   readonly retry: RetryPolicy;
   readonly signal: AbortSignal;
   readonly deadlineAtMs?: number;
-  readonly responseType?: "json" | "none";
+  readonly responseType?: "json" | "none" | "text";
 }
 
 export interface TransportResponse<T = unknown> {
@@ -51,10 +58,6 @@ class HttpFailure extends GateError {
   }
 }
 
-function defaultSleep(delayMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, delayMs));
-}
-
 function retryAfterMilliseconds(value: string | null, now: number): number | undefined {
   if (value === null) {
     return undefined;
@@ -86,22 +89,27 @@ function unavailable(cause: unknown): GateError {
 }
 
 function asGateError(error: unknown, parentSignal: AbortSignal, timedOut: boolean): GateError {
-  if (error instanceof GateError) {
-    return error;
-  }
   if (parentSignal.aborted) {
-    return cancelled(parentSignal.reason ?? error);
+    return parentSignal.reason instanceof GateError
+      ? parentSignal.reason
+      : cancelled(parentSignal.reason ?? error);
   }
+  if (error instanceof GateError) return error;
   if (timedOut) {
     return timeoutError(error);
   }
   return unavailable(error);
 }
 
-async function readBoundedJson(response: Response, limit: number): Promise<unknown> {
+async function readBoundedBody(
+  response: Response,
+  limit: number,
+  signal: AbortSignal,
+  responseType: "json" | "text" = "json"
+): Promise<unknown> {
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > limit) {
-    await response.body?.cancel();
+    await withCancellation(async () => response.body?.cancel(), signal);
     throw new GateError({
       code: "PROVIDER_PROTOCOL",
       safeMessage: "Provider response exceeded the configured size limit",
@@ -123,13 +131,13 @@ async function readBoundedJson(response: Response, limit: number): Promise<unkno
   let size = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await withCancellation(() => reader.read(), signal);
       if (done) {
         break;
       }
       size += value.byteLength;
       if (size > limit) {
-        await reader.cancel();
+        await withCancellation(() => reader.cancel(), signal);
         throw new GateError({
           code: "PROVIDER_PROTOCOL",
           safeMessage: "Provider response exceeded the configured size limit",
@@ -140,6 +148,10 @@ async function readBoundedJson(response: Response, limit: number): Promise<unkno
     }
     text += decoder.decode();
   } catch (cause) {
+    void reader.cancel().catch(() => undefined);
+    if (signal.aborted) {
+      throw signal.reason;
+    }
     if (cause instanceof GateError) throw cause;
     throw new GateError({
       code: "PROVIDER_PROTOCOL",
@@ -151,6 +163,7 @@ async function readBoundedJson(response: Response, limit: number): Promise<unkno
     reader.releaseLock();
   }
 
+  if (responseType === "text") return text;
   try {
     return JSON.parse(text) as unknown;
   } catch (cause) {
@@ -165,15 +178,15 @@ async function readBoundedJson(response: Response, limit: number): Promise<unkno
 
 export class GuardedTransport {
   private readonly urlPolicy: UrlPolicy;
-  private readonly fetchImplementation: FetchLike;
-  private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly fetchImplementation: FetchLike | undefined;
+  private readonly sleep: ((delayMs: number) => Promise<void>) | undefined;
   private readonly random: () => number;
   private readonly clock: () => number;
 
   public constructor(options: GuardedTransportOptions) {
     this.urlPolicy = options.urlPolicy;
-    this.fetchImplementation = options.fetch ?? globalThis.fetch;
-    this.sleep = options.sleep ?? defaultSleep;
+    this.fetchImplementation = options.fetch;
+    this.sleep = options.sleep;
     this.random = options.random ?? Math.random;
     this.clock = options.clock ?? Date.now;
   }
@@ -190,46 +203,83 @@ export class GuardedTransport {
       });
     }
 
-    let lastError: GateError | undefined;
-    for (let attempt = 1; attempt <= request.retry.attempts; attempt += 1) {
-      try {
-        const response = await this.executeAttempt<T>(request);
-        return Object.freeze({ ...response, attempts: attempt });
-      } catch (error) {
-        const gateError = asGateError(error, request.signal, false);
-        lastError = gateError;
-        if (!gateError.retryable || attempt >= request.retry.attempts) {
-          throw gateError;
-        }
+    const deadline = request.deadlineAtMs;
+    if (deadline !== undefined && deadline <= this.clock()) throw timeoutError();
+    const deadlineController = new AbortController();
+    const deadlineTimer =
+      deadline === undefined
+        ? undefined
+        : setTimeout(
+            () => deadlineController.abort(timeoutError()),
+            Math.max(0, deadline - this.clock())
+          );
+    const signal = AbortSignal.any([request.signal, deadlineController.signal]);
+    try {
+      let lastError: GateError | undefined;
+      for (let attempt = 1; attempt <= request.retry.attempts; attempt += 1) {
+        try {
+          if (deadline !== undefined && deadline <= this.clock()) throw timeoutError();
+          const response = await this.executeAttempt<T>({ ...request, signal });
+          if (deadline !== undefined && deadline <= this.clock()) throw timeoutError();
+          return Object.freeze({ ...response, attempts: attempt });
+        } catch (error) {
+          const gateError = asGateError(error, request.signal, false);
+          lastError = gateError;
+          if (!gateError.retryable || attempt >= request.retry.attempts) {
+            throw gateError;
+          }
 
-        const retryAfter = error instanceof HttpFailure ? error.retryAfterMs : undefined;
-        const delay = retryAfter ?? exponentialBackoff(attempt, request.retry, this.random);
-        if (request.deadlineAtMs !== undefined && this.clock() + delay > request.deadlineAtMs) {
-          throw gateError;
+          const retryAfter = error instanceof HttpFailure ? error.retryAfterMs : undefined;
+          const delay = retryAfter ?? exponentialBackoff(attempt, request.retry, this.random);
+          if (request.deadlineAtMs !== undefined && this.clock() + delay >= request.deadlineAtMs) {
+            throw gateError;
+          }
+          await withCancellation(() => sleepWithCancellation(delay, signal, this.sleep), signal);
         }
-        await sleepWithCancellation(delay, request.signal, this.sleep);
       }
-    }
 
-    throw lastError ?? unavailable(new Error("Provider request ended without a result"));
+      throw lastError ?? unavailable(new Error("Provider request ended without a result"));
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    }
   }
 
   private async executeAttempt<T>(
     request: TransportRequest
   ): Promise<Omit<TransportResponse<T>, "attempts">> {
-    let url = await this.urlPolicy.validate(request.url, request.kind);
-    const initialOrigin = url.origin;
     const controller = new AbortController();
     let timedOut = false;
-    const onParentAbort = (): void => controller.abort(cancelled(request.signal.reason));
+    const onParentAbort = (): void =>
+      controller.abort(
+        request.signal.reason instanceof GateError
+          ? request.signal.reason
+          : cancelled(request.signal.reason)
+      );
     request.signal.addEventListener("abort", onParentAbort, { once: true });
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort(timeoutError());
-    }, request.timeoutMs);
+    const timeout = setTimeout(
+      () => {
+        timedOut = true;
+        controller.abort(timeoutError());
+      },
+      Math.min(
+        request.timeoutMs,
+        request.deadlineAtMs === undefined
+          ? Infinity
+          : Math.max(0, request.deadlineAtMs - this.clock())
+      )
+    );
+    if (request.signal.aborted) onParentAbort();
 
     try {
+      let resolved = await withCancellation(
+        () => this.urlPolicy.resolve(request.url, request.kind, controller.signal),
+        controller.signal
+      );
+      let url = resolved.url;
+      const initialOrigin = url.origin;
       for (let redirects = 0; redirects <= 3; redirects += 1) {
+        if (request.deadlineAtMs !== undefined && request.deadlineAtMs <= this.clock())
+          throw timeoutError();
         let response: Response;
         try {
           const init: RequestInit = {
@@ -243,14 +293,20 @@ export class GuardedTransport {
           if (request.body !== undefined) {
             init.body = request.body;
           }
-          response = await this.fetchImplementation(url, init);
+          response = await withCancellation(
+            () =>
+              this.fetchImplementation === undefined
+                ? pinnedFetch(url, init, resolved.addresses)
+                : this.fetchImplementation(url, init),
+            controller.signal
+          );
         } catch (cause) {
           throw asGateError(cause, request.signal, timedOut);
         }
 
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
-          await response.body?.cancel();
+          await withCancellation(async () => response.body?.cancel(), controller.signal);
           if (location === null) {
             throw new GateError({
               code: "PROVIDER_PROTOCOL",
@@ -273,12 +329,16 @@ export class GuardedTransport {
               retryable: false
             });
           }
-          url = await this.urlPolicy.validate(redirectUrl, request.kind);
+          resolved = await withCancellation(
+            () => this.urlPolicy.resolve(redirectUrl, request.kind, controller.signal),
+            controller.signal
+          );
+          url = resolved.url;
           continue;
         }
 
         if (!response.ok) {
-          await response.body?.cancel();
+          await withCancellation(async () => response.body?.cancel(), controller.signal);
           if (response.status === 401) {
             throw new HttpFailure({
               code: "AUTHENTICATION",
@@ -318,8 +378,17 @@ export class GuardedTransport {
 
         const data =
           request.responseType === "none"
-            ? await response.body?.cancel().then(() => undefined)
-            : await readBoundedJson(response, request.maximumResponseBytes);
+            ? await withCancellation(
+                async () => response.body?.cancel().then(() => undefined),
+                controller.signal
+              )
+            : await readBoundedBody(
+                response,
+                request.maximumResponseBytes,
+                controller.signal,
+                request.responseType
+              );
+        if (controller.signal.aborted) throw controller.signal.reason;
         return { status: response.status, data: data as T, headers: response.headers };
       }
       throw new GateError({
@@ -327,6 +396,8 @@ export class GuardedTransport {
         safeMessage: "Provider returned too many redirects",
         retryable: false
       });
+    } catch (cause) {
+      throw asGateError(cause, request.signal, timedOut);
     } finally {
       clearTimeout(timeout);
       request.signal.removeEventListener("abort", onParentAbort);

@@ -71,10 +71,11 @@ function context(signal: AbortSignal = new AbortController().signal): GateContex
 
 function catalog(
   acquire: Acquire,
-  assertions: readonly AssertionResult[] = [assertion("passed")]
+  assertions: readonly AssertionResult[] = [assertion("passed")],
+  type = "test.gate"
 ): GateCatalog {
   const definition: GateTypeDefinition<Record<string, never>, number> = {
-    type: "test.gate",
+    type,
     description: "Test gate",
     supportedPhases: ["post_deployment"],
     providerRequirements: [],
@@ -101,6 +102,100 @@ describe("executeGate", () => {
 
     expect(result.status).toBe("passed");
     expect(result.evidence).toHaveLength(1);
+  });
+
+  it("preserves capability and validity in evidence references", async () => {
+    const result = await executeGate(
+      gate(),
+      catalog(async () => [evidence()]),
+      context()
+    );
+    expect(result.evidence[0]).toMatchObject({
+      state: "valid",
+      capability: "query",
+      target: "aks-checkout"
+    });
+  });
+
+  it("classifies mixed evidence states and diagnostics independently of acquisition order", async () => {
+    const missing = evidence("missing");
+    const unavailable = evidence("unavailable");
+    const first = await executeGate(
+      gate(),
+      catalog(async () => [missing, unavailable]),
+      context()
+    );
+    const second = await executeGate(
+      gate(),
+      catalog(async () => [unavailable, missing]),
+      context()
+    );
+    expect(first.status).toBe("error");
+    expect(first.status).toBe(second.status);
+    expect(first.diagnostics).toEqual(second.diagnostics);
+  });
+
+  it("rejects empty assertions and mismatched or expired evidence", async () => {
+    expect(
+      (
+        await executeGate(
+          gate(),
+          catalog(async () => [evidence()], []),
+          context()
+        )
+      ).status
+    ).not.toBe("passed");
+    for (const item of [
+      { ...evidence(), target: "different-workload" },
+      { ...evidence(), releaseId: "different-release" },
+      { ...evidence(), expiresAt: "2026-10-06T07:29:00.000Z" }
+    ]) {
+      expect(
+        (
+          await executeGate(
+            gate(),
+            catalog(async () => [item]),
+            context()
+          )
+        ).status
+      ).not.toBe("passed");
+    }
+  });
+
+  it("accepts the verified baseline only for comparison evidence", async () => {
+    const scoped = { ...context(), baselineReleaseId: "release-0" };
+    const type = "comparison.metric";
+    expect(
+      (
+        await executeGate(
+          gate({ type }),
+          catalog(async () => [{ ...evidence(), releaseId: "release-0" }], undefined, type),
+          scoped
+        )
+      ).status
+    ).toBe("passed");
+    expect(
+      (
+        await executeGate(
+          gate({ type }),
+          catalog(
+            async () => [{ ...evidence(), releaseId: "unexpected-release" }],
+            undefined,
+            type
+          ),
+          scoped
+        )
+      ).status
+    ).toBe("error");
+    expect(
+      (
+        await executeGate(
+          gate(),
+          catalog(async () => [{ ...evidence(), releaseId: "release-0" }]),
+          scoped
+        )
+      ).status
+    ).toBe("error");
   });
 
   it("maps threshold misses to failed or warned by enforcement", async () => {
@@ -135,6 +230,30 @@ describe("executeGate", () => {
     );
 
     expect(result.status).toBe("inconclusive");
+  });
+
+  it("honors synthetic and comparison no-data overrides", async () => {
+    for (const type of ["synthetic.result", "comparison.metric"]) {
+      const custom = new GateCatalog().register({
+        type,
+        description: "specialized no-data",
+        supportedPhases: ["post_deployment"],
+        providerRequirements: [],
+        parseDefinition: () => ({}),
+        acquire: async () => [evidence("missing")],
+        evaluate: () => []
+      });
+      const scoped = {
+        ...context(),
+        missingEvidenceBehavior: {
+          blocking: "fail" as const,
+          advisory: "warn" as const,
+          comparison: "inconclusive" as const,
+          synthetic: "inconclusive" as const
+        }
+      };
+      expect((await executeGate(gate({ type }), custom, scoped)).status).toBe("inconclusive");
+    }
   });
 
   it("turns authorization failures into safe error results", async () => {

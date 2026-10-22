@@ -5,12 +5,14 @@ import type {
   ExecutionResult,
   GateCatalogMetadata
 } from "@observability-gate/core";
+import type { PublicationOptions } from "@observability-gate/config";
 import type { OutputWriter } from "../output.js";
 
 export interface CliService {
   readonly validate: (request: ExecutionRequest) => Promise<readonly Diagnostic[]>;
   readonly plan: (request: ExecutionRequest) => Promise<ExecutionPlan>;
   readonly run: (request: ExecutionRequest) => Promise<ExecutionResult>;
+  readonly publicationOptions?: (request: ExecutionRequest) => Promise<PublicationOptions>;
   readonly maximumReportBytes?: (request: ExecutionRequest) => Promise<number>;
 }
 

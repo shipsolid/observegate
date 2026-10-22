@@ -86,6 +86,8 @@ const releaseSchema = z
     candidate: z
       .object({
         id: z.string(),
+        commit: z.string().optional(),
+        commit_env: z.string().optional(),
         deployed_at: z.string().optional(),
         minimum_age_before_evaluation: durationSchema.optional(),
         maximum_age_before_evaluation: durationSchema.optional()
@@ -172,7 +174,16 @@ const decisionSchema = z
       .strict()
       .optional()
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const expected = { pass: [0, "success"], warn: [0, "neutral"], fail: [1, "failure"], inconclusive: [2, "failure"], error: [3, "failure"] } as const;
+    for (const [decision, [exitCode, conclusion]] of Object.entries(expected)) {
+      const outcome = value.outcomes[decision as keyof typeof expected];
+      if (outcome.exit_code !== exitCode || outcome.conclusion !== conclusion) {
+        context.addIssue({ code: "custom", path: ["outcomes", decision], message: `Decision ${decision} requires exit_code ${exitCode} and conclusion ${conclusion}.` });
+      }
+    }
+  });
 
 const targetDefinitionSchema = z
   .object({

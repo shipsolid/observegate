@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
 import {
+  GateError,
   ObservabilityGateService,
   parseByteSize,
-  stableFingerprint,
   type GateCatalogMetadata
 } from "@observability-gate/core";
 import {
   createExecutionPlan,
+  describePolicyExecution,
+  publicationOptions,
   interpolatePolicy,
   loadPolicy,
   type RawPolicy
@@ -16,7 +18,11 @@ import {
   createBuiltInGateCatalog,
   executeGate as executeCatalogGate
 } from "@observability-gate/gates";
-import { createPolicyProviderSession } from "@observability-gate/providers/session";
+import {
+  bindAcquisitionPlan,
+  createPolicyProviderSession,
+  validateProviderAcquisition
+} from "@observability-gate/providers/session";
 import { catalogCommand } from "./commands/catalog.js";
 import { explainCommand } from "./commands/explain.js";
 import { planCommand } from "./commands/plan.js";
@@ -35,14 +41,6 @@ export interface CliDependencies {
   readonly signal?: AbortSignal;
 }
 
-function durationMs(value: string | undefined): number {
-  if (value === undefined) return 0;
-  const match = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/u.exec(value);
-  if (match?.[1] === undefined || match[2] === undefined) return 0;
-  const multiplier = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[match[2]] ?? 0;
-  return Number(match[1]) * multiplier;
-}
-
 function createDefaultService(catalog = createBuiltInGateCatalog()): CliService {
   const service = new ObservabilityGateService<RawPolicy>({
     policy: {
@@ -55,65 +53,37 @@ function createDefaultService(catalog = createBuiltInGateCatalog()): CliService 
             ? {}
             : { targetOverride: request.targetOverride })
         }),
-      createPlan: (policy, request) =>
-        createExecutionPlan({ policy, phase: request.phase, catalog: catalog.metadata() }),
-      describeExecution(policy, plan, request) {
-        const target = policy.targets.definitions[plan.targetId];
-        const runtimeProvider = target?.runtime.provider;
-        const links = Object.fromEntries(
-          Object.entries(policy.reporting.links ?? {}).flatMap(([name, environmentName]) => {
-            const value =
-              typeof environmentName === "string"
-                ? request.environment[environmentName]
-                : undefined;
-            return value === undefined ? [] : [[name, value]];
-          })
-        );
-        return {
+      createPlan(policy, request) {
+        const plan = createExecutionPlan({
+          policy,
           phase: request.phase,
-          target: {
-            id: plan.targetId,
-            runtimeType: plan.runtimeType,
-            provider: typeof runtimeProvider === "string" ? runtimeProvider : "unresolved"
-          },
-          release: {
-            candidateId: policy.release.candidate.id,
-            deploymentId: policy.identity.canonical.deployment_id,
-            ...(policy.release.baseline?.explicit_release_id === undefined
-              ? {}
-              : { baselineId: policy.release.baseline.explicit_release_id })
-          },
-          decisionPolicy: {
-            minimumEvidenceCoveragePercent:
-              policy.execution.enforcement?.minimum_evidence_coverage_percent ?? 100,
-            warnOnSkipped: true
-          },
-          missingEvidenceBehavior: {
-            blocking:
-              policy.observation.no_data?.blocking_gate === "inconclusive"
-                ? "inconclusive"
-                : policy.observation.no_data?.blocking_gate === "warn"
-                  ? "warn"
-                  : "fail",
-            advisory: "warn"
-          },
-          observation: {
-            warmupMs: durationMs(policy.observation.post_deployment.warmup),
-            evaluationWindowMs: durationMs(policy.observation.post_deployment.evaluation_window),
-            sampleIntervalMs: durationMs(policy.observation.post_deployment.settle_between_samples),
-            minimumSuccessfulSamples:
-              policy.observation.post_deployment.minimum_successful_samples ?? 1,
-            maximumExtensionMs: durationMs(policy.release.comparison?.maximum_extension)
-          },
-          links,
-          configurationFingerprint: stableFingerprint(policy)
+          catalog: catalog.metadata()
+        });
+        const scoped = {
+          ...policy,
+          gates: {
+            ...policy.gates,
+            [request.phase]: plan.gates
+              .filter((gate) => gate.applicability === "applicable")
+              .map((gate) => gate.definition)
+          }
         };
-      }
+        const errors = validateProviderAcquisition(scoped, request.phase);
+        if (errors.length > 0)
+          throw new GateError({
+            code: "CONFIG_REFERENCE",
+            safeMessage: errors.join("; "),
+            retryable: false
+          });
+        return bindAcquisitionPlan(policy, plan);
+      },
+      describeExecution: describePolicyExecution
     },
     providers: {
       async initialize(_requirements, context) {
         return createPolicyProviderSession({
           policy: context.policy,
+          plan: context.plan,
           workspaceRoot: context.request.workspaceRoot,
           environment: context.request.environment
         });
@@ -124,6 +94,9 @@ function createDefaultService(catalog = createBuiltInGateCatalog()): CliService 
         phase: context.execution.phase,
         targetId: context.execution.target.id,
         releaseId: context.execution.release.candidateId,
+        ...(context.execution.release.baselineId === undefined
+          ? {}
+          : { baselineReleaseId: context.execution.release.baselineId }),
         evidenceStore: context.evidenceStore,
         signal: context.signal,
         clock: () => new Date(),
@@ -137,6 +110,19 @@ function createDefaultService(catalog = createBuiltInGateCatalog()): CliService 
     validate: (request) => service.validate(request),
     plan: (request) => service.plan(request),
     run: (request) => service.run(request),
+    async publicationOptions(request) {
+      const policy = interpolatePolicy(
+        await loadPolicy(request.configPath, request.workspaceRoot),
+        {
+          phase: request.phase,
+          environment: request.environment,
+          ...(request.targetOverride === undefined
+            ? {}
+            : { targetOverride: request.targetOverride })
+        }
+      );
+      return publicationOptions(policy);
+    },
     async maximumReportBytes(request) {
       const policy = interpolatePolicy(
         await loadPolicy(request.configPath, request.workspaceRoot),

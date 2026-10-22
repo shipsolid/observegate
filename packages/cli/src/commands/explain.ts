@@ -1,5 +1,6 @@
 import type { CommandContext, CommonOptions } from "./types.js";
 import { executionRequest } from "./types.js";
+import { discoveryMetadata, discoveryText } from "./discovery.js";
 
 export async function explainCommand(
   identifier: string,
@@ -9,7 +10,7 @@ export async function explainCommand(
   const direct = context.catalog[identifier];
   if (direct !== undefined) {
     context.output.stdout(
-      `${identifier}\n${direct.description}\nPhases: ${direct.supportedPhases.join(", ")}\n`
+      options.json ? `${JSON.stringify(discoveryMetadata(direct))}\n` : `${identifier}\n${discoveryText(direct)}`
     );
     return 0;
   }
@@ -21,7 +22,7 @@ export async function explainCommand(
     if (gate !== undefined) {
       const metadata = context.catalog[gate.type];
       context.output.stdout(
-        `${gate.id}\nType: ${gate.type}\n${metadata?.description ?? "No description available."}\n`
+        options.json ? `${JSON.stringify({ id: gate.id, type: gate.type, enforcement: gate.enforcement, applicability: gate.applicability, ...(metadata === undefined ? {} : discoveryMetadata(metadata)), remediation: gate.definition.remediation })}\n` : `${gate.id}\nType: ${gate.type}\n${metadata === undefined ? "No description available." : discoveryText(metadata)}\nEnforcement: ${gate.enforcement}\nApplicability: ${gate.applicability}\n${typeof gate.definition.remediation === "string" ? `Remediation: ${gate.definition.remediation}\n` : ""}`
       );
       return 0;
     }

@@ -1,4 +1,5 @@
 import type { CommandContext } from "./types.js";
+import { discoveryMetadata, discoveryText } from "./discovery.js";
 
 export function catalogCommand(json: boolean, context: CommandContext): number {
   const entries = Object.values(context.catalog).sort((left, right) =>
@@ -6,8 +7,8 @@ export function catalogCommand(json: boolean, context: CommandContext): number {
   );
   context.output.stdout(
     json
-      ? `${JSON.stringify(entries)}\n`
-      : `${entries.map((item) => `${item.type}\t${item.description}`).join("\n")}\n`
+      ? `${JSON.stringify(entries.map(discoveryMetadata))}\n`
+      : `${entries.map((item) => `${item.type}\n${discoveryText(item)}`).join("\n")}\n`
   );
   return 0;
 }

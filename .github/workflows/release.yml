@@ -67,6 +67,7 @@ jobs:
           npm run bundle
           npm run verify:bundle
           npm run verify:read-only
+          npm run verify:reproducible
           git diff --exit-code
 
       - name: Build reproducible CLI archive
@@ -90,9 +91,6 @@ jobs:
               .
           }
           build_archive "dist/observegate-cli-${RELEASE_TAG}.tar.gz"
-          build_archive dist/.observegate-reproducibility-check.tar.gz
-          cmp "dist/observegate-cli-${RELEASE_TAG}.tar.gz" dist/.observegate-reproducibility-check.tar.gz
-          rm dist/.observegate-reproducibility-check.tar.gz
 
       - name: Generate CLI artifact SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0

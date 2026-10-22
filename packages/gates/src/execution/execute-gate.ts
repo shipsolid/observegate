@@ -1,5 +1,6 @@
 import {
   createGateResult,
+  raceWithSignal,
   GateError,
   type AssertionResult,
   type Diagnostic,
@@ -24,6 +25,11 @@ function evidenceReferences(evidence: readonly Evidence<unknown>[]): readonly Ev
       id: item.id,
       kind: item.kind,
       provider: item.source.provider,
+      capability: item.source.capability,
+      state: item.state,
+      target: item.target,
+      ...(item.releaseId === undefined ? {} : { releaseId: item.releaseId }),
+      ...(item.expiresAt === undefined ? {} : { expiresAt: item.expiresAt }),
       ...(item.observedAt === undefined ? {} : { observedAt: item.observedAt }),
       acquiredAt: item.acquiredAt,
       ...(ageMs === undefined ? {} : { ageMs }),
@@ -77,6 +83,7 @@ function assertionStatus(
   assertions: readonly AssertionResult[],
   enforcement: PlannedGate["enforcement"]
 ): GateStatus {
+  if (assertions.length === 0) return "inconclusive";
   if (assertions.some((assertion) => assertion.status === "error")) {
     return "error";
   }
@@ -87,16 +94,6 @@ function assertionStatus(
     return enforcement === "advisory" ? "warned" : "failed";
   }
   return "passed";
-}
-
-function abortPromise(signal: AbortSignal): Promise<never> {
-  return new Promise((_, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-  });
 }
 
 export async function executeGate(
@@ -147,50 +144,85 @@ export async function executeGate(
   try {
     const resolved = catalog.require(gate.type, context.phase, gate.definition);
     const scopedContext: GateContext = { ...context, signal: controller.signal };
-    acquired = await Promise.race([
-      resolved.acquire(scopedContext),
-      abortPromise(controller.signal)
-    ]);
+    acquired = await raceWithSignal(resolved.acquire(scopedContext), controller.signal);
 
-    const nonValid = acquired.find((item) => item.state !== "valid");
-    if (
-      acquired.length === 0 ||
-      nonValid?.state === "missing" ||
-      nonValid?.state === "stale" ||
-      nonValid?.state === "insufficient"
-    ) {
-      const behavior = context.missingEvidenceBehavior[gate.enforcement];
+    const now = context.clock().getTime();
+    acquired = acquired.map((item) => {
+      if (item.state !== "valid") return item;
+      const mismatched =
+        item.target !== context.targetId ||
+        (item.releaseId !== undefined &&
+          context.releaseId !== undefined &&
+          item.releaseId !== context.releaseId &&
+          !(
+            gate.type.startsWith("comparison.") &&
+            context.baselineReleaseId !== undefined &&
+            item.releaseId === context.baselineReleaseId
+          ));
+      const expiry = item.expiresAt === undefined ? undefined : Date.parse(item.expiresAt);
+      const state =
+        mismatched || (expiry !== undefined && !Number.isFinite(expiry))
+          ? "invalid"
+          : expiry !== undefined && expiry < now
+            ? "stale"
+            : "valid";
+      return state === "valid" ? item : Object.freeze({ ...item, state });
+    });
+    // Provider failures outrank no-data states, regardless of completion order.
+    const precedence = [
+      "unsupported",
+      "invalid",
+      "unavailable",
+      "missing",
+      "stale",
+      "insufficient"
+    ] as const;
+    const state = precedence.find((candidate) => acquired.some((item) => item.state === candidate));
+    if (acquired.length === 0 || state !== undefined) {
+      const diagnostics = acquired.flatMap((item) =>
+        item.state === "valid"
+          ? []
+          : item.diagnostics.length > 0
+            ? item.diagnostics
+            : [
+                {
+                  code:
+                    item.state === "unsupported" ? "CAPABILITY_UNSUPPORTED" : "EVIDENCE_INVALID",
+                  message: `Evidence is ${item.state}.`,
+                  retryable: item.state === "unavailable",
+                  gateId: gate.id
+                }
+              ]
+      );
+      if (diagnostics.length === 0)
+        diagnostics.push({
+          code: "EVIDENCE_INVALID",
+          message: "Evidence is missing.",
+          retryable: false,
+          gateId: gate.id
+        });
+      const stableDiagnostics = [
+        ...new Map(diagnostics.map((item) => [JSON.stringify(item), item])).entries()
+      ]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([, item]) => item);
+      const isError = state === "unsupported" || state === "invalid" || state === "unavailable";
+      const overrides = context.missingEvidenceBehavior;
+      const behavior =
+        (gate.type.startsWith("comparison.")
+          ? overrides.comparison
+          : gate.type === "synthetic.result"
+            ? overrides.synthetic
+            : undefined) ?? overrides[gate.enforcement];
       return result(
         gate,
         context,
         startedAt,
-        statusForMissing(behavior, gate.enforcement),
+        isError ? "error" : statusForMissing(behavior, gate.enforcement),
         [],
         acquired,
-        [
-          {
-            code: "EVIDENCE_INVALID",
-            message: `Evidence is ${nonValid?.state ?? "missing"}.`,
-            retryable: false,
-            gateId: gate.id
-          }
-        ]
+        stableDiagnostics
       );
-    }
-    if (nonValid !== undefined) {
-      const diagnostics =
-        nonValid.diagnostics.length > 0
-          ? nonValid.diagnostics
-          : [
-              {
-                code:
-                  nonValid.state === "unsupported" ? "CAPABILITY_UNSUPPORTED" : "EVIDENCE_INVALID",
-                message: `Evidence is ${nonValid.state}.`,
-                retryable: nonValid.state === "unavailable",
-                gateId: gate.id
-              }
-            ];
-      return result(gate, context, startedAt, "error", [], acquired, diagnostics);
     }
 
     const assertions = resolved.evaluate(acquired, scopedContext);

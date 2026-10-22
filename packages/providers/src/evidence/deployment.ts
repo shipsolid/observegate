@@ -26,6 +26,7 @@ export interface CompactDeploymentVerifierOptions {
   readonly keyResolver: (kid: string) => Promise<JsonWebKeyInput["key"]>;
   readonly clock?: () => number;
   readonly maximumClockSkewMs?: number;
+  readonly maximumAgeMs?: number;
 }
 
 export interface ExpectedDeploymentEvidence {
@@ -135,6 +136,17 @@ export class CompactDeploymentVerifier {
       throw security("Signed deployment evidence is missing a key identifier");
     }
     const jwk = await this.options.keyResolver(header.kid);
+    const key = record(jwk);
+    if (
+      key === undefined ||
+      (header.alg === "RS256" ? key.kty !== "RSA" : key.kty !== "EC" || key.crv !== "P-256") ||
+      (key.alg !== undefined && key.alg !== header.alg) ||
+      (key.use !== undefined && key.use !== "sig") ||
+      (key.key_ops !== undefined &&
+        (!Array.isArray(key.key_ops) || !key.key_ops.includes("verify"))) ||
+      ["d", "p", "q", "dp", "dq", "qi", "oth", "k"].some((field) => key[field] !== undefined)
+    )
+      throw security("Signed deployment evidence signing key violates algorithm policy");
     let valid: boolean;
     try {
       valid = verify(
@@ -170,16 +182,26 @@ export class CompactDeploymentVerifier {
     if (
       payload.iss !== this.options.trustedIssuer ||
       !audienceMatches ||
-      requiredStrings.some((key) => typeof payload[key] !== "string") ||
+      requiredStrings.some(
+        (key) => typeof payload[key] !== "string" || (payload[key] as string).length === 0
+      ) ||
       typeof payload.iat !== "number" ||
       typeof payload.exp !== "number" ||
+      !Number.isFinite(payload.iat) ||
+      !Number.isFinite(payload.exp) ||
+      !Number.isFinite(new Date(payload.iat * 1000).getTime()) ||
+      !Number.isFinite(new Date(payload.exp * 1000).getTime()) ||
       payload.workflowIdentity !== this.options.expectedWorkflowIdentity
     ) {
       throw security("Signed deployment evidence claims are invalid");
     }
     const nowSeconds = this.clock() / 1000;
     const skewSeconds = (this.options.maximumClockSkewMs ?? 5_000) / 1000;
-    if (payload.exp < nowSeconds - skewSeconds || payload.iat > nowSeconds + skewSeconds) {
+    if (
+      payload.exp <= payload.iat ||
+      payload.exp < nowSeconds - skewSeconds ||
+      payload.iat > nowSeconds + skewSeconds
+    ) {
       throw security("Signed deployment evidence is expired or issued in the future");
     }
     if (
@@ -190,8 +212,18 @@ export class CompactDeploymentVerifier {
     ) {
       throw security("Signed deployment evidence does not match the expected deployment");
     }
-    if (!Number.isFinite(Date.parse(payload.deployedAt as string))) {
-      throw security("Signed deployment evidence has an invalid deployment time");
+    const deployedAt = Date.parse(payload.deployedAt as string);
+    const maximumAgeMs = this.options.maximumAgeMs ?? 60 * 60 * 1000;
+    if (
+      !Number.isFinite(deployedAt) ||
+      deployedAt > this.clock() + skewSeconds * 1000 ||
+      this.clock() - deployedAt > maximumAgeMs + skewSeconds * 1000 ||
+      deployedAt > (payload.iat + skewSeconds) * 1000 ||
+      deployedAt > (payload.exp + skewSeconds) * 1000
+    ) {
+      throw security(
+        "Signed deployment evidence has an invalid, stale, or out-of-order deployment time"
+      );
     }
     return Object.freeze({
       issuer: payload.iss as string,

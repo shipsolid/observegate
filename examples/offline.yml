@@ -1,0 +1,76 @@
+metadata:
+  name: observegate-offline-demo
+execution:
+  active_target: demo
+  phases:
+    pre_deployment:
+      timeout: 10s
+      concurrency: 1
+    post_deployment:
+      timeout: 10s
+      concurrency: 1
+identity:
+  canonical:
+    service_name: checkout
+    service_namespace: demo
+    environment: development
+    release_id: demo-release-v1
+    deployment_id: demo-deployment
+release:
+  candidate:
+    id: demo-release-v1
+observation:
+  pre_deployment: {}
+  post_deployment: {}
+decision:
+  outcomes:
+    pass: { exit_code: 0, conclusion: success }
+    warn: { exit_code: 0, conclusion: neutral }
+    fail: { exit_code: 1, conclusion: failure }
+    inconclusive: { exit_code: 2, conclusion: failure }
+    error: { exit_code: 3, conclusion: failure }
+targets:
+  definitions:
+    demo:
+      runtime:
+        type: generic
+        provider: demo-evidence
+providers:
+  evidence:
+    demo-evidence:
+      type: junit_or_json
+      files:
+        - examples/evidence/synthetic.json
+gate_defaults:
+  enforcement: blocking
+gates:
+  pre_deployment:
+    - id: demo.identity
+      name: Canonical identity is valid
+      type: identity.contract
+      assertions:
+        release_id:
+          minimum_length: 7
+          maximum_length: 128
+  post_deployment:
+    - id: demo.synthetic
+      name: Synthetic result identifies the candidate release
+      type: synthetic.result
+      source:
+        provider: demo-evidence
+      assertions:
+        required_tests: [checkout-health]
+        maximum_duration: 1s
+        release_identity_header:
+          name: x-service-version
+          equals: demo-release-v1
+reporting:
+  github:
+    check_run: { enabled: false }
+    pull_request_comment: { enabled: false }
+security:
+  read_only: true
+limits:
+  maximum_gates: 10
+  maximum_queries: 10
+  maximum_total_runtime: 10s

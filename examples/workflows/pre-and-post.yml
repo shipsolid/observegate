@@ -47,6 +47,7 @@ jobs:
           name: observability-gate-pre
           path: observability-gate-results/pre
           if-no-files-found: error
+          retention-days: 14
 
   deploy:
     needs: pre-deployment
@@ -99,6 +100,7 @@ jobs:
           name: checkout-deployment-evidence
           path: deployment-evidence
           if-no-files-found: error
+          retention-days: 14
 
   post-deployment:
     needs: deploy
@@ -148,3 +150,4 @@ jobs:
           name: observability-gate-post
           path: observability-gate-results/post
           if-no-files-found: error
+          retention-days: 14

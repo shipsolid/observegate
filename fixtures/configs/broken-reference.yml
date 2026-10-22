@@ -30,7 +30,7 @@ targets:
       runtime: { type: generic, provider: evidence }
 providers:
   runtime:
-    evidence: { type: generic }
+    evidence: { type: evidence_only }
 gate_defaults: {}
 gates:
   pre_deployment: []

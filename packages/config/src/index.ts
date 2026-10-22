@@ -9,3 +9,15 @@ export * from "./schema/common.js";
 export * from "./schema/gate-envelope.js";
 export * from "./schema/metadata.js";
 export * from "./schema/policy.js";
+export {
+  describePolicyExecution,
+  githubReportingOptions,
+  publicationOptions,
+  parseDurationMs,
+  type GithubReportingOptions,
+  type PublicationOptions,
+  type SummarySection,
+  type CheckRunField,
+  type ArtifactFormat
+} from "./execution.js";
+export { gateContracts, type FieldContract } from "./schema/gate-contracts.js";

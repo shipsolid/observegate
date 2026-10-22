@@ -1,6 +1,6 @@
 {
   "name": "@observability-gate/reporters",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -14,6 +14,6 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@observability-gate/core": "0.0.0"
+    "@observability-gate/core": "0.1.0"
   }
 }

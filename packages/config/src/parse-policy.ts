@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { GateError } from "@observability-gate/core";
 import { parseDocument, visit } from "yaml";
 import { policySchema, type RawPolicy } from "./schema/policy.js";
+import { validatePolicyContracts } from "./schema/validate-contract.js";
 
 const MAX_POLICY_BYTES = 2 * 1024 * 1024;
 
@@ -60,6 +61,7 @@ export function parsePolicy(text: string): RawPolicy {
     });
   }
 
+  validatePolicyContracts(parsed.data);
   return parsed.data;
 }
 

@@ -16,6 +16,13 @@ The verifier checks expected identity, allowed algorithm, key ID, signature, bou
 freshness, issuer/audience, and workflow provenance. JWKS retrieval uses the guarded HTTPS transport
 and the same SSRF/response-size controls as providers.
 
+`RS256` requires an RSA signing key; `ES256` requires an EC P-256 signing key. A key's declared
+algorithm, use, and operations must permit signature verification. Completion must be no later
+than issuance plus the configured clock skew, no later than expiry, and within the accepted age.
+The verifier defaults to a one-hour maximum completion age and five seconds of clock skew;
+provider policy may choose a shorter maximum age. Tokens issued before the deployment completes
+beyond the allowed skew cannot attest that deployment.
+
 ## Producer responsibilities
 
 The deployment job owns mutation and creates the attestation only after deployment succeeds. Store

@@ -80,3 +80,85 @@ describe("KubernetesRuntimeAdapter", () => {
     expect(pods).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Kubernetes cancellation and pagination security", () => {
+  it("rejects cancellation on the final response", async () => {
+    const controller = new AbortController();
+    const adapter = new KubernetesRuntimeAdapter(
+      fakeClient({
+        listEvents: async () => {
+          controller.abort();
+          return { items: [] };
+        }
+      })
+    );
+    await expect(
+      adapter.getSnapshot({ ...request, signal: controller.signal })
+    ).rejects.toMatchObject({ code: "CANCELLED" });
+  });
+
+  it("settles in-flight reads when the client ignores cancellation", async () => {
+    const controller = new AbortController();
+    const adapter = new KubernetesRuntimeAdapter(
+      fakeClient({ readWorkload: async () => new Promise(() => undefined) })
+    );
+    const pending = adapter.getSnapshot({ ...request, signal: controller.signal });
+    setTimeout(() => controller.abort(), 5);
+    expect(
+      await Promise.race([
+        pending.catch((error: unknown) => error),
+        new Promise((resolve) => setTimeout(() => resolve({ code: "HUNG" }), 60))
+      ])
+    ).toMatchObject({ code: "CANCELLED" });
+  });
+
+  it("rejects repeated continuation tokens", async () => {
+    let pages = 0;
+    const adapter = new KubernetesRuntimeAdapter(
+      fakeClient({
+        listPods: async () => {
+          pages++;
+          if (pages > 3) throw new Error("unbounded pagination");
+          return { items: [], continueToken: "repeat" };
+        }
+      })
+    );
+    await expect(adapter.getSnapshot(request)).rejects.toMatchObject({ code: "PROVIDER_PROTOCOL" });
+    expect(pages).toBe(2);
+  });
+});
+
+describe("Kubernetes pagination bounds", () => {
+  it("rejects more than 100 pages even with unique tokens", async () => {
+    let pages = 0;
+    const adapter = new KubernetesRuntimeAdapter(
+      fakeClient({ listPods: async () => ({ items: [], continueToken: String(++pages) }) })
+    );
+    await expect(adapter.getSnapshot(request)).rejects.toMatchObject({ code: "PROVIDER_PROTOCOL" });
+    expect(pages).toBe(100);
+  });
+  it("rejects more than 10000 accumulated items", async () => {
+    const adapter = new KubernetesRuntimeAdapter(
+      fakeClient({ listPods: async () => ({ items: Array.from({ length: 10001 }, () => ({})) }) })
+    );
+    await expect(adapter.getSnapshot(request)).rejects.toMatchObject({ code: "PROVIDER_PROTOCOL" });
+  });
+  it.each(["listReplicaSets", "listPods", "listEvents"] as const)(
+    "propagates the signal and cancels an uncooperative %s",
+    async (method) => {
+      const controller = new AbortController();
+      const adapter = new KubernetesRuntimeAdapter(
+        fakeClient({
+          [method]: async (page) => {
+            expect(page.signal).toBe(controller.signal);
+            queueMicrotask(() => controller.abort());
+            return new Promise(() => undefined);
+          }
+        })
+      );
+      await expect(
+        adapter.getSnapshot({ ...request, signal: controller.signal })
+      ).rejects.toMatchObject({ code: "CANCELLED" });
+    }
+  );
+});

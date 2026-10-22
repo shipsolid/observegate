@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
   createGateResult,
@@ -96,6 +97,44 @@ describe("ExecutionScheduler", () => {
     expect(seenStores.size).toBe(1);
     expect(executed).toEqual(["gate-0", "gate-1"]);
     expect(results.map((item) => item.status)).toEqual(["failed", "passed"]);
+  });
+
+  it("stops starting gates after the first blocking failure when failFast is set", async () => {
+    const executed: string[] = [];
+    const results = await new ExecutionScheduler({ globalConcurrency: 1 }).run({
+      phase: "pre_deployment",
+      gates: [gate(0), gate(1)],
+      phaseDeadlineMs: 1000,
+      signal: new AbortController().signal,
+      failFast: true,
+      execute: async (item) => {
+        executed.push(item.id);
+        return { ...result(item), status: "failed" };
+      }
+    });
+    expect(executed).toEqual(["gate-0"]);
+    expect(results.map((item) => item.status)).toEqual(["failed", "skipped"]);
+    expect(results[1]?.diagnostics[0]?.code).toBe("GATE_EVALUATION");
+  });
+
+  it("does not start provider-queued gates after failFast triggers", async () => {
+    const executed: string[] = [];
+    const results = await new ExecutionScheduler({
+      globalConcurrency: 4,
+      perProviderConcurrency: 1
+    }).run({
+      phase: "pre_deployment",
+      gates: [gate(0), gate(1), gate(2), gate(3)],
+      phaseDeadlineMs: 1000,
+      signal: new AbortController().signal,
+      failFast: true,
+      execute: async (item) => {
+        executed.push(item.id);
+        return { ...result(item), status: "failed" };
+      }
+    });
+    expect(executed).toEqual(["gate-0"]);
+    expect(results.map((item) => item.status)).toEqual(["failed", "skipped", "skipped", "skipped"]);
   });
 
   it("cancels queued work and never waits for an uncooperative gate", async () => {
@@ -205,9 +244,137 @@ describe("runPhase", () => {
       executeGate: async (item) => result(item)
     });
 
-    expect(waits).toEqual([100, 25, 25]);
-    expect(sample).toHaveBeenCalledTimes(3);
+    expect(waits).toEqual([100, 25, 25, 25, 25, 25, 25, 25, 25]);
+    expect(sample).toHaveBeenCalledTimes(9);
     expect(results[0]?.status).toBe("passed");
+  });
+
+  it("continues sampling throughout the configured observation window", async () => {
+    let now = 0;
+    const sampleTimes: number[] = [];
+    const phasePlan: ExecutionPlan = {
+      phase: "post_deployment",
+      targetId: "production",
+      runtimeType: "kubernetes",
+      gates: [gate(0)],
+      requiredProviders: [],
+      deadlineMs: 1000
+    };
+    await runPhase({
+      plan: phasePlan,
+      signal: new AbortController().signal,
+      observation: {
+        warmupMs: 0,
+        evaluationWindowMs: 100,
+        sampleIntervalMs: 25,
+        minimumSuccessfulSamples: 1,
+        maximumExtensionMs: 0
+      },
+      clock: () => new Date(now),
+      wait: async (ms) => {
+        now += ms;
+      },
+      sample: async () => {
+        sampleTimes.push(now);
+        return true;
+      },
+      executeGate: async (item) => result(item)
+    });
+    expect(sampleTimes).toEqual([0, 25, 50, 75, 100]);
+  });
+
+  it("releases cancellation listeners between repeated observation samples", async () => {
+    let now = 0;
+    const listenerCounts: number[] = [];
+    await runPhase({
+      plan: {
+        phase: "post_deployment",
+        targetId: "production",
+        runtimeType: "kubernetes",
+        gates: [gate(0)],
+        requiredProviders: [],
+        deadlineMs: 1000
+      },
+      signal: new AbortController().signal,
+      observation: {
+        warmupMs: 0,
+        evaluationWindowMs: 100,
+        sampleIntervalMs: 5,
+        minimumSuccessfulSamples: 1,
+        maximumExtensionMs: 0
+      },
+      clock: () => new Date(now),
+      wait: async (ms) => {
+        now += ms;
+      },
+      sample: async (signal) => {
+        listenerCounts.push(getEventListeners(signal, "abort").length);
+        return true;
+      },
+      executeGate: async (item) => result(item)
+    });
+    expect(Math.max(...listenerCounts)).toBeLessThan(5);
+  });
+
+  it("fails sustained observation closed when no sampler exists", async () => {
+    const outcomes = await runPhase({
+      plan: {
+        phase: "post_deployment",
+        targetId: "production",
+        runtimeType: "kubernetes",
+        gates: [gate(0)],
+        requiredProviders: [],
+        deadlineMs: 1000
+      },
+      signal: new AbortController().signal,
+      observation: {
+        warmupMs: 0,
+        evaluationWindowMs: 100,
+        sampleIntervalMs: 5,
+        minimumSuccessfulSamples: 1,
+        maximumExtensionMs: 0
+      },
+      executeGate: async (item) => result(item)
+    });
+    expect(outcomes[0]?.status).toBe("inconclusive");
+  });
+
+  it("bounds an uncooperative observation sample by its window and maximum extension", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    let completed = false;
+    const running = runPhase({
+      plan: {
+        phase: "post_deployment",
+        targetId: "production",
+        runtimeType: "kubernetes",
+        gates: [gate(0)],
+        requiredProviders: [],
+        deadlineMs: 1000
+      },
+      signal: controller.signal,
+      observation: {
+        warmupMs: 0,
+        evaluationWindowMs: 10,
+        sampleIntervalMs: 5,
+        minimumSuccessfulSamples: 1,
+        maximumExtensionMs: 5
+      },
+      sample: async () => new Promise<boolean>(() => undefined),
+      executeGate: async (item) => result(item)
+    }).then((results) => {
+      completed = true;
+      return results;
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(20);
+      expect(completed).toBe(true);
+      expect((await running)[0]?.status).toBe("inconclusive");
+    } finally {
+      controller.abort();
+      await running.catch(() => undefined);
+      vi.useRealTimers();
+    }
   });
 
   it("classifies low traffic after the bounded maximum extension", async () => {
@@ -242,6 +409,6 @@ describe("runPhase", () => {
 
     expect(execute).not.toHaveBeenCalled();
     expect(results[0]?.status).toBe("inconclusive");
-    expect(now).toBe(100);
+    expect(now).toBe(75);
   });
 });

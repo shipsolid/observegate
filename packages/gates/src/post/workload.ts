@@ -11,18 +11,16 @@ function identityValues(value: EvidenceRecord, key: string): string[] {
     record(value.runtime)?.[key],
     record(value.attestation)?.[key],
     record(value.expected)?.[key]
-  ]
-    .filter((item): item is string => typeof item === "string" && item.length > 0)
-    .map(sanitizeIdentity);
+  ].filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
 function identityAssertion(value: EvidenceRecord, key: string, label: string) {
   const values = identityValues(value, key);
   return assertion(
     label,
-    values.length >= 2 && new Set(values).size === 1,
+    values.length === 3 && new Set(values).size === 1,
     `${label} agrees across runtime, attestation, and expected release`,
-    values
+    values.map(sanitizeIdentity)
   );
 }
 
@@ -97,14 +95,24 @@ export const runtimeReleaseIdentityGate = createEvidenceGate({
   type: "runtime.release_identity",
   description: "Compare runtime release identity with signed deployment evidence and expectations.",
   phases: ["post_deployment"],
-  evaluate(_definition, value) {
+  evaluate(definition, value) {
+    const rules = record(definition.assertions) ?? {};
+    const required = {
+      imageDigest:
+        rules.expected_image_digest_env !== undefined || rules.expected_image_digest !== undefined,
+      artifactDigest:
+        rules.expected_artifact_digest_env !== undefined ||
+        rules.expected_artifact_digest !== undefined,
+      deploymentId: rules.deployment_id !== undefined
+    };
     const results = [identityAssertion(value, "releaseId", "release ID")];
     for (const [key, label] of [
       ["imageDigest", "image digest"],
       ["artifactDigest", "artifact digest"],
       ["deploymentId", "deployment ID"]
     ] as const) {
-      if (identityValues(value, key).length > 0) results.push(identityAssertion(value, key, label));
+      if (required[key] || identityValues(value, key).length > 0)
+        results.push(identityAssertion(value, key, label));
     }
     return results;
   }

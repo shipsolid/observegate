@@ -1,3 +1,5 @@
+import type { EvidenceState } from "../evidence/states.js";
+
 export type Phase = "pre_deployment" | "post_deployment";
 export type Decision = "pass" | "warn" | "fail" | "inconclusive" | "error";
 export type GateStatus = "passed" | "warned" | "failed" | "inconclusive" | "error" | "skipped";
@@ -22,6 +24,11 @@ export interface EvidenceReference {
   readonly id: string;
   readonly kind: string;
   readonly provider: string;
+  readonly state?: EvidenceState;
+  readonly capability?: string;
+  readonly target?: string;
+  readonly releaseId?: string;
+  readonly expiresAt?: string;
   readonly observedAt?: string;
   readonly acquiredAt: string;
   readonly ageMs?: number;

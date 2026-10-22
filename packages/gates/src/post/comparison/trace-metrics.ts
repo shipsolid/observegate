@@ -14,7 +14,12 @@ export const comparisonTraceMetricsGate = createEvidenceGate({
       ? (value.dependencies as EvidenceRecord[])
       : [];
     const selected = dependencies.filter((dependency) => expected.has(String(dependency.name)));
-    if (expected.size === 0 || selected.length !== expected.size) {
+    const names = selected.map((dependency) => String(dependency.name));
+    if (
+      expected.size === 0 ||
+      names.length !== expected.size ||
+      new Set(names).size !== expected.size
+    ) {
       return [
         {
           assertion: "dependency evidence",
@@ -23,8 +28,8 @@ export const comparisonTraceMetricsGate = createEvidenceGate({
         } satisfies AssertionResult
       ];
     }
-    return selected.flatMap((dependency) =>
-      compareMetricValues(dependency.comparison as MetricComparisonInput)
-    );
+    return selected
+      .sort((left, right) => String(left.name).localeCompare(String(right.name)))
+      .flatMap((dependency) => compareMetricValues(dependency.comparison as MetricComparisonInput));
   }
 });
