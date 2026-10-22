@@ -2315,73 +2315,12 @@ export const gateContracts: Readonly<Record<string, Readonly<Record<string, Fiel
   "telemetry.cardinality_estimate": {
     source: {
       provider: "string",
-      query: {
-        anyOf: [
-          "string",
-          {
-            "resource.service.name": "string",
-            "resource.service.namespace": "string",
-            "resource.service.version": "string",
-            "resource.deployment.environment.name": "string"
-          }
-        ]
-      },
       queries: {
-        "*": {
-          anyOf: [
-            "string",
-            {
-              candidate: {
-                release_id: "string",
-                query: "string",
-                request_count_query: "string"
-              },
-              baseline: {
-                release_id: "string",
-                query: "string",
-                request_count_query: "string"
-              },
-              candidate_query: "string",
-              baseline_query: "string",
-              candidate_request_count_query: "string",
-              baseline_request_count_query: "string",
-              unit: "string"
-            }
-          ]
-        }
-      },
-      request_count_query: "string",
-      candidate_query: "string",
-      baseline_query: "string",
-      files: ["string"],
-      file: "string",
-      url: "string",
-      url_env: "string",
-      uid: "string",
-      uid_env: "string",
-      caller: "string",
-      traffic_observed: "boolean",
-      sampling_probability: "number",
-      runtime_release_query: "string",
-      probes: {
-        "*": {
-          query: {
-            anyOf: [
-              "string",
-              {
-                "resource.service.name": "string",
-                "resource.service.namespace": "string",
-                "resource.service.version": "string",
-                "resource.deployment.environment.name": "string"
-              }
-            ]
-          },
-          uid: "string"
-        }
-      },
-      candidate_request_count_query: "string",
-      baseline_request_count_query: "string",
-      window: "string"
+        new_metric_series: "string",
+        new_log_attribute_keys: "string",
+        new_span_attribute_keys: "string",
+        estimated_series_growth_percent: "string"
+      }
     },
     assertions: {
       new_metric_series: {
@@ -2415,73 +2354,11 @@ export const gateContracts: Readonly<Record<string, Readonly<Record<string, Fiel
   "telemetry.volume_estimate": {
     source: {
       provider: "string",
-      query: {
-        anyOf: [
-          "string",
-          {
-            "resource.service.name": "string",
-            "resource.service.namespace": "string",
-            "resource.service.version": "string",
-            "resource.deployment.environment.name": "string"
-          }
-        ]
-      },
       queries: {
-        "*": {
-          anyOf: [
-            "string",
-            {
-              candidate: {
-                release_id: "string",
-                query: "string",
-                request_count_query: "string"
-              },
-              baseline: {
-                release_id: "string",
-                query: "string",
-                request_count_query: "string"
-              },
-              candidate_query: "string",
-              baseline_query: "string",
-              candidate_request_count_query: "string",
-              baseline_request_count_query: "string",
-              unit: "string"
-            }
-          ]
-        }
-      },
-      request_count_query: "string",
-      candidate_query: "string",
-      baseline_query: "string",
-      files: ["string"],
-      file: "string",
-      url: "string",
-      url_env: "string",
-      uid: "string",
-      uid_env: "string",
-      caller: "string",
-      traffic_observed: "boolean",
-      sampling_probability: "number",
-      runtime_release_query: "string",
-      probes: {
-        "*": {
-          query: {
-            anyOf: [
-              "string",
-              {
-                "resource.service.name": "string",
-                "resource.service.namespace": "string",
-                "resource.service.version": "string",
-                "resource.deployment.environment.name": "string"
-              }
-            ]
-          },
-          uid: "string"
-        }
-      },
-      candidate_request_count_query: "string",
-      baseline_request_count_query: "string",
-      window: "string"
+        metrics: "string",
+        logs: "string",
+        traces: "string"
+      }
     },
     assertions: {
       estimated_growth_percent: {
@@ -2693,6 +2570,7 @@ export const gateContracts: Readonly<Record<string, Readonly<Record<string, Fiel
       window: "string"
     },
     assertions: {
+      startup_probe_required: "boolean",
       readiness_probe_required: "boolean",
       liveness_probe_required: "boolean",
       startup_probe_required_when_startup_exceeds: "string",
@@ -4380,11 +4258,11 @@ export const gateContracts: Readonly<Record<string, Readonly<Record<string, Fiel
       window: "string"
     },
     assertions: {
-      absolute_increase_percentage_points: "any",
-      relative_increase_percent: "any",
+      absolute_increase_percentage_points: { less_than_or_equal: "number" },
+      relative_increase_percent: { less_than_or_equal: "number" },
       minimum_candidate_requests: "number",
       minimum_baseline_requests: "number",
-      absolute_increase: "any",
+      absolute_increase: { less_than_or_equal: "number", unit: "string" },
       absolute_decrease_percentage_points: {
         less_than_or_equal: "number"
       },

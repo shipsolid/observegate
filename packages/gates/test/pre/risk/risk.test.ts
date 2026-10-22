@@ -62,7 +62,15 @@ function evidence(type: string, value: Readonly<Record<string, unknown>>): Evide
 
 function assertionsFor(type: string, value: Readonly<Record<string, unknown>>) {
   const catalog = registerRiskGates(new GateCatalog());
-  return catalog.require(type, "pre_deployment", {}).evaluate([evidence(type, value)], context);
+  const definition =
+    type === "telemetry.cardinality_estimate"
+      ? { assertions: { new_metric_series: { less_than_or_equal: 1000 } } }
+      : type === "telemetry.volume_estimate"
+        ? { assertions: { estimated_growth_percent: { metrics: { less_than_or_equal: 20 } } } }
+        : {};
+  return catalog
+    .require(type, "pre_deployment", definition)
+    .evaluate([evidence(type, value)], context);
 }
 
 describe("pre-deployment risk gate catalogue", () => {
@@ -153,7 +161,7 @@ describe("pre-deployment risk gate catalogue", () => {
     );
   });
 
-  it("keeps telemetry budgets advisory unless an explicit override is present", () => {
+  it("rejects blocking telemetry budgets including unsupported overrides", () => {
     const catalog = registerRiskGates(new GateCatalog());
     expect(() =>
       catalog.require("telemetry.cardinality_estimate", "pre_deployment", {
@@ -165,6 +173,6 @@ describe("pre-deployment risk gate catalogue", () => {
         enforcement: "blocking",
         allowBlockingBudget: true
       })
-    ).not.toThrow();
+    ).toThrow();
   });
 });

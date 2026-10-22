@@ -8,6 +8,7 @@ import {
   durationMs,
   field,
   identity,
+  invalid,
   mapped,
   number,
   record,
@@ -88,6 +89,8 @@ export async function resolveGrafana(
             (e): e is [string, string] => typeof e[1] === "string"
           )
         ),
+        requireUnmuted: a.mute_timing_does_not_cover_deployment_window !== false,
+        verifyReceiver: a.receiver_is_configured === true,
         deploymentStart: start,
         deploymentEnd: new Date(
           base.now() +
@@ -98,7 +101,12 @@ export async function resolveGrafana(
   }
   const uid = field(source, "uid", base.environment);
   if (uid === undefined) configuration(`${kind} requires source.uid or source.uid_env`);
-  const raw = await grafana.getSlo({ ...request, uid }),
+  const raw = await grafana.getSlo({
+      ...request,
+      uid,
+      validateIndicatorQuery:
+        kind === "grafana.slo_definition" && a.indicator_query_is_valid === true
+    }),
     slo = raw.value;
   if (kind === "grafana.slo_definition") {
     const expected = identity(base.policy),
@@ -112,8 +120,25 @@ export async function resolveGrafana(
       })
     ];
   }
-  if (kind === "grafana.slo_status")
-    return [mapped(raw, kind, { fresh: raw.state === "valid", status: slo?.status })];
+  if (kind === "grafana.slo_status") {
+    const query = record(source.queries).status;
+    if (typeof query !== "string")
+      configuration(
+        "grafana.slo_status requires source.queries.status returning exactly 1 (met) or 0 (unmet)"
+      );
+    const measured = await metric(base, query, context);
+    const status = scalar(measured);
+    if (measured.state === "valid" && status !== 0 && status !== 1)
+      invalid("grafana.slo_status query must return exactly 1 (met) or 0 (unmet)");
+    return [
+      combined([raw, measured], kind, {
+        fresh: raw.state === "valid" && measured.state === "valid",
+        status: status === 1 ? "met" : status === 0 ? "unmet" : undefined
+      }),
+      raw,
+      measured
+    ];
+  }
   if (kind === "grafana.error_budget") {
     const maximumConsumed =
         number(a.maximum_consumed_during_release_percent) ??
@@ -123,11 +148,20 @@ export async function resolveGrafana(
       configuration(
         "Release-specific error-budget consumption requires source.queries.release_consumed_percent; Grafana cumulative consumedPercent cannot represent release consumption"
       );
+    const remainingQuery = record(source.queries).remaining_percent;
+    if (typeof remainingQuery !== "string")
+      configuration(
+        "grafana.error_budget requires source.queries.remaining_percent; the SLO definition API does not expose a measured budget"
+      );
+    const remaining = await metric(base, remainingQuery, context);
     const consumed = typeof query === "string" ? await metric(base, query, context) : undefined;
     return [
-      combined(consumed === undefined ? [raw] : [raw, consumed], kind, {
-        fresh: raw.state === "valid",
-        remainingPercent: slo?.remainingBudgetPercent,
+      combined(consumed === undefined ? [raw, remaining] : [raw, remaining, consumed], kind, {
+        fresh:
+          raw.state === "valid" &&
+          remaining.state === "valid" &&
+          (consumed === undefined || consumed.state === "valid"),
+        remainingPercent: scalar(remaining),
         minimumRemainingPercent:
           number(a.minimum_remaining_percent) ??
           number(record(a.remaining_percent).greater_than_or_equal) ??
@@ -140,6 +174,7 @@ export async function resolveGrafana(
             })
       }),
       raw,
+      remaining,
       ...(consumed === undefined ? [] : [consumed])
     ];
   }

@@ -27,6 +27,8 @@ export interface KubernetesSnapshot extends RuntimeSnapshot {
   readonly workloadKind: "Deployment" | "StatefulSet" | "DaemonSet";
   readonly workloadName: string;
   readonly rollout: {
+    readonly currentRevision?: string;
+    readonly updateRevision?: string;
     readonly generation: number;
     readonly observedGeneration: number;
     readonly generationObserved: boolean;
@@ -40,6 +42,7 @@ export interface KubernetesSnapshot extends RuntimeSnapshot {
 
 export interface KubernetesNormalizationInput {
   readonly target?: string;
+  readonly container?: string;
   readonly workload: unknown;
   readonly replicaSets: readonly unknown[];
   readonly pods: readonly unknown[];
@@ -111,8 +114,13 @@ function replicas(
       unavailable: count(status.numberUnavailable)
     });
   }
-  const desired = count(spec.replicas);
-  const available = count(status.availableReplicas);
+  const desired = spec.replicas === undefined ? 1 : count(spec.replicas);
+  const available = count(
+    status.availableReplicas ??
+      (kind === "StatefulSet" && (spec.minReadySeconds === undefined || spec.minReadySeconds === 0)
+        ? status.readyReplicas
+        : undefined)
+  );
   return Object.freeze({
     desired,
     updated: count(status.updatedReplicas),
@@ -125,17 +133,29 @@ function replicas(
   });
 }
 
-function podEvidence(value: unknown): KubernetesPodEvidence {
+function podEvidence(value: unknown, selectedContainer?: string): KubernetesPodEvidence {
   const pod = object(value);
   const metadata = optionalObject(pod.metadata);
   const status = optionalObject(pod.status);
   const containerStatuses = Array.isArray(status.containerStatuses) ? status.containerStatuses : [];
+  const selectedStatuses = containerStatuses.filter(
+    (raw) => selectedContainer === undefined || object(raw).name === selectedContainer
+  );
+  if (
+    (selectedContainer === undefined && containerStatuses.length > 1) ||
+    (selectedContainer !== undefined && selectedStatuses.length !== 1)
+  )
+    throw new GateError({
+      code: "EVIDENCE_INVALID",
+      safeMessage: "Kubernetes pod container selection is missing or ambiguous",
+      retryable: false
+    });
   const waitingReasons: string[] = [];
   const terminationReasons: string[] = [];
   const images: string[] = [];
   let restarts = 0;
   let imageDigest: string | undefined;
-  for (const raw of containerStatuses) {
+  for (const raw of selectedStatuses) {
     const container = object(raw);
     restarts += count(container.restartCount);
     if (typeof container.image === "string") images.push(container.image);
@@ -214,7 +234,7 @@ export function normalizeKubernetesSnapshot(
       const owners = ownerUids(podMetadata);
       return owners.length === 0 || owners.some((uid) => acceptedOwners.has(uid));
     })
-    .map(podEvidence);
+    .map((pod) => podEvidence(pod, input.container));
   const involvedUids = new Set([metadata.uid, ...selectedPods.flatMap((pod) => pod.uid ?? [])]);
   const deploymentStartedAt =
     input.deploymentStartedAt === undefined ? undefined : Date.parse(input.deploymentStartedAt);
@@ -283,6 +303,12 @@ export function normalizeKubernetesSnapshot(
     workloadKind: kind as KubernetesSnapshot["workloadKind"],
     workloadName: metadata.name,
     rollout: Object.freeze({
+      ...(typeof status.currentRevision === "string"
+        ? { currentRevision: status.currentRevision }
+        : {}),
+      ...(typeof status.updateRevision === "string"
+        ? { updateRevision: status.updateRevision }
+        : {}),
       generation,
       observedGeneration,
       generationObserved: observedGeneration >= generation,

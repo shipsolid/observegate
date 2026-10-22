@@ -13,47 +13,67 @@ export const kubernetesRolloutStatusGate = createEvidenceGate({
   description:
     "Validate Kubernetes observed generation, conditions, replicas, and rollout duration.",
   phases: ["post_deployment"],
-  evaluate(_definition, value) {
+  evaluate(definition, value) {
+    const a = record(definition.assertions) ?? {};
+    const deployment = value.workloadKind === undefined || value.workloadKind === "Deployment";
     const rollout = record(value.rollout) ?? {};
     const replicas = record(rollout.replicas) ?? {};
     const conditions = records(rollout.conditions);
     const desired = typeof replicas.desired === "number" ? replicas.desired : 0;
     return [
+      ...(value.workloadKind === "StatefulSet"
+        ? [
+            assertion(
+              "controller revision",
+              typeof rollout.currentRevision === "string" &&
+                rollout.currentRevision === rollout.updateRevision,
+              "StatefulSet current revision equals update revision",
+              rollout.currentRevision,
+              rollout.updateRevision
+            )
+          ]
+        : []),
       assertion(
         "observed generation",
-        rollout.generationObserved === true,
+        a.observed_generation_matches === false || rollout.generationObserved === true,
         "Controller observed the intended generation"
       ),
       assertion(
         "progressing condition",
-        conditionIs(conditions, "Progressing", "True"),
+        a.progressing_condition === false ||
+          !deployment ||
+          conditionIs(conditions, "Progressing", "True"),
         "Rollout is progressing"
       ),
       assertion(
         "available condition",
-        conditionIs(conditions, "Available", "True"),
+        a.available_condition === false ||
+          !deployment ||
+          conditionIs(conditions, "Available", "True"),
         "Workload is available"
       ),
       assertion(
         "updated replicas",
-        replicas.updated === desired && desired > 0,
+        a.updated_replicas_equal_desired === false || (replicas.updated === desired && desired > 0),
         "Updated replicas equal desired replicas",
         replicas.updated,
         desired
       ),
       assertion(
         "available replicas",
-        replicas.available === desired && desired > 0,
+        a.available_replicas_equal_desired === false ||
+          (replicas.available === desired && desired > 0),
         "Available replicas equal desired replicas",
         replicas.available,
         desired
       ),
       assertion(
         "unavailable replicas",
-        replicas.unavailable === 0,
+        typeof replicas.unavailable === "number" &&
+          replicas.unavailable <= Number(record(a.unavailable_replicas)?.less_than_or_equal ?? 0),
         "No replicas are unavailable",
         replicas.unavailable,
-        0
+        record(a.unavailable_replicas)?.less_than_or_equal ?? 0
       ),
       assertion(
         "rollout duration",
@@ -72,7 +92,8 @@ export const kubernetesImageIdentityGate = createEvidenceGate({
   type: "kubernetes.image_identity",
   description: "Compare ready pod imageID digests with the expected release digest.",
   phases: ["post_deployment"],
-  evaluate(_definition, value) {
+  evaluate(definition, value) {
+    const a = record(definition.assertions) ?? {};
     const expected = value.expectedImageDigest;
     const ready = records(value.pods).filter((pod) => pod.ready === true);
     const mismatches = ready.filter((pod) => pod.imageDigest !== expected);
@@ -85,7 +106,10 @@ export const kubernetesImageIdentityGate = createEvidenceGate({
       ),
       assertion(
         "imageID digest",
-        typeof expected === "string" && mismatches.length === 0,
+        typeof expected === "string" &&
+          (a.all_ready_pods_match === false
+            ? ready.some((pod) => pod.imageDigest === expected)
+            : mismatches.length === 0),
         "Every ready pod imageID matches the expected digest",
         mismatches.map((pod) => pod.name),
         expected
@@ -98,21 +122,26 @@ export const kubernetesPodHealthGate = createEvidenceGate({
   type: "kubernetes.pod_health",
   description: "Validate Kubernetes pod readiness, restart deltas, states, and probes.",
   phases: ["post_deployment"],
-  evaluate(_definition, value) {
+  evaluate(definition, value) {
+    const a = record(definition.assertions) ?? {};
     const pods = records(value.pods);
     const ready = pods.filter((pod) => pod.ready === true).length;
     const readyPercent = pods.length > 0 ? (ready / pods.length) * 100 : 0;
     const restartIncrease = pods.reduce(
-      (sum, pod) => sum + (typeof pod.restartIncrease === "number" ? pod.restartIncrease : 0),
+      (sum, pod) =>
+        sum + (typeof pod.restartIncrease === "number" ? pod.restartIncrease : Infinity),
       0
     );
-    const forbiddenWaiting = new Set([
-      "CrashLoopBackOff",
-      "ImagePullBackOff",
-      "ErrImagePull",
-      "CreateContainerConfigError"
-    ]);
-    const forbiddenTerminations = new Set(["OOMKilled", "Error"]);
+    const forbiddenWaiting = new Set(
+      Array.isArray(a.forbidden_waiting_reasons)
+        ? a.forbidden_waiting_reasons.map(String)
+        : ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError"]
+    );
+    const forbiddenTerminations = new Set(
+      Array.isArray(a.forbidden_termination_reasons)
+        ? a.forbidden_termination_reasons.map(String)
+        : ["OOMKilled", "Error"]
+    );
     const waiting = pods
       .flatMap((pod) => records(pod.waitingReasons).map(String))
       .filter((reason) => forbiddenWaiting.has(reason));
@@ -122,17 +151,17 @@ export const kubernetesPodHealthGate = createEvidenceGate({
     return [
       assertion(
         "ready pods",
-        readyPercent === 100,
+        readyPercent >= Number(record(a.ready_percent)?.greater_than_or_equal ?? 100),
         "All candidate pods are ready",
         readyPercent,
-        100
+        record(a.ready_percent)?.greater_than_or_equal ?? 100
       ),
       assertion(
         "restart increase",
-        restartIncrease === 0,
+        restartIncrease <= Number(record(a.restart_increase)?.less_than_or_equal ?? 0),
         "Candidate pod restarts did not increase",
         restartIncrease,
-        0
+        record(a.restart_increase)?.less_than_or_equal ?? 0
       ),
       assertion(
         "waiting states",
@@ -148,7 +177,8 @@ export const kubernetesPodHealthGate = createEvidenceGate({
       ),
       assertion(
         "probe health",
-        pods.length > 0 && pods.every((pod) => pod.probesHealthy === true),
+        pods.length > 0 &&
+          pods.filter((pod) => pod.ready === true).every((pod) => pod.probesHealthy === true),
         "Candidate pod probes remain healthy"
       )
     ];

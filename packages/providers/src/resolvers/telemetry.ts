@@ -595,10 +595,7 @@ export async function resolveTelemetry(
         }),
         ...raws
       ];
-    return [
-      combined(raws, kind, { estimate: values.estimate, budget: assertions.budget }),
-      ...raws
-    ];
+    return [combined(raws, kind, { measurements: values }), ...raws];
   }
   return undefined;
 }

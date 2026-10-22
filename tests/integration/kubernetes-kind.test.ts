@@ -1,4 +1,10 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseAllDocuments } from "yaml";
+import { EvidenceStore } from "@observability-gate/core";
+import { GateCatalog, registerKubernetesGates } from "@observability-gate/gates";
 import { promisify } from "node:util";
 import { KubernetesRuntimeAdapter, buildKubernetesReadClient } from "@observability-gate/providers";
 import { afterAll, describe, expect, it } from "vitest";
@@ -71,4 +77,106 @@ describe.skipIf(!enabled)("kind runtime integration", () => {
       )
     ).toBe(true);
   }, 140_000);
+  it.each(["StatefulSet", "DaemonSet"] as const)(
+    "observes healthy multi-container %s through rollout evaluation",
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), "observegate-kind-"));
+      try {
+        const source = await readFile("docker/e2e-service/kubernetes.yml", "utf8");
+        const base = parseAllDocuments(source)[0]?.toJS() as {
+          metadata: Record<string, string>;
+          spec: {
+            template: {
+              metadata: { labels: Record<string, string> };
+              spec: { containers: Record<string, unknown>[] };
+            };
+            selector: unknown;
+          };
+        };
+        const name = `observegate-${kind.toLowerCase()}`;
+        base.metadata.name = name;
+        base.spec.template.metadata.labels = { app: name };
+        base.spec.template.spec.containers.unshift({
+          name: "sidecar",
+          image: "observegate/e2e-service:local",
+          imagePullPolicy: "Never",
+          command: ["node", "-e", "setInterval(() => {}, 1000)"]
+        });
+        const workload = {
+          apiVersion: "apps/v1",
+          kind,
+          metadata: base.metadata,
+          spec: {
+            selector: { matchLabels: { app: name } },
+            template: base.spec.template,
+            updateStrategy: { type: "RollingUpdate" },
+            ...(kind === "StatefulSet" ? { serviceName: "observegate-e2e", replicas: 1 } : {})
+          }
+        };
+        const path = join(root, "workload.json");
+        await writeFile(path, JSON.stringify(workload));
+        await exec("kubectl", ["apply", "-f", path], { timeout: 30_000 });
+        await exec(
+          "kubectl",
+          [
+            "-n",
+            "observegate-e2e",
+            "rollout",
+            "status",
+            `${kind.toLowerCase()}/${name}`,
+            "--timeout=90s"
+          ],
+          { timeout: 100_000 }
+        );
+        const adapter = new KubernetesRuntimeAdapter(buildKubernetesReadClient());
+        const result = await adapter.getSnapshot({
+          target: name,
+          namespace: "observegate-e2e",
+          kind,
+          name,
+          container: "checkout",
+          deploymentStartedAt: new Date(Date.now() - 60_000).toISOString(),
+          signal: new AbortController().signal
+        });
+        expect(result.value?.workloadKind).toBe(kind);
+        expect(result.value?.pods.length).toBeGreaterThan(0);
+        expect(result.value?.pods.every((pod) => pod.imageDigest !== undefined)).toBe(true);
+        const gate = registerKubernetesGates(new GateCatalog()).require(
+          "kubernetes.rollout_status",
+          "post_deployment",
+          {}
+        );
+        const assertions = gate.evaluate(
+          [
+            {
+              ...result,
+              value: {
+                ...result.value,
+                rollout: {
+                  ...result.value?.rollout,
+                  durationMs: 60_000,
+                  maximumDurationMs: 120_000
+                }
+              }
+            }
+          ],
+          {
+            phase: "post_deployment",
+            targetId: name,
+            evidenceStore: new EvidenceStore(),
+            signal: new AbortController().signal,
+            clock: () => new Date(),
+            missingEvidenceBehavior: { blocking: "fail", advisory: "warn" }
+          }
+        );
+        expect(
+          assertions.every((item) => item.status === "passed"),
+          JSON.stringify(assertions)
+        ).toBe(true);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    140_000
+  );
 });

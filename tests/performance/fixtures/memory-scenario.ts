@@ -121,6 +121,10 @@ export interface MemoryScenarioMetrics {
 }
 
 export async function runMemoryScenario(directory: string): Promise<MemoryScenarioMetrics> {
+  const memoryCheckpoint = (stage: string) => {
+    if (process.env.OBSERVEGATE_MEMORY_DIAGNOSTICS === "1")
+      process.stderr.write(JSON.stringify({stage, ...process.memoryUsage(), maxRss: process.resourceUsage().maxRSS * 1024}) + "\n");
+  };
   const maximumProviderResponseBytes = parseByteSize(
     configuredLimits.maximum_provider_response_size,
     1
@@ -130,6 +134,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
   const baselineMemory = process.memoryUsage();
   const baselineHeapBytes = baselineMemory.heapUsed;
   const baselineRssBytes = baselineMemory.rss;
+  memoryCheckpoint("baseline");
   let responseBytes = maximumProviderResponseBytes;
   const transport = new GuardedTransport({
     urlPolicy: new UrlPolicy({
@@ -162,6 +167,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
   }
   collectGarbage();
   responseBytes = maximumProviderResponseBytes;
+  memoryCheckpoint("oversized-provider-rejected");
   let accepted: { readonly data: { readonly data: string }; readonly status: number } | undefined =
     await transport.request<{ readonly data: string }>(request);
 
@@ -179,6 +185,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
   };
   accepted = undefined;
   collectGarbage();
+  memoryCheckpoint("normalized-evidence");
   const exactLimitExecution = await withExactReportSetSize(
     execution,
     maximumReportBytes,
@@ -186,6 +193,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
     request.signal
   );
   collectGarbage();
+  memoryCheckpoint("calibrated-report");
   const publication = await writeReports(exactLimitExecution, {
     directory: `${directory}/accepted`,
     formats: reportFormats,
@@ -193,6 +201,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
     signal: request.signal
   });
   collectGarbage();
+  memoryCheckpoint("published-report");
 
   let reporterRejectedOverLimit = false;
   try {
@@ -212,6 +221,7 @@ export async function runMemoryScenario(directory: string): Promise<MemoryScenar
     reporterRejectedOverLimit = errorCode(error) === "REPORTING";
   }
   const peakRssGrowthBytes = Math.max(0, process.resourceUsage().maxRSS * 1024 - baselineRssBytes);
+  memoryCheckpoint("oversized-report-rejected");
   collectGarbage();
 
   return {

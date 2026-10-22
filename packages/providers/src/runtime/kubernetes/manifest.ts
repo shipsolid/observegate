@@ -5,10 +5,14 @@ export interface KubernetesManifestSelector {
   readonly kind: "Deployment" | "StatefulSet" | "DaemonSet";
   readonly name: string;
   readonly namespace: string;
+  readonly container?: string;
 }
 
 export interface KubernetesManifestEvidence {
   readonly document: number;
+  readonly workloadKind: KubernetesManifestSelector["kind"];
+  readonly containerIndex: number;
+  readonly partition?: number;
   readonly image: string;
   readonly namespaceExplicit: boolean;
   readonly replicas?: number;
@@ -29,6 +33,69 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function matchesSelector(
+  value: unknown,
+  labels: Record<string, unknown>,
+  version: unknown
+): boolean {
+  const selector = record(value);
+  if (selector === undefined) return false;
+  const matchLabels = record(selector.matchLabels) ?? {};
+  if (
+    (selector.matchLabels !== undefined && record(selector.matchLabels) === undefined) ||
+    Object.values(matchLabels).some((value) => typeof value !== "string") ||
+    (selector.matchExpressions !== undefined && !Array.isArray(selector.matchExpressions))
+  )
+    throw new GateError({
+      code: "EVIDENCE_INVALID",
+      safeMessage: "Pod disruption budget selector is malformed",
+      retryable: false
+    });
+  const expressions = Array.isArray(selector.matchExpressions) ? selector.matchExpressions : [];
+  if (Object.keys(matchLabels).length === 0 && expressions.length === 0)
+    return version === "policy/v1";
+  return (
+    Object.entries(matchLabels).every(([key, value]) => labels[key] === value) &&
+    expressions.every((raw) => {
+      const expression = record(raw);
+      if (typeof expression?.key !== "string")
+        throw new GateError({
+          code: "EVIDENCE_INVALID",
+          safeMessage: "Pod disruption budget selector is malformed",
+          retryable: false
+        });
+      const exists = Object.hasOwn(labels, expression.key);
+      const values = Array.isArray(expression.values) ? expression.values : [];
+      if (
+        (["In", "NotIn"].includes(String(expression.operator)) &&
+          (values.length === 0 || values.some((value) => typeof value !== "string"))) ||
+        (["Exists", "DoesNotExist"].includes(String(expression.operator)) && values.length !== 0)
+      )
+        throw new GateError({
+          code: "EVIDENCE_INVALID",
+          safeMessage: "Pod disruption budget selector is malformed",
+          retryable: false
+        });
+      switch (expression.operator) {
+        case "In":
+          return exists && values.includes(labels[expression.key]);
+        case "NotIn":
+          return !exists || !values.includes(labels[expression.key]);
+        case "Exists":
+          return exists;
+        case "DoesNotExist":
+          return !exists;
+        default:
+          throw new GateError({
+            code: "EVIDENCE_INVALID",
+            safeMessage: "Pod disruption budget selector is unsupported",
+            retryable: false
+          });
+      }
+    })
+  );
 }
 
 export function parseKubernetesManifest(
@@ -59,7 +126,21 @@ export function parseKubernetesManifest(
   const template = record(spec?.template);
   const podSpec = record(template?.spec);
   const containers = Array.isArray(podSpec?.containers) ? podSpec.containers : [];
-  const container = record(containers[0]);
+  const selected = containers.flatMap((value, index) => {
+    const container = record(value);
+    return selector.container === undefined || container?.name === selector.container
+      ? [{ container, index }]
+      : [];
+  });
+  const selectedContainer = selected[0];
+  if (selected.length !== 1 || selectedContainer === undefined)
+    throw new GateError({
+      code: "EVIDENCE_INVALID",
+      safeMessage:
+        "Kubernetes container selection is missing or ambiguous; configure workload.container",
+      retryable: false
+    });
+  const container = selectedContainer.container;
   if (
     object === undefined ||
     spec === undefined ||
@@ -73,30 +154,45 @@ export function parseKubernetesManifest(
       retryable: false
     });
   }
-  const budget = resources.find((value) => {
+  const labels = record(record(template?.metadata)?.labels) ?? {};
+  const budgets = resources.filter((value) => {
     const item = record(value);
-    const metadata = record(item?.metadata);
-    return item?.kind === "PodDisruptionBudget" && metadata?.namespace === selector.namespace;
+    return (
+      item?.kind === "PodDisruptionBudget" &&
+      record(item.metadata)?.namespace === selector.namespace &&
+      matchesSelector(record(item.spec)?.selector, labels, item.apiVersion)
+    );
   });
-  const budgetSpec = record(record(budget)?.spec);
-  const strategy = record(spec.strategy);
+  if (budgets.length > 1)
+    throw new GateError({
+      code: "EVIDENCE_INVALID",
+      safeMessage: "Multiple pod disruption budgets select the workload",
+      retryable: false
+    });
+  const budgetSpec = record(record(budgets[0])?.spec);
+  const strategy = record(selector.kind === "Deployment" ? spec.strategy : spec.updateStrategy);
   const rollingUpdate = record(strategy?.rollingUpdate);
   return Object.freeze({
     document: workloadIndex,
+    workloadKind: selector.kind,
+    containerIndex: selectedContainer.index,
+    ...(selector.kind === "StatefulSet"
+      ? { partition: typeof rollingUpdate?.partition === "number" ? rollingUpdate.partition : 0 }
+      : {}),
     image: container.image,
     namespaceExplicit: typeof record(object.metadata)?.namespace === "string",
-    ...(typeof spec.replicas === "number" ? { replicas: spec.replicas } : {}),
-    ...(typeof strategy?.type === "string" ? { strategy: strategy.type } : {}),
+    ...(selector.kind === "DaemonSet"
+      ? {}
+      : { replicas: typeof spec.replicas === "number" ? spec.replicas : 1 }),
+    strategy: typeof strategy?.type === "string" ? strategy.type : "RollingUpdate",
     ...(typeof rollingUpdate?.maxUnavailable === "number" ||
     typeof rollingUpdate?.maxUnavailable === "string"
       ? { maxUnavailable: rollingUpdate.maxUnavailable }
-      : {}),
+      : { maxUnavailable: selector.kind === "Deployment" ? "25%" : 1 }),
     ...(typeof spec.progressDeadlineSeconds === "number"
       ? { progressDeadlineSeconds: spec.progressDeadlineSeconds }
       : {}),
-    ...(typeof spec.minReadySeconds === "number"
-      ? { minimumReadySeconds: spec.minReadySeconds }
-      : {}),
+    minimumReadySeconds: typeof spec.minReadySeconds === "number" ? spec.minReadySeconds : 0,
     podSecurityContext: Object.freeze({ ...(record(podSpec.securityContext) ?? {}) }),
     containerSecurityContext: Object.freeze({ ...(record(container.securityContext) ?? {}) }),
     ...(record(container.readinessProbe) === undefined

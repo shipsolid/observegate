@@ -33,8 +33,11 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
+  const runtime = dependencies.runtime ?? githubActionsRuntime;
+  let completed: ExecutionResult | undefined;
+  let reportPath = "";
+  let reportOptions: Parameters<typeof writeReports>[1] | undefined;
   try {
-    const runtime = dependencies.runtime ?? githubActionsRuntime;
     const inputs = readInputs(runtime);
     const service = dependencies.service ?? createActionService(dependencies.providerOptions);
     const request: ExecutionRequest = {
@@ -46,6 +49,7 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
       cancellationSignal: controller.signal
     };
     const result = await service.run(request);
+    completed = result;
     const checkCancellation = () => {
       if (controller.signal.aborted)
         throw new GateError({
@@ -64,7 +68,7 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
       };
     checkCancellation();
     const maximumTotalBytes = (await service.maximumReportBytes?.(request)) ?? 25 * 1024 * 1024;
-    const publication = await writeReports(result, {
+    reportOptions = {
       directory:
         runtime.getInput("output-directory") ||
         publicationSettings?.directory ||
@@ -72,7 +76,9 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
       formats: publicationSettings?.formats ?? ["json", "markdown", "junit", "sarif"],
       maximumTotalBytes,
       signal: controller.signal
-    });
+    };
+    const publication = await writeReports(result, reportOptions);
+    reportPath = publication.paths.json ?? "";
     checkCancellation();
     if (reporting.stepSummary) await writeStepSummary(result, runtime, reporting);
     checkCancellation();
@@ -93,8 +99,30 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
     setActionOutputs(result, publication.paths.json ?? "", runtime);
     if (shouldFail(result)) runtime.setFailed(`Observability Gate decision: ${result.decision}`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Observability Gate Action failed.";
-    (dependencies.runtime ?? githubActionsRuntime).setFailed(message);
+    const failure = error instanceof GateError ? error : new GateError({
+      code: "REPORTING",
+      safeMessage: "Action execution or report publication failed.",
+      retryable: false,
+      cause: error
+    });
+    if (completed !== undefined) {
+      const terminal: ExecutionResult = {
+        ...completed,
+        decision: completed.decision === "fail" ? "fail" : "error",
+        diagnostics: [...completed.diagnostics, failure.toDiagnostic()]
+      };
+      // Once local publication succeeded, keep its decision consistent with terminal outputs.
+      if (reportPath !== "" && reportOptions !== undefined && !controller.signal.aborted) {
+        try { await writeReports(terminal, reportOptions); }
+        catch { reportPath = ""; }
+      }
+      setActionOutputs(terminal, reportPath, runtime);
+    } else {
+      runtime.setOutput("decision", "error");
+      runtime.setOutput("report_path", "");
+    }
+    const inputFailure = error instanceof Error && /^(?:Missing input: (?:config|phase)|Input required and not supplied: (?:config|phase))$/u.test(error.message);
+    runtime.setFailed(inputFailure ? error.message : failure.safeMessage);
   } finally {
     process.off("SIGINT", cancel);
     process.off("SIGTERM", cancel);

@@ -18,6 +18,16 @@ export async function resolveComparison(
   context: Context
 ): Promise<readonly Evidence<unknown>[] | undefined> {
   if (!kind.startsWith("comparison.")) return undefined;
+  const baselineSettings = record(base.policy.release.baseline);
+  if (
+    (baselineSettings.strategy !== undefined && baselineSettings.strategy !== "explicit") ||
+    baselineSettings.lookback !== undefined ||
+    baselineSettings.exclude_incident_windows === true ||
+    baselineSettings.exclude_deployment_windows === true
+  )
+    configuration(
+      "Only explicit baselines without automatic discovery or window filtering are supported"
+    );
   const source = record(definition.source),
     a = record(definition.assertions),
     candidate = record(source.candidate ?? definition.candidate),
@@ -82,8 +92,14 @@ export async function resolveComparison(
         requests: br === undefined ? undefined : scalar(br),
         releaseId: baselineId
       },
-      minimumCandidateSamples: number(a.minimum_candidate_samples) ?? 1,
-      minimumBaselineSamples: number(a.minimum_baseline_samples) ?? 1,
+      minimumCandidateSamples:
+        number(a.minimum_candidate_samples) ??
+        number(record(base.policy.release.comparison).minimum_candidate_samples) ??
+        1,
+      minimumBaselineSamples:
+        number(a.minimum_baseline_samples) ??
+        number(record(base.policy.release.baseline).minimum_samples) ??
+        1,
       minimumCandidateRequests,
       minimumBaselineRequests,
       normalizedPerRequest: normalized,
@@ -152,13 +168,21 @@ export async function resolveComparison(
               samples: bv.length,
               releaseId: baselineId
             },
-            minimumCandidateSamples: 1,
-            minimumBaselineSamples: 1,
-            maximumRelativeRegressionPercent: number(
-              record(a.p95_relative_increase_percent).less_than_or_equal
-            ),
+            minimumCandidateSamples:
+              number(a.minimum_candidate_samples) ??
+              number(record(base.policy.release.comparison).minimum_candidate_samples) ??
+              1,
+            minimumBaselineSamples:
+              number(a.minimum_baseline_samples) ??
+              number(record(base.policy.release.baseline).minimum_samples) ??
+              1,
+            maximumRelativeRegressionPercent:
+              number(a.maximum_relative_regression_percent) ??
+              number(record(a.p95_relative_increase_percent).less_than_or_equal),
             maximumAbsoluteRegression:
-              1000 * (number(record(a.p95_absolute_increase).less_than_or_equal) ?? Infinity)
+              number(a.maximum_absolute_regression) ??
+              (record(a.p95_absolute_increase).unit === "milliseconds" ? 1 : 1000) *
+                (number(record(a.p95_absolute_increase).less_than_or_equal) ?? Infinity)
           }
         };
       })

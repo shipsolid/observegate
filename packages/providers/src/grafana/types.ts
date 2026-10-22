@@ -20,6 +20,7 @@ export interface DashboardSnapshot {
     readonly id: number;
     readonly title: string;
     readonly signal: DashboardSignal;
+    readonly signals: readonly ("traffic" | "errors" | "latency" | "saturation")[];
   }[];
   readonly variables: readonly { readonly name: string; readonly type: string }[];
 }
@@ -37,9 +38,7 @@ export interface AlertRuleSnapshot {
   readonly severity?: string;
   readonly owner?: string;
   readonly runbookUrl?: string;
-  readonly state: "normal" | "pending" | "firing" | "no_data" | "error";
-  readonly health: "ok" | "error" | "no_data";
-  readonly evaluatedAt: string;
+  readonly noDataState: "OK" | "NoData" | "Alerting" | "KeepLast";
 }
 
 export interface ActiveAlertSnapshot {
@@ -57,13 +56,18 @@ export interface NotificationRouteSnapshot {
   readonly receiver: string;
   readonly matchers: Readonly<Record<string, string>>;
   readonly muteTimeIntervals: readonly string[];
-  readonly mutedDuringDeployment: boolean;
+  readonly mutedDuringDeployment?: boolean;
+  readonly receivers: readonly string[];
+  readonly receiverConfigured?: boolean;
+  readonly unsupportedReason?: string;
 }
 
 export interface NotificationRouteRequest extends GrafanaRequestBase {
   readonly selector: Readonly<Record<string, string>>;
   readonly deploymentStart: string;
   readonly deploymentEnd: string;
+  readonly requireUnmuted?: boolean;
+  readonly verifyReceiver?: boolean;
 }
 
 export interface SloSnapshot {
@@ -72,19 +76,14 @@ export interface SloSnapshot {
   readonly objective: number;
   readonly window: string;
   readonly labels: Readonly<Record<string, string>>;
-  readonly status: "met" | "unmet" | "no_data";
-  readonly evaluatedAt: string;
-  readonly remainingBudgetPercent: number;
-  readonly consumedBudgetPercent: number;
-  readonly burnRates: readonly {
-    readonly shortWindow: string;
-    readonly longWindow: string;
-    readonly value: number;
-  }[];
+  readonly query: Readonly<Record<string, unknown>>;
+  readonly datasourceUid?: string;
+  readonly indicatorQueryIsValid?: boolean;
 }
 
 export interface SloRequest extends GrafanaRequestBase {
   readonly uid: string;
+  readonly validateIndicatorQuery?: boolean;
 }
 
 export interface GrafanaProvider {

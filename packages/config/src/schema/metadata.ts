@@ -218,19 +218,14 @@ export const configurationFields: readonly ConfigurationFieldMetadata[] = Object
     path: "release.baseline.strategy",
     type: "string",
     required: false,
-    description: "Baseline selection strategy."
+    allowedValues: ["explicit"],
+    description: "Explicit baseline only; automatic discovery is unsupported."
   },
   {
     path: "release.baseline.explicit_release_id",
     type: "string",
     required: false,
-    description: "Explicit baseline release."
-  },
-  {
-    path: "release.baseline.lookback",
-    type: "duration",
-    required: false,
-    description: "Baseline search window."
+    description: "Required baseline release ID when the baseline block is configured."
   },
   {
     path: "release.baseline.minimum_samples",
@@ -242,7 +237,8 @@ export const configurationFields: readonly ConfigurationFieldMetadata[] = Object
     path: "release.comparison.method",
     type: "string",
     required: false,
-    description: "Regression comparison method."
+    allowedValues: ["relative_and_absolute"],
+    description: "Compare relative and absolute regression limits."
   },
   {
     path: "release.comparison.minimum_candidate_samples",
@@ -254,14 +250,15 @@ export const configurationFields: readonly ConfigurationFieldMetadata[] = Object
     path: "release.comparison.low_traffic_behavior",
     type: "string",
     required: false,
-    allowedValues: ["extend_then_inconclusive"],
+    allowedValues: ["inconclusive"],
     description: "Low-traffic behavior."
   },
   {
     path: "release.comparison.maximum_extension",
     type: "duration",
     required: false,
-    description: "Maximum sampling extension."
+    allowedValues: ["0s"],
+    description: "Automatic low-traffic extension is unsupported; must be 0s."
   },
   {
     path: "observation.pre_deployment.current_health_window",

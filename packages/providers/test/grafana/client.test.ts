@@ -118,16 +118,14 @@ describe("GrafanaClient dashboards", () => {
 });
 
 describe("GrafanaClient alerting", () => {
-  it("normalizes enabled rule metadata and firing, pending, error, and stale states", async () => {
-    const { grafana } = client({
-      "/api/v1/provisioning/alert-rules": await fixture("alerts")
-    });
-    const evidence = await grafana.getAlertRules({
-      ...common,
-      selector: { service: "checkout", environment: "production" }
-    });
-
-    expect(evidence).toMatchObject({
+  it("normalizes enabled provisioning metadata independently of evaluation freshness", async () => {
+    const { grafana } = client({ "/api/v1/provisioning/alert-rules": await fixture("alerts") });
+    expect(
+      await grafana.getAlertRules({
+        ...common,
+        selector: { service: "checkout", environment: "production" }
+      })
+    ).toMatchObject({
       state: "valid",
       value: [
         {
@@ -136,31 +134,14 @@ describe("GrafanaClient alerting", () => {
           severity: "critical",
           owner: "payments-sre",
           runbookUrl: "https://runbooks.example.com/checkout-errors",
-          state: "firing",
-          health: "error"
+          noDataState: "NoData"
         },
-        { uid: "checkout-latency", state: "pending" }
+        { uid: "checkout-latency", noDataState: "NoData" }
       ]
     });
-
-    const stalePayload = [
-      {
-        uid: "old",
-        title: "Old",
-        isPaused: false,
-        labels: { service: "checkout" },
-        state: "normal",
-        health: "ok",
-        lastEvaluation: "2026-10-06T07:00:00.000Z"
-      }
-    ];
-    const stale = client({ "/api/v1/provisioning/alert-rules": stalePayload }).grafana;
-    await expect(
-      stale.getAlertRules({ ...common, selector: { service: "checkout" } })
-    ).resolves.toMatchObject({ state: "stale" });
   });
 
-  it("normalizes critical receiver routing and deployment-window mute coverage", async () => {
+  it("returns insufficient for recurring mute schedules", async () => {
     const { grafana } = client({ "/api/v1/provisioning/policies": await fixture("policy") });
     const evidence = await grafana.getNotificationRoute({
       ...common,
@@ -169,48 +150,26 @@ describe("GrafanaClient alerting", () => {
       deploymentEnd: "2026-10-06T08:05:00.000Z"
     });
     expect(evidence).toMatchObject({
-      state: "valid",
-      value: {
-        receiver: "critical-pager",
-        muteTimeIntervals: ["deployment-freeze"],
-        mutedDuringDeployment: true
-      }
+      state: "insufficient",
+      diagnostics: [{ message: expect.stringContaining("mute") }]
     });
   });
 });
 
 describe("GrafanaClient SLO", () => {
-  it("normalizes definition, status, budgets, labels, and paired burn windows", async () => {
+  it("normalizes the vendor definition objective and label schema", async () => {
     const { grafana } = client({
       "/api/plugins/grafana-slo-app/resources/v1/slo/checkout-availability": await fixture("slo")
     });
-    const evidence = await grafana.getSlo({ ...common, uid: "checkout-availability" });
-    expect(evidence).toMatchObject({
+    expect(await grafana.getSlo({ ...common, uid: "checkout-availability" })).toMatchObject({
       state: "valid",
       value: {
         uid: "checkout-availability",
         objective: 99.9,
         window: "30d",
-        labels: { service: "checkout", environment: "production" },
-        status: "met",
-        remainingBudgetPercent: 72.5,
-        consumedBudgetPercent: 27.5,
-        burnRates: [
-          { shortWindow: "5m", longWindow: "1h", value: 0.8 },
-          { shortWindow: "30m", longWindow: "6h", value: 0.4 }
-        ]
+        labels: { service: "checkout", environment: "production" }
       }
     });
-  });
-
-  it.each(["unmet", "no_data"] as const)("preserves valid %s SLO state", async (status) => {
-    const payload = { ...((await fixture("slo")) as object), status };
-    const { grafana } = client({
-      "/api/plugins/grafana-slo-app/resources/v1/slo/checkout-availability": payload
-    });
-    await expect(
-      grafana.getSlo({ ...common, uid: "checkout-availability" })
-    ).resolves.toMatchObject({ state: "valid", value: { status } });
   });
 });
 
@@ -312,5 +271,302 @@ describe("GrafanaClient active alerts", () => {
     await expect(grafana.getActiveAlerts({ ...common, selector: {} })).rejects.toMatchObject({
       code: "CANCELLED"
     });
+  });
+});
+
+describe("vendor-shaped Grafana readiness contracts", () => {
+  it("accepts provisioned configuration without evaluation-state fields", async () => {
+    const { grafana } = client({
+      "/api/v1/provisioning/alert-rules": [
+        {
+          uid: "errors",
+          title: "Errors",
+          isPaused: false,
+          condition: "A",
+          noDataState: "OK",
+          labels: { service: "checkout", severity: "critical" },
+          annotations: { runbook_url: "https://runbooks.example/errors" },
+          updated: "2020-01-01T00:00:00Z"
+        }
+      ]
+    });
+    const raw = await grafana.getAlertRules({ ...common, selector: { service: "checkout" } });
+    expect(raw).toMatchObject({
+      state: "valid",
+      value: [{ noDataState: "OK", runbookUrl: "https://runbooks.example/errors" }]
+    });
+    expect(raw.value?.[0]).not.toHaveProperty("state");
+    expect(raw.value?.[0]).not.toHaveProperty("evaluatedAt");
+  });
+  it("uses title substring and flattens row panels without counting the row", async () => {
+    const { grafana } = client({
+      "/api/dashboards/uid/d": {
+        dashboard: {
+          uid: "d",
+          title: "Checkout Overview",
+          panels: [
+            {
+              id: 1,
+              title: "RED",
+              type: "row",
+              panels: [
+                {
+                  id: 2,
+                  title: "Traffic request rate",
+                  targets: [{ expr: "rate(http_requests_total[5m])" }]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    });
+    expect(
+      await grafana.getDashboard({ ...common, uid: "d", expectedTitle: "Checkout" })
+    ).toMatchObject({
+      state: "valid",
+      value: { titleMatches: true, panels: [{ id: 2, signals: ["traffic"] }] }
+    });
+  });
+  it("resolves inherited nested receivers and verifies the contact point", async () => {
+    const { grafana } = client({
+      "/api/v1/provisioning/policies": {
+        receiver: "default",
+        routes: [
+          {
+            receiver: "pager",
+            object_matchers: [["service", "=", "checkout"]],
+            routes: [{ object_matchers: [["severity", "=", "critical"]] }]
+          }
+        ]
+      },
+      "/api/v1/provisioning/contact-points": [
+        { uid: "p", name: "pager", type: "webhook", settings: {} }
+      ]
+    });
+    expect(
+      await grafana.getNotificationRoute({
+        ...common,
+        selector: { service: "checkout", severity: "critical" },
+        deploymentStart: "2026-10-06T08:00:00Z",
+        deploymentEnd: "2026-10-06T08:05:00Z"
+      })
+    ).toMatchObject({
+      state: "valid",
+      value: { receiver: "pager", receiverConfigured: true, mutedDuringDeployment: false }
+    });
+  });
+  it("does not invent unmuted evidence for named recurring mute schedules", async () => {
+    const { grafana } = client({
+      "/api/v1/provisioning/policies": {
+        receiver: "default",
+        routes: [
+          {
+            receiver: "pager",
+            object_matchers: [["severity", "=", "critical"]],
+            mute_time_intervals: ["night"]
+          }
+        ]
+      }
+    });
+    expect(
+      await grafana.getNotificationRoute({
+        ...common,
+        selector: { severity: "critical" },
+        deploymentStart: "2026-10-06T08:00:00Z",
+        deploymentEnd: "2026-10-06T08:05:00Z"
+      })
+    ).toMatchObject({
+      state: "insufficient",
+      diagnostics: [{ message: expect.stringContaining("mute") }]
+    });
+  });
+  it("normalizes the actual SLO definition without inventing health or budget", async () => {
+    const { grafana } = client({
+      "/api/plugins/grafana-slo-app/resources/v1/slo/checkout": {
+        uuid: "checkout",
+        name: "Checkout",
+        description: "Availability",
+        objectives: [{ value: 0.999, window: "28d" }],
+        labels: [{ key: "service", value: "checkout" }],
+        query: {
+          type: "ratio",
+          ratio: {
+            successMetric: { prometheusMetric: 'requests_total{status="200"}' },
+            totalMetric: { prometheusMetric: "requests_total" }
+          }
+        },
+        destinationDatasource: { uid: "prom" },
+        readOnly: { status: { type: "created" }, creationTimestamp: 1730000000 }
+      }
+    });
+    const raw = await grafana.getSlo({ ...common, uid: "checkout" });
+    expect(raw).toMatchObject({
+      state: "valid",
+      value: { uid: "checkout", objective: 99.9, window: "28d", labels: { service: "checkout" } }
+    });
+    expect(raw.value).not.toHaveProperty("status");
+    expect(raw.value).not.toHaveProperty("remainingBudgetPercent");
+  });
+});
+
+describe("conservative Grafana evidence boundaries", () => {
+  const routeRequest = {
+    ...common,
+    selector: { service: "checkout", severity: "critical" },
+    deploymentStart: "2026-10-06T08:00:00Z",
+    deploymentEnd: "2026-10-06T08:05:00Z"
+  };
+  const contacts = [
+    { name: "default", type: "webhook", settings: {} },
+    { name: "pager", type: "webhook", settings: {} }
+  ];
+  it("uses the root default receiver when no child matches", async () => {
+    const { grafana } = client({
+      "/api/v1/provisioning/policies": {
+        receiver: "default",
+        routes: [{ receiver: "pager", object_matchers: [["service", "=", "other"]] }]
+      },
+      "/api/v1/provisioning/contact-points": contacts
+    });
+    expect(await grafana.getNotificationRoute(routeRequest)).toMatchObject({
+      state: "valid",
+      value: {
+        receiver: "default",
+        receivers: ["default"],
+        receiverConfigured: true,
+        mutedDuringDeployment: false
+      }
+    });
+  });
+  it("checks every receiver selected by continue instead of only the first", async () => {
+    const { grafana } = client({
+      "/api/v1/provisioning/policies": {
+        receiver: "default",
+        routes: [
+          { receiver: "pager", object_matchers: [["service", "=", "checkout"]], continue: true },
+          { receiver: "missing", object_matchers: [["severity", "=", "critical"]] }
+        ]
+      },
+      "/api/v1/provisioning/contact-points": contacts
+    });
+    expect(await grafana.getNotificationRoute(routeRequest)).toMatchObject({
+      state: "valid",
+      value: { receiver: "pager", receivers: ["pager", "missing"], receiverConfigured: false }
+    });
+  });
+  it.each([
+    { receiver: "pager", object_matchers: [["service", "=~", "check.*"]] },
+    { receiver: "pager", object_matchers: [["cluster", "=", "prod"]] },
+    {
+      receiver: "pager",
+      object_matchers: [["service", "=", "checkout"]],
+      active_time_intervals: ["office"]
+    }
+  ])("returns insufficient for unsupported routing or timing %j", async (route) => {
+    const { grafana } = client({
+      "/api/v1/provisioning/policies": { receiver: "default", routes: [route] }
+    });
+    expect(await grafana.getNotificationRoute(routeRequest)).toMatchObject({
+      state: "insufficient",
+      diagnostics: [{ code: "EVIDENCE_INSUFFICIENT" }]
+    });
+  });
+  it("does not claim receiver configuration when its acquisition is denied", async () => {
+    const { grafana } = client({
+      "/api/v1/provisioning/policies": { receiver: "pager" },
+      "/api/v1/provisioning/contact-points": httpError(403)
+    });
+    expect(await grafana.getNotificationRoute(routeRequest)).toMatchObject({
+      state: "unavailable"
+    });
+  });
+  it("can check routing without making unsupported timing or contact claims", async () => {
+    const { grafana, request } = client({
+      "/api/v1/provisioning/policies": { receiver: "pager", mute_time_intervals: ["office"] }
+    });
+    const raw = await grafana.getNotificationRoute({
+      ...routeRequest,
+      requireUnmuted: false,
+      verifyReceiver: false
+    });
+    expect(raw).toMatchObject({ state: "valid", value: { receiver: "pager" } });
+    expect(raw.value).not.toHaveProperty("mutedDuringDeployment");
+    expect(raw.value).not.toHaveProperty("receiverConfigured");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it("validates a freeform SLO against the explicitly selected datasource", async () => {
+    const payload = {
+      ...((await fixture("slo")) as Record<string, unknown>),
+      query: {
+        type: "freeform",
+        freeform: { sourceDatasourceUid: "source-prom", query: "sum(up)" }
+      }
+    };
+    const { grafana, request } = client({
+      "/api/plugins/grafana-slo-app/resources/v1/slo/checkout-availability": payload,
+      "/api/datasources/proxy/uid/source-prom/api/v1/query": {
+        status: "success",
+        data: { resultType: "vector", result: [] }
+      }
+    });
+    expect(
+      await grafana.getSlo({
+        ...common,
+        uid: "checkout-availability",
+        validateIndicatorQuery: true
+      })
+    ).toMatchObject({ state: "valid", value: { indicatorQueryIsValid: true } });
+    expect(new URL(String(request.mock.calls[1]?.[0].url)).searchParams.get("query")).toBe(
+      "sum(up)"
+    );
+  });
+  it.each([
+    httpError(403),
+    { status: "error", error: "bad_data" },
+    { status: "success", data: { resultType: "vector" } }
+  ])("does not synthesize indicator validity after failed validation %j", async (response) => {
+    const { grafana } = client({
+      "/api/plugins/grafana-slo-app/resources/v1/slo/checkout-availability": await fixture("slo"),
+      "/api/datasources/proxy/uid/prom/api/v1/query": response
+    });
+    const raw = await grafana.getSlo({
+      ...common,
+      uid: "checkout-availability",
+      validateIndicatorQuery: true
+    });
+    expect(raw.state).not.toBe("valid");
+    expect(raw.value).not.toHaveProperty("indicatorQueryIsValid");
+  });
+  it("rejects multiple SLO objectives instead of silently selecting the first", async () => {
+    const payload = {
+      ...((await fixture("slo")) as object),
+      objectives: [
+        { value: 0.99, window: "7d" },
+        { value: 0.999, window: "28d" }
+      ]
+    };
+    const { grafana } = client({
+      "/api/plugins/grafana-slo-app/resources/v1/slo/checkout-availability": payload
+    });
+    expect(await grafana.getSlo({ ...common, uid: "checkout-availability" })).toMatchObject({
+      state: "invalid"
+    });
+  });
+  it("does not count recording rules as paging rules", async () => {
+    const { grafana } = client({
+      "/api/v1/provisioning/alert-rules": [
+        {
+          uid: "record",
+          title: "Recorded metric",
+          isPaused: false,
+          labels: { service: "checkout" },
+          record: { metric: "http:rate5m", from: "A" }
+        }
+      ]
+    });
+    expect(
+      await grafana.getAlertRules({ ...common, selector: { service: "checkout" } })
+    ).toMatchObject({ state: "valid", value: [] });
   });
 });

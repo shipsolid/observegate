@@ -25,11 +25,10 @@ export const comparisonTelemetryVolumeGate = {
   ...gate,
   parseDefinition(input: unknown) {
     const definition = parseGateDefinition(input);
-    if (definition.enforcement === "blocking" && definition.allowBlockingBudget !== true) {
+    if (definition.enforcement === "blocking" || definition.allowBlockingBudget !== undefined) {
       throw new GateError({
         code: "CONFIG_SCHEMA",
-        safeMessage:
-          "comparison.telemetry_volume is advisory unless blocking enforcement is explicitly allowed",
+        safeMessage: "comparison.telemetry_volume supports advisory enforcement only",
         retryable: false
       });
     }

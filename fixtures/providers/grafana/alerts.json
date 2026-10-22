@@ -7,12 +7,26 @@
       "service": "checkout",
       "environment": "production",
       "severity": "critical",
-      "owner": "payments-sre",
+      "owner": "payments-sre"
+    },
+    "annotations": {
       "runbook_url": "https://runbooks.example.com/checkout-errors"
     },
-    "state": "firing",
-    "health": "error",
-    "lastEvaluation": "2026-10-06T08:00:00.000Z"
+    "noDataState": "NoData",
+    "condition": "A",
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prom",
+        "model": {
+          "expr": "up"
+        }
+      }
+    ],
+    "folderUID": "checkout",
+    "ruleGroup": "checkout",
+    "for": "5m",
+    "updated": "2026-10-06T08:00:00Z"
   },
   {
     "uid": "checkout-latency",
@@ -24,8 +38,23 @@
       "severity": "warning",
       "owner": "payments-sre"
     },
-    "state": "pending",
-    "health": "ok",
-    "lastEvaluation": "2026-10-06T07:59:55.000Z"
+    "annotations": {
+      "runbook_url": "https://runbooks.example.com/checkout-latency"
+    },
+    "noDataState": "NoData",
+    "condition": "A",
+    "data": [
+      {
+        "refId": "A",
+        "datasourceUid": "prom",
+        "model": {
+          "expr": "up"
+        }
+      }
+    ],
+    "folderUID": "checkout",
+    "ruleGroup": "checkout",
+    "for": "5m",
+    "updated": "2026-10-06T08:00:00Z"
   }
 ]

@@ -86,7 +86,10 @@ export class FakeObservabilityStack {
                       service_version: "release-candidate",
                       deployment_environment: "production"
                     },
-                    value: [epochSeconds, "0.01"]
+                    value: [
+                      epochSeconds,
+                      url.searchParams.get("query") === "slo_status" ? "1" : "0.01"
+                    ]
                   }
                 ]
         }
@@ -151,7 +154,7 @@ export class FakeObservabilityStack {
           title: "checkout",
           panels: [1, 2, 3, 4].map((id) => ({
             id,
-            title: `panel-${id}`,
+            title: ["Traffic", "Errors", "Latency", "Saturation"][id - 1],
             datasource: { type: "prometheus" }
           })),
           templating: {
@@ -176,21 +179,29 @@ export class FakeObservabilityStack {
             ],
             mute_time_intervals: []
           }
-        ],
-        mute_windows: []
+        ]
       };
     }
+    if (url.pathname === "/api/v1/provisioning/contact-points")
+      return [{ uid: "oncall", name: "oncall", type: "webhook", settings: {} }];
+    if (url.pathname.startsWith("/api/datasources/proxy/uid/"))
+      return { status: "success", data: { resultType: "vector", result: [] } };
     if (url.pathname.includes("/resources/v1/slo/")) {
       return {
-        uid: "checkout",
+        uuid: "checkout",
         name: "checkout availability",
-        objective: 99.9,
-        window: "30d",
-        labels: { service: "checkout", environment: "production" },
-        status: "met",
-        evaluatedAt: this.timestamp,
-        errorBudget: { remainingPercent: 80, consumedPercent: 20 },
-        burnRates: [{ shortWindow: "5m", longWindow: "1h", value: 0.5 }]
+        description: "Checkout availability",
+        objectives: [{ value: 0.999, window: "30d" }],
+        labels: [
+          { key: "service", value: "checkout" },
+          { key: "environment", value: "production" }
+        ],
+        destinationDatasource: { uid: "prom" },
+        query: { type: "freeform", freeform: { query: "up" } },
+        readOnly: {
+          creationTimestamp: Date.parse(this.timestamp) / 1000,
+          status: { type: "created" }
+        }
       };
     }
     return { status: "ok", release: "release-candidate" };

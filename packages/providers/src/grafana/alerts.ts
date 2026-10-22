@@ -26,22 +26,21 @@ export function normalizeAlertRules(
   const rules: AlertRuleSnapshot[] = [];
   for (const value of payload) {
     if (!isRecord(value)) return undefined;
-    const labels = stringLabels(value.labels);
+    const labels = stringLabels(value.labels ?? {});
+    const annotations = stringLabels(value.annotations ?? {});
     if (
       labels === undefined ||
+      annotations === undefined ||
       typeof value.uid !== "string" ||
       typeof value.title !== "string" ||
-      typeof value.isPaused !== "boolean" ||
-      !["normal", "pending", "firing", "no_data", "error"].includes(String(value.state)) ||
-      !["ok", "error", "no_data"].includes(String(value.health)) ||
-      typeof value.lastEvaluation !== "string" ||
-      !Number.isFinite(Date.parse(value.lastEvaluation))
-    ) {
+      typeof value.isPaused !== "boolean"
+    )
       return undefined;
-    }
-    if (Object.entries(selector).some(([key, expected]) => labels[key] !== expected)) {
-      continue;
-    }
+    // Recording rules share the provisioning endpoint but cannot page an operator.
+    if (value.record !== undefined && value.record !== null) continue;
+    if (!["OK", "NoData", "Alerting", "KeepLast"].includes(String(value.noDataState)))
+      return undefined;
+    if (Object.entries(selector).some(([key, expected]) => labels[key] !== expected)) continue;
     rules.push(
       Object.freeze({
         uid: value.uid,
@@ -50,10 +49,8 @@ export function normalizeAlertRules(
         labels,
         ...(labels.severity === undefined ? {} : { severity: labels.severity }),
         ...(labels.owner === undefined ? {} : { owner: labels.owner }),
-        ...(labels.runbook_url === undefined ? {} : { runbookUrl: labels.runbook_url }),
-        state: value.state as AlertRuleSnapshot["state"],
-        health: value.health as AlertRuleSnapshot["health"],
-        evaluatedAt: new Date(value.lastEvaluation).toISOString()
+        ...(annotations.runbook_url === undefined ? {} : { runbookUrl: annotations.runbook_url }),
+        noDataState: value.noDataState as AlertRuleSnapshot["noDataState"]
       })
     );
   }
@@ -64,51 +61,101 @@ export function normalizeNotificationRoute(
   payload: unknown,
   request: NotificationRouteRequest
 ): NotificationRouteSnapshot | undefined {
-  if (!isRecord(payload) || !Array.isArray(payload.routes)) {
-    return undefined;
-  }
-  const route = payload.routes.find((value) => {
-    if (!isRecord(value) || !Array.isArray(value.object_matchers)) return false;
-    const objectMatchers = value.object_matchers;
-    return Object.entries(request.selector).every(([key, expected]) =>
-      objectMatchers.some(
-        (matcher) =>
-          Array.isArray(matcher) &&
-          matcher[0] === key &&
-          matcher[1] === "=" &&
-          matcher[2] === expected
-      )
-    );
-  });
-  if (!isRecord(route) || typeof route.receiver !== "string") {
-    return undefined;
-  }
-  const muteTimeIntervals = route.mute_time_intervals ?? [];
+  if (!isRecord(payload)) return undefined;
   if (
-    !Array.isArray(muteTimeIntervals) ||
-    muteTimeIntervals.some((item) => typeof item !== "string")
-  ) {
+    !Number.isFinite(Date.parse(request.deploymentStart)) ||
+    !Number.isFinite(Date.parse(request.deploymentEnd)) ||
+    Date.parse(request.deploymentEnd) < Date.parse(request.deploymentStart)
+  )
     return undefined;
-  }
-  const deploymentStart = Date.parse(request.deploymentStart);
-  const deploymentEnd = Date.parse(request.deploymentEnd);
-  if (!Number.isFinite(deploymentStart) || !Number.isFinite(deploymentEnd)) {
-    return undefined;
-  }
-  const muteWindows = Array.isArray(payload.mute_windows) ? payload.mute_windows : [];
-  const mutedDuringDeployment = muteWindows.some((window) => {
-    if (!isRecord(window) || typeof window.name !== "string") return false;
-    return (
-      muteTimeIntervals.includes(window.name) &&
-      Date.parse(String(window.start)) <= deploymentStart &&
-      Date.parse(String(window.end)) >= deploymentEnd
-    );
-  });
+  const selected: { receiver: string; mute: string[]; active: string[] }[] = [];
+  let unsupported: string | undefined;
+  const matches = (route: Record<string, unknown>): boolean | undefined => {
+    if (route.matchers !== undefined || route.match_re !== undefined || route.match !== undefined) {
+      unsupported = "Unsupported notification matcher syntax; cannot establish effective routing";
+      return undefined;
+    }
+    if (route.object_matchers === undefined) return true;
+    if (!Array.isArray(route.object_matchers)) return undefined;
+    let result = true;
+    for (const m of route.object_matchers) {
+      if (!Array.isArray(m) || m.length !== 3 || m.some((v) => typeof v !== "string"))
+        return undefined;
+      const [key, operator, value] = m as [string, string, string];
+      if (operator !== "=" && operator !== "!=") {
+        unsupported =
+          "Regex notification matchers are unsupported; cannot establish effective routing";
+        return undefined;
+      }
+      // The selector is a partial label set: absent labels are unknown, not empty.
+      if (!Object.hasOwn(request.selector, key)) {
+        unsupported = "Notification routing depends on labels absent from source.match";
+        return undefined;
+      }
+      result &&=
+        operator === "=" ? request.selector[key] === value : request.selector[key] !== value;
+    }
+    return result;
+  };
+  const names = (value: unknown): string[] | undefined =>
+    value === undefined
+      ? []
+      : Array.isArray(value) && value.every((v) => typeof v === "string")
+        ? value
+        : undefined;
+  const visit = (
+    route: Record<string, unknown>,
+    inheritedReceiver: string,
+    inheritedMute: string[],
+    inheritedActive: string[],
+    depth: number
+  ): boolean => {
+    if (depth > 32) return false;
+    const receiver =
+      typeof route.receiver === "string" && route.receiver.length > 0
+        ? route.receiver
+        : inheritedReceiver;
+    const ownMute = names(route.mute_time_intervals);
+    const ownActive = names(route.active_time_intervals);
+    // Ancestor schedules also require evaluation before this path can prove unmuted.
+    const mute = ownMute === undefined ? undefined : [...inheritedMute, ...ownMute];
+    const active = ownActive === undefined ? undefined : [...inheritedActive, ...ownActive];
+    if (
+      mute === undefined ||
+      active === undefined ||
+      (route.continue !== undefined && typeof route.continue !== "boolean")
+    )
+      return false;
+    const children = route.routes ?? [];
+    if (!Array.isArray(children)) return false;
+    let matched = false;
+    for (const child of children) {
+      if (!isRecord(child)) return false;
+      const match = matches(child);
+      if (match === undefined) return false;
+      if (!match) continue;
+      matched = true;
+      if (!visit(child, receiver, mute, active, depth + 1)) return false;
+      if (child.continue !== true) break;
+    }
+    if (!matched) selected.push({ receiver, mute, active });
+    return true;
+  };
+  const complete = visit(payload, "", [], [], 0);
+  if (!complete && unsupported === undefined) return undefined;
+  const receivers = [...new Set(selected.map((v) => v.receiver))];
+  const muteTimeIntervals = [...new Set(selected.flatMap((v) => v.mute))];
+  const hasTimings = selected.some((v) => v.mute.length > 0 || v.active.length > 0);
+  if (hasTimings && request.requireUnmuted !== false)
+    unsupported =
+      "Referenced mute or active time intervals require recurring schedule evaluation, which is unsupported";
   return Object.freeze({
-    receiver: route.receiver,
+    receiver: receivers[0] ?? "",
+    receivers: Object.freeze(receivers),
     matchers: Object.freeze({ ...request.selector }),
-    muteTimeIntervals: Object.freeze([...(muteTimeIntervals as string[])]),
-    mutedDuringDeployment
+    muteTimeIntervals: Object.freeze(muteTimeIntervals),
+    ...(!hasTimings && unsupported === undefined ? { mutedDuringDeployment: false } : {}),
+    ...(unsupported === undefined ? {} : { unsupportedReason: unsupported })
   });
 }
 

@@ -21,3 +21,5 @@ export {
   type ArtifactFormat
 } from "./execution.js";
 export { gateContracts, type FieldContract } from "./schema/gate-contracts.js";
+
+export { policyJsonSchema } from "./schema/json-schema.js";

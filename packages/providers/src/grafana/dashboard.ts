@@ -30,19 +30,43 @@ export function normalizeDashboard(
   ) {
     return undefined;
   }
-  const panels = [];
-  for (const value of dashboard.panels) {
-    if (!isRecord(value) || typeof value.id !== "number" || typeof value.title !== "string") {
-      return undefined;
+  const panels: DashboardSnapshot["panels"][number][] = [];
+  const visit = (items: unknown[], depth: number): boolean => {
+    if (depth > 32) return false;
+    for (const value of items) {
+      if (!isRecord(value) || typeof value.id !== "number" || typeof value.title !== "string")
+        return false;
+      if (value.type === "row") {
+        if (
+          value.panels !== undefined &&
+          (!Array.isArray(value.panels) || !visit(value.panels, depth + 1))
+        )
+          return false;
+        continue;
+      }
+      // Operational coverage is classified from explicit panel titles, not datasource type.
+      const signals = (
+        [
+          ["traffic", /\b(?:traffic|request rate|throughput)\b/iu],
+          ["errors", /\b(?:errors?|failures?)\b/iu],
+          ["latency", /\b(?:latency|duration|response time)\b/iu],
+          ["saturation", /\b(?:saturation|utilization)\b/iu]
+        ] as const
+      )
+        .filter(([, pattern]) => pattern.test(value.title as string))
+        .map(([signal]) => signal);
+      panels.push(
+        Object.freeze({
+          id: value.id,
+          title: value.title,
+          signal: signalFor(value.datasource),
+          signals: Object.freeze(signals)
+        })
+      );
     }
-    panels.push(
-      Object.freeze({
-        id: value.id,
-        title: value.title,
-        signal: signalFor(value.datasource)
-      })
-    );
-  }
+    return true;
+  };
+  if (!visit(dashboard.panels, 0)) return undefined;
   const templating = isRecord(dashboard.templating) ? dashboard.templating : {};
   const rawVariables = templating.list === undefined ? [] : templating.list;
   if (!Array.isArray(rawVariables)) {
@@ -60,7 +84,9 @@ export function normalizeDashboard(
   return Object.freeze({
     uid: dashboard.uid,
     title: dashboard.title,
-    ...(expectedTitle === undefined ? {} : { titleMatches: dashboard.title === expectedTitle }),
+    ...(expectedTitle === undefined
+      ? {}
+      : { titleMatches: dashboard.title.includes(expectedTitle) }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
     panels: Object.freeze(panels),
     variables: Object.freeze(variables)

@@ -97,21 +97,20 @@ const releaseSchema = z
       .strict(),
     baseline: z
       .object({
-        strategy: z.string(),
-        explicit_release_id: z.string().optional(),
-        lookback: durationSchema,
+        strategy: z.literal("explicit"),
+        explicit_release_id: z.string().min(1),
         minimum_samples: z.number().int().nonnegative(),
-        exclude_incident_windows: z.boolean(),
-        exclude_deployment_windows: z.boolean()
+        exclude_incident_windows: z.literal(false).optional(),
+        exclude_deployment_windows: z.literal(false).optional()
       })
       .strict()
       .optional(),
     comparison: z
       .object({
-        method: z.string(),
+        method: z.literal("relative_and_absolute"),
         minimum_candidate_samples: z.number().int().nonnegative(),
-        low_traffic_behavior: z.string(),
-        maximum_extension: durationSchema
+        low_traffic_behavior: z.literal("inconclusive"),
+        maximum_extension: z.literal("0s")
       })
       .strict()
       .optional()
@@ -156,6 +155,16 @@ const outcomeSchema = z
   })
   .strict();
 
+function fixedDeclarations(values: [string, ...string[]]) {
+  return z
+    .array(z.enum(values))
+    .length(values.length)
+    .refine(
+      (items) => new Set(items).size === values.length,
+      "Expected the complete canonical declaration set."
+    );
+}
+
 const decisionSchema = z
   .object({
     outcomes: z
@@ -169,9 +178,17 @@ const decisionSchema = z
       .strict(),
     aggregate: z
       .object({
-        fail_when: z.array(z.string()),
-        warn_when: z.array(z.string()),
-        pass_when: z.array(z.string())
+        fail_when: fixedDeclarations([
+          "any_blocking_gate_is_fail",
+          "any_blocking_gate_is_error",
+          "any_blocking_gate_is_inconclusive",
+          "evidence_coverage_below_minimum"
+        ]),
+        warn_when: fixedDeclarations([
+          "one_or_more_advisory_gates_fail",
+          "one_or_more_gates_are_skipped"
+        ]),
+        pass_when: fixedDeclarations(["all_blocking_gates_pass"])
       })
       .strict()
       .optional()
@@ -222,13 +239,20 @@ const providersSchema = z
 
 const gateDefaultsSchema = z
   .object({
-    enabled: z.boolean().optional(),
+    enabled: z.literal(true).optional(),
     enforcement: z.enum(["blocking", "advisory"]).optional(),
     timeout: durationSchema.optional(),
-    retries: configValueSchema.optional(),
-    target: z.string().optional(),
-    emit: z.array(z.string()).optional(),
-    redact: z.array(z.string()).optional()
+    retries: z.literal("inherit").optional(),
+    target: z.literal("active").optional(),
+    emit: fixedDeclarations(["result", "evidence_summary", "remediation"]).optional(),
+    redact: fixedDeclarations([
+      "authorization",
+      "cookie",
+      "set-cookie",
+      "query_string",
+      "request_body",
+      "response_body"
+    ]).optional()
   })
   .strict();
 

@@ -270,7 +270,10 @@ export async function resolveArtifact(
     const workload = record(runtime.workload),
       name = field(workload, "name", base.environment),
       namespace = field(runtime, "namespace", base.environment),
-      workloadKind = string(workload.kind);
+      workloadKind = string(workload.kind),
+      container = field(workload, "container", base.environment);
+    if (workload.container_env !== undefined && container === undefined)
+      configuration("Kubernetes workload.container_env must resolve to a container name");
     if (
       name === undefined ||
       namespace === undefined ||
@@ -281,7 +284,12 @@ export async function resolveArtifact(
       );
     const parsed = parseKubernetesManifest(
       files.map((f) => f.content.toString("utf8")).join("\n---\n"),
-      { kind: workloadKind as "Deployment" | "StatefulSet" | "DaemonSet", name, namespace }
+      {
+        kind: workloadKind as "Deployment" | "StatefulSet" | "DaemonSet",
+        name,
+        namespace,
+        ...(container === undefined ? {} : { container })
+      }
     );
     value = {
       ...parsed,

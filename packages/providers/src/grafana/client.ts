@@ -13,7 +13,7 @@ import {
   normalizeNotificationRoute
 } from "./alerts.js";
 import { normalizeDashboard } from "./dashboard.js";
-import { normalizeSlo } from "./slo.js";
+import { indicatorQueries, normalizeSlo } from "./slo.js";
 import type {
   AlertRuleSnapshot,
   ActiveAlertSnapshot,
@@ -66,7 +66,10 @@ export class GrafanaClient implements GrafanaProvider {
       `api/dashboards/uid/${encodeURIComponent(request.uid)}`,
       "grafana.dashboard",
       "dashboard.read",
-      (payload) => normalizeDashboard(payload, request.expectedTitle),
+      (payload) => {
+        const value = normalizeDashboard(payload, request.expectedTitle);
+        return value?.uid === request.uid ? value : undefined;
+      },
       (value) => value.updatedAt
     );
   }
@@ -80,13 +83,7 @@ export class GrafanaClient implements GrafanaProvider {
       "grafana.alert-rules",
       "alerting.rules.read",
       (payload) => normalizeAlertRules(payload, request.selector),
-      (value) =>
-        value.reduce<string | undefined>(
-          (latest, rule) =>
-            latest === undefined || rule.evaluatedAt > latest ? rule.evaluatedAt : latest,
-          undefined
-        ),
-      true
+      () => new Date(this.clock()).toISOString()
     );
   }
 
@@ -112,25 +109,125 @@ export class GrafanaClient implements GrafanaProvider {
   public async getNotificationRoute(
     request: NotificationRouteRequest
   ): Promise<Evidence<NotificationRouteSnapshot>> {
-    return this.load(
+    const route = await this.load(
       request,
       "api/v1/provisioning/policies",
       "grafana.notification-route",
       "alerting.policies.read",
       (payload) => normalizeNotificationRoute(payload, request)
     );
+    if (route.state !== "valid" || route.value === undefined) return route;
+    if (route.value.unsupportedReason !== undefined)
+      return this.insufficient(route, route.value.unsupportedReason);
+    if (request.verifyReceiver === false) return route;
+    const contacts = await this.load(
+      request,
+      "api/v1/provisioning/contact-points",
+      "grafana.contact-points",
+      "alerting.receivers.read",
+      (payload) => {
+        if (
+          !Array.isArray(payload) ||
+          payload.some(
+            (v) =>
+              v === null ||
+              typeof v !== "object" ||
+              typeof v.name !== "string" ||
+              v.name.length === 0 ||
+              typeof v.type !== "string" ||
+              v.type.length === 0 ||
+              v.settings === null ||
+              typeof v.settings !== "object"
+          )
+        )
+          return undefined;
+        return payload.map((v) => String(v.name));
+      }
+    );
+    if (contacts.state !== "valid" || contacts.value === undefined)
+      return Object.freeze({ ...route, state: contacts.state, diagnostics: contacts.diagnostics });
+    return Object.freeze({
+      ...route,
+      value: Object.freeze({
+        ...route.value,
+        receiverConfigured:
+          route.value.receivers.length > 0 &&
+          route.value.receivers.every((receiver) => contacts.value?.includes(receiver))
+      })
+    });
   }
 
   public async getSlo(request: SloRequest): Promise<Evidence<SloSnapshot>> {
-    return this.load(
+    const raw = await this.load(
       request,
       `api/plugins/grafana-slo-app/resources/v1/slo/${encodeURIComponent(request.uid)}`,
       "grafana.slo",
       "slo.read",
       normalizeSlo,
-      (value) => value.evaluatedAt,
-      true
+      undefined,
+      false,
+      "Grafana SLO evidence must use uuid, labels as key/value pairs, and exactly one fractional objective with its window"
     );
+    if (raw.state !== "valid" || raw.value === undefined) return raw;
+    if (raw.value.uid !== request.uid)
+      return Object.freeze({
+        ...raw,
+        state: "invalid",
+        diagnostics: Object.freeze([
+          {
+            code: "EVIDENCE_INVALID",
+            message: "Grafana SLO UUID does not match the requested identity",
+            retryable: false
+          }
+        ])
+      });
+    if (request.validateIndicatorQuery !== true) return raw;
+    const queries = indicatorQueries(raw.value);
+    if (queries === undefined || raw.value.datasourceUid === undefined)
+      return this.insufficient(
+        raw,
+        "SLO indicator validation supports ratio/freeform Prometheus queries with an explicit datasource UID"
+      );
+    for (const query of queries) {
+      const parameters = new URLSearchParams({ query });
+      const result = await this.load(
+        request,
+        `api/datasources/proxy/uid/${encodeURIComponent(raw.value.datasourceUid)}/api/v1/query?${parameters.toString()}`,
+        "grafana.slo-indicator",
+        "datasources.query.read",
+        (payload) => {
+          if (
+            payload === null ||
+            typeof payload !== "object" ||
+            !("status" in payload) ||
+            payload.status !== "success" ||
+            !("data" in payload) ||
+            payload.data === null ||
+            typeof payload.data !== "object" ||
+            !("resultType" in payload.data) ||
+            !["vector", "scalar", "matrix"].includes(String(payload.data.resultType)) ||
+            !("result" in payload.data) ||
+            !Array.isArray(payload.data.result)
+          )
+            return undefined;
+          return true;
+        }
+      );
+      if (result.state !== "valid")
+        return Object.freeze({ ...raw, state: result.state, diagnostics: result.diagnostics });
+    }
+    return Object.freeze({
+      ...raw,
+      value: Object.freeze({ ...raw.value, indicatorQueryIsValid: true })
+    });
+  }
+
+  private insufficient<T>(raw: Evidence<T>, message: string): Evidence<T> {
+    return Object.freeze({
+      ...raw,
+      state: "insufficient",
+      diagnostics: Object.freeze([{ code: "EVIDENCE_INSUFFICIENT", message, retryable: false }])
+    });
   }
 
   private async load<T>(
@@ -140,7 +237,8 @@ export class GrafanaClient implements GrafanaProvider {
     capability: string,
     normalize: (payload: unknown) => T | undefined,
     observedAtFor?: (value: T) => string | undefined,
-    freshnessSensitive = false
+    freshnessSensitive = false,
+    invalidMessage = "Grafana returned malformed evidence"
   ): Promise<Evidence<T>> {
     const acquiredAt = new Date(this.clock()).toISOString();
     const base = {
@@ -188,7 +286,7 @@ export class GrafanaClient implements GrafanaProvider {
       const diagnostics: readonly Diagnostic[] = Object.freeze([
         {
           code: "EVIDENCE_INVALID",
-          message: "Grafana returned malformed evidence",
+          message: invalidMessage,
           retryable: false
         }
       ]);

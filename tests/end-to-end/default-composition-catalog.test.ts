@@ -165,7 +165,16 @@ function definition(kind: string): Record<string, unknown> {
   if (kind.startsWith("grafana."))
     return {
       ...base,
-      source: { provider: "grafana", uid: "checkout", match: { service: "checkout" } },
+      source: {
+        provider: "grafana",
+        uid: "checkout",
+        match: { service: "checkout", environment: "production" },
+        ...(kind === "grafana.slo_status"
+          ? { queries: { status: "slo_status" } }
+          : kind === "grafana.error_budget"
+            ? { queries: { remaining_percent: "up" } }
+            : {})
+      },
       assertions:
         kind === "grafana.burn_rate"
           ? { windows: [{ short_query: "short", long_query: "long", maximum: 1 }] }

@@ -56,7 +56,7 @@ const authentication = {
   subscription_id_env: "string"
 } as const;
 const tls = { verify: "boolean" } as const;
-const provider: FieldContract = {
+export const providerContract: FieldContract = {
   type: "string",
   endpoint: "string",
   endpoint_env: "string",
@@ -96,7 +96,7 @@ const provider: FieldContract = {
   jwks_url: "string",
   jwks_url_env: "string"
 };
-const runtime: FieldContract = {
+export const runtimeContract: FieldContract = {
   type: "string",
   provider: "string",
   distribution: "string",
@@ -144,7 +144,7 @@ const runtime: FieldContract = {
   service_name: "string",
   host_group: "string"
 };
-const security: FieldContract = {
+export const securityContract: FieldContract = {
   read_only: "boolean",
   prohibited_operations: ["string"],
   secrets: {
@@ -177,7 +177,7 @@ const security: FieldContract = {
   },
   commands: { shell_execution: "string", dynamic_plugins: "string" }
 };
-const reporting: FieldContract = {
+export const reportingContract: FieldContract = {
   github: {
     check_run: {
       enabled: "boolean",
@@ -207,18 +207,18 @@ const reporting: FieldContract = {
 export function validatePolicyContracts(policy: RawPolicy): void {
   for (const [name, definition] of Object.entries(policy.targets.definitions)) {
     const path = `targets.${name}.runtime`;
-    validateContract(definition.runtime, runtime, path);
+    validateContract(definition.runtime, runtimeContract, path);
     validateRuntime(definition.runtime, path);
   }
   for (const [group, providers] of Object.entries(policy.providers)) {
     for (const [name, definition] of Object.entries(providers ?? {})) {
       const path = `providers.${group}.${name}`;
-      validateContract(definition, provider, path);
+      validateContract(definition, providerContract, path);
       validateProvider(definition, group, path);
     }
   }
-  validateContract(policy.security, security, "security");
-  validateContract(policy.reporting, reporting, "reporting");
+  validateContract(policy.security, securityContract, "security");
+  validateContract(policy.reporting, reportingContract, "reporting");
   validateSecurity(policy.security);
   validateReporting(policy.reporting);
   validateNestedSemantics(policy.limits, "limits");
@@ -227,6 +227,21 @@ export function validatePolicyContracts(policy: RawPolicy): void {
       const contract = gateContracts[gate.type];
       if (contract === undefined) continue;
       validateGate(gate, `${phase}.${gate.id}`);
+      if (
+        [
+          "telemetry.cardinality_estimate",
+          "telemetry.volume_estimate",
+          "comparison.telemetry_volume"
+        ].includes(gate.type) &&
+        (gate.enforcement ??
+          policy.gate_defaults.enforcement ??
+          policy.execution.enforcement?.default ??
+          "blocking") !== "advisory"
+      )
+        invalid(
+          `${phase}.${gate.id}.enforcement`,
+          "Telemetry budget gates support advisory enforcement only."
+        );
       for (const key of [
         "source",
         "sources",
@@ -487,6 +502,29 @@ function validateProvider(value: Data, group: string, path: string): void {
       `${path}.authentication`,
       "Password authentication is unsupported; use bearer-token or ambient identity."
     );
+  const signature = data(value.signature);
+  const keySources = [signature.jwks_file, signature.jwks_url, signature.jwks_url_env].filter(
+    (source) => source !== undefined
+  );
+  if (keySources.length > 1)
+    invalid(
+      `${path}.signature`,
+      "Configure exactly one JWKS source: jwks_file, jwks_url or jwks_url_env."
+    );
+  if (signature.jwks_file !== undefined) {
+    requireString(signature.jwks_file, `${path}.signature.jwks_file`);
+    const file = String(signature.jwks_file);
+    if (
+      file.includes("\0") ||
+      file.startsWith("/") ||
+      file.includes(":") ||
+      file.split(/[\\/]/u).includes("..")
+    )
+      invalid(
+        `${path}.signature.jwks_file`,
+        "Expected a workspace-relative trusted JWKS filename."
+      );
+  }
   if (data(value.signature).required === false)
     invalid(`${path}.signature.required`, "Signature verification cannot be disabled.");
   for (const key of ["endpoint", "jwks_url"] as const) {
@@ -639,6 +677,36 @@ function validateReporting(value: Data): void {
 function validateGate(gate: Data, path: string): void {
   const assertions = data(gate.assertions),
     source = data(gate.source);
+  if (gate.type === "policy.self_check") {
+    const sections = [
+      "identity",
+      "targets",
+      "providers",
+      "gates.pre_deployment",
+      "gates.post_deployment",
+      "reporting",
+      "security"
+    ];
+    choices(assertions.require_sections, sections, `${path}.assertions.require_sections`);
+    if (
+      assertions.require_sections !== undefined &&
+      (assertions.require_sections as unknown[]).length !== sections.length
+    )
+      invalid(
+        `${path}.assertions.require_sections`,
+        "Self-check always requires the canonical section set."
+      );
+    mustRemainTrue(
+      assertions,
+      [
+        "unique_gate_ids",
+        "reject_unknown_fields",
+        "reject_inline_secrets",
+        "require_at_least_one_blocking_post_gate"
+      ],
+      `${path}.assertions`
+    );
+  }
   if (gate.type === "metric.threshold") {
     if (gate.assertions === undefined)
       invalid(`${path}.assertions`, "Metric thresholds require operator and threshold assertions.");
@@ -667,6 +735,90 @@ function validateGate(gate: Data, path: string): void {
         "Synthetic results require nonempty distinct named test requirements."
       );
   }
+  if (gate.type === "telemetry.cardinality_estimate" || gate.type === "telemetry.volume_estimate") {
+    const limits =
+      gate.type === "telemetry.volume_estimate"
+        ? data(assertions.estimated_growth_percent)
+        : assertions;
+    const queries = data(source.queries);
+    if (Object.keys(limits).length === 0)
+      invalid(`${path}.assertions`, "At least one per-dimension budget is required.");
+    if (source.provider !== "metrics")
+      invalid(
+        `${path}.source.provider`,
+        "Telemetry estimates require the metrics provider and explicit measured queries."
+      );
+    for (const [name, comparison] of Object.entries(limits)) {
+      requireString(queries[name], `${path}.source.queries.${name}`);
+      const limit = data(comparison).less_than_or_equal;
+      if (typeof limit !== "number" || !Number.isFinite(limit) || limit < 0)
+        invalid(
+          `${path}.assertions.${name}`,
+          "Expected a finite nonnegative less_than_or_equal budget."
+        );
+      if (!name.endsWith("_percent") && gate.type === "telemetry.cardinality_estimate")
+        count(limit, `${path}.assertions.${name}`);
+    }
+    for (const name of Object.keys(queries))
+      if (limits[name] === undefined)
+        invalid(
+          `${path}.source.queries.${name}`,
+          "Every measurement query requires its corresponding budget assertion."
+        );
+  }
+  if (gate.type === "comparison.multi_metric" || gate.type === "comparison.telemetry_volume") {
+    if (assertions.normalized_per_request === false)
+      invalid(
+        `${path}.assertions.normalized_per_request`,
+        "This comparison always normalizes per request; false is unsupported."
+      );
+  }
+  if (
+    gate.type === "comparison.trace_metrics" &&
+    data(assertions.p95_absolute_increase).unit !== undefined
+  )
+    choice(
+      data(assertions.p95_absolute_increase).unit,
+      ["seconds", "milliseconds"],
+      `${path}.assertions.p95_absolute_increase.unit`
+    );
+  if (gate.type === "grafana.dashboard")
+    choices(
+      assertions.required_panel_signals,
+      ["traffic", "errors", "latency", "saturation"],
+      `${path}.assertions.required_panel_signals`
+    );
+  if (gate.type === "grafana.slo_definition") {
+    const objective = data(assertions.objective_percent);
+    for (const [name, limit] of Object.entries(objective))
+      if (typeof limit !== "number" || limit < 0 || limit > 100)
+        invalid(
+          `${path}.assertions.objective_percent.${name}`,
+          "Expected an objective between 0 and 100 percent."
+        );
+    if (
+      typeof objective.minimum === "number" &&
+      typeof objective.maximum === "number" &&
+      objective.minimum > objective.maximum
+    )
+      invalid(`${path}.assertions.objective_percent`, "Minimum objective cannot exceed maximum.");
+    if (data(assertions.window).minimum !== undefined)
+      duration(data(assertions.window).minimum, `${path}.assertions.window.minimum`, true);
+  }
+  if (gate.type === "kubernetes.probes") {
+    if (assertions.startup_probe_required_when_startup_exceeds !== undefined)
+      invalid(
+        `${path}.assertions.startup_probe_required_when_startup_exceeds`,
+        "Measured startup duration is unavailable; use startup_probe_required."
+      );
+    if (assertions.readiness_probe_must_not_check_optional_dependencies === true)
+      invalid(
+        `${path}.assertions.readiness_probe_must_not_check_optional_dependencies`,
+        "Dependency semantics cannot be inferred from a manifest."
+      );
+  }
+  if (gate.type === "kubernetes.events")
+    choice(assertions.since, ["deployment_start"], `${path}.assertions.since`);
   if (source.adapter !== undefined) choice(source.adapter, ["active"], `${path}.source.adapter`);
   validateNestedSemantics(gate, path);
 }

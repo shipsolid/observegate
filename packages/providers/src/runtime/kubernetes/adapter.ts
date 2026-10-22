@@ -14,6 +14,7 @@ export interface KubernetesSnapshotRequest {
   readonly namespace: string;
   readonly kind: KubernetesWorkloadKind;
   readonly name: string;
+  readonly container?: string;
   readonly deploymentStartedAt: string;
   readonly signal: AbortSignal;
 }
@@ -94,6 +95,7 @@ export class KubernetesRuntimeAdapter implements RuntimeAdapter<
       const acquiredAt = new Date(this.clock()).toISOString();
       const value = normalizeKubernetesSnapshot({
         target: request.target,
+        ...(request.container === undefined ? {} : { container: request.container }),
         workload,
         replicaSets,
         pods,

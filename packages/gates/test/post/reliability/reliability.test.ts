@@ -268,7 +268,7 @@ describe("post-deployment reliability catalogue", () => {
     ).toBe(true);
   });
 
-  it("keeps telemetry volume comparison advisory unless explicitly overridden", () => {
+  it("rejects blocking telemetry volume including unsupported overrides", () => {
     const catalog = registerPostReliabilityGates(new GateCatalog());
     expect(() =>
       catalog.require("comparison.telemetry_volume", "post_deployment", { enforcement: "blocking" })
@@ -278,6 +278,6 @@ describe("post-deployment reliability catalogue", () => {
         enforcement: "blocking",
         allowBlockingBudget: true
       })
-    ).not.toThrow();
+    ).toThrow();
   });
 });

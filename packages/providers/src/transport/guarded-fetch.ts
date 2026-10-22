@@ -23,6 +23,7 @@ export interface TransportRequest {
   readonly signal: AbortSignal;
   readonly deadlineAtMs?: number;
   readonly responseType?: "json" | "none" | "text";
+  readonly onRetry?: (attempt: number) => void;
 }
 
 export interface TransportResponse<T = unknown> {
@@ -253,6 +254,7 @@ export class GuardedTransport {
           if (request.deadlineAtMs !== undefined && this.clock() + delay >= request.deadlineAtMs) {
             throw gateError;
           }
+          request.onRetry?.(attempt + 1);
           await withCancellation(() => sleepWithCancellation(delay, signal, this.sleep), signal);
         }
       }

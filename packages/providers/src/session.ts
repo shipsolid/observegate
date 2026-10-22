@@ -3,6 +3,8 @@ import {
   parseByteSize,
   type Evidence,
   type ExecutionPlan,
+  type ExecutionEvent,
+  type ProviderTiming,
   type ProviderSession
 } from "@observability-gate/core";
 import { SafeEvidenceFileLoader } from "./evidence/files.js";
@@ -61,6 +63,7 @@ export interface PolicyProviderSessionOptions {
   readonly clock?: () => number;
   readonly runtimeClients?: RuntimeClients;
   readonly plan?: ExecutionPlan;
+  readonly onEvent?: (event: ExecutionEvent) => void;
 }
 function bearerHeaders(
   configuration: Data,
@@ -80,6 +83,11 @@ export function createPolicyProviderSession(
   options: PolicyProviderSessionOptions
 ): ProviderSession {
   const now = options.clock ?? Date.now;
+  const timing = new Map<string, ProviderTiming>();
+  const recordTiming = (provider: string, startedAt: number) => {
+    const prior = timing.get(provider);
+    timing.set(provider, {provider, calls: (prior?.calls ?? 0) + 1, durationMs: (prior?.durationMs ?? 0) + Math.max(0, now() - startedAt)});
+  };
   const providerGroups = record(options.policy.providers);
   const telemetry = record(providerGroups.telemetry);
   const httpProviders = record(providerGroups.http);
@@ -122,8 +130,15 @@ export function createPolicyProviderSession(
           parseByteSize(options.policy.limits.maximum_query_length, 16 * 1024))
       )
         configuration("Provider query exceeds limits.maximum_query_length");
+      const provider = Object.entries(telemetry).find(([, value]) => {
+        const endpoint = endpointFor(record(value), options.environment);
+        return endpoint !== undefined && new URL(endpoint).origin === url.origin;
+      })?.[0] ?? (request.kind === "probe" ? "http" : "jwks");
+      const startedAt = now();
+      options.onEvent?.({name: "provider_request_started", at: new Date(startedAt).toISOString(), provider});
       return guarded.request({
         ...request,
+        onRetry: (attempt) => options.onEvent?.({name: "provider_request_retried", at: new Date(now()).toISOString(), provider, attempt}),
         ...(options.policy.execution.retries === undefined
           ? {}
           : {
@@ -149,6 +164,9 @@ export function createPolicyProviderSession(
               }
             }),
         maximumResponseBytes: Math.min(request.maximumResponseBytes, maximumResponseBytes)
+      }).finally(() => {
+        recordTiming(provider, startedAt);
+        options.onEvent?.({name: "provider_request_completed", at: new Date(now()).toISOString(), provider, durationMs: Math.max(0, now() - startedAt)});
       });
     }
   };
@@ -568,6 +586,14 @@ export function createPolicyProviderSession(
       `${gateType} has no complete evidence acquisition contract; configure a supported adapter and gate-specific source parameters`
     );
   };
+  const resolveObserved: NonNullable<ProviderSession["resolveEvidence"]> = async (kind, definition, context) => {
+    const startedAt = now();
+    const values = await resolve(kind, definition, context);
+    const localProvider = values[0]?.source.provider;
+    if (localProvider !== undefined && !["metrics", "logs", "traces", "grafana", "http"].includes(localProvider)) recordTiming(localProvider, startedAt);
+    for (const value of values) options.onEvent?.({name: value.state === "valid" ? "evidence_acquired" : "evidence_rejected", at: new Date(now()).toISOString(), provider: value.source.provider, status: value.state});
+    return values;
+  };
   const postGates = (
     options.plan === undefined
       ? array(options.policy.gates.post_deployment)
@@ -583,7 +609,8 @@ export function createPolicyProviderSession(
     .filter((g) => g.enabled !== false && g.enforcement !== "advisory");
   let generation = 0;
   return {
-    resolveEvidence: resolve,
+    resolveEvidence: resolveObserved,
+    timings: () => [...timing.values()].sort((left, right) => left.provider.localeCompare(right.provider)),
     ...(postGates.length === 0 || options.plan?.phase === "pre_deployment"
       ? {}
       : {
@@ -620,7 +647,7 @@ export function createPolicyProviderSession(
                 (Array.isArray(when.runtime_type) && !when.runtime_type.includes(type))
               )
                 continue;
-              const raw = await resolve(String(gate.type), gate, context);
+              const raw = await resolveObserved(String(gate.type), gate, context);
               if (raw.length === 0 || raw.some((item) => item.state !== "valid"))
                 successful = false;
             }

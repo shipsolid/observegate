@@ -30,6 +30,7 @@ export interface CompactDeploymentVerifierOptions {
 }
 
 export interface ExpectedDeploymentEvidence {
+  readonly deploymentId?: string;
   readonly target: string;
   readonly releaseId: string;
   readonly commit: string;
@@ -69,22 +70,8 @@ export class GuardedJwksKeyResolver {
       signal
     };
     const payload = (await this.options.transport.request(request)).data;
-    const envelope = record(payload);
-    if (!Array.isArray(envelope?.keys) || envelope.keys.length > 32) {
-      throw security("JWKS response is invalid or exceeds the key limit");
-    }
-    for (const value of envelope.keys) {
-      const key = record(value);
-      if (
-        key === undefined ||
-        typeof key.kid !== "string" ||
-        (key.use !== undefined && key.use !== "sig") ||
-        !["RSA", "EC"].includes(String(key.kty))
-      ) {
-        throw security("JWKS contains an invalid signing key");
-      }
-      this.cache.set(key.kid, key as JsonWebKeyInput["key"]);
-    }
+    const keys = parsePublicJwks(payload);
+    for (const [id, key] of keys) this.cache.set(id, key);
     const resolved = this.cache.get(kid);
     if (resolved === undefined) throw security("JWKS does not contain the requested signing key");
     return resolved;
@@ -99,6 +86,29 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function security(message: string, cause?: unknown): GateError {
   return new GateError({ code: "SECURITY_POLICY", safeMessage: message, retryable: false, cause });
+}
+
+export function parsePublicJwks(value: unknown): ReadonlyMap<string, JsonWebKeyInput["key"]> {
+  const envelope = record(value);
+  if (!Array.isArray(envelope?.keys) || envelope.keys.length === 0 || envelope.keys.length > 32)
+    throw security("JWKS is invalid or exceeds the key limit");
+  const keys = new Map<string, JsonWebKeyInput["key"]>();
+  for (const raw of envelope.keys) {
+    const key = record(raw);
+    if (key === undefined || typeof key.kid !== "string" || key.kid.length === 0 ||
+        (key.use !== undefined && key.use !== "sig") ||
+        (key.key_ops !== undefined && (!Array.isArray(key.key_ops) || !key.key_ops.includes("verify"))) ||
+        (key.kty !== "RSA" && key.kty !== "EC") ||
+        (key.kty === "EC" && key.crv !== "P-256") ||
+        (key.alg !== undefined && key.alg !== (key.kty === "RSA" ? "RS256" : "ES256")) ||
+        ["d", "p", "q", "dp", "dq", "qi", "oth", "k"].some((field) => key[field] !== undefined))
+      throw security("JWKS contains an invalid or non-public signing key");
+    if (keys.has(key.kid)) throw security("JWKS contains duplicate signing key identifiers");
+    try { createPublicKey({ key: key as JsonWebKeyInput["key"], format: "jwk" }); }
+    catch (cause) { throw security("JWKS contains a malformed public signing key", cause); }
+    keys.set(key.kid, key as JsonWebKeyInput["key"]);
+  }
+  return keys;
 }
 
 function parsePart(value: string): Record<string, unknown> {
@@ -205,6 +215,7 @@ export class CompactDeploymentVerifier {
       throw security("Signed deployment evidence is expired or issued in the future");
     }
     if (
+      (expected.deploymentId !== undefined && payload.deploymentId !== expected.deploymentId) ||
       payload.target !== expected.target ||
       payload.releaseId !== expected.releaseId ||
       payload.commit !== expected.commit ||

@@ -100,7 +100,10 @@ export function createRuntimeResolver(
         base.now
       );
       const workload = record(runtime.workload),
-        kind = string(workload.kind);
+        kind = string(workload.kind),
+        container = field(workload, "container", env);
+      if (workload.container_env !== undefined && container === undefined)
+        configuration("Kubernetes workload.container_env must resolve to a container name");
       if (kind !== "Deployment" && kind !== "StatefulSet" && kind !== "DaemonSet")
         configuration(
           "Kubernetes runtime workload.kind must be Deployment, StatefulSet, or DaemonSet"
@@ -110,6 +113,7 @@ export function createRuntimeResolver(
         namespace: required(field(runtime, "namespace", env), "namespace"),
         kind: kind as KubernetesWorkloadKind,
         name: required(field(workload, "name", env), "workload.name"),
+        ...(container === undefined ? {} : { container }),
         deploymentStartedAt:
           string(record(base.policy.release.candidate).deployed_at) ??
           new Date(base.now()).toISOString(),

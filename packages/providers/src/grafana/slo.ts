@@ -1,60 +1,77 @@
 import type { SloSnapshot } from "./types.js";
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-
-function finite(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
 export function normalizeSlo(payload: unknown): SloSnapshot | undefined {
   if (
     !isRecord(payload) ||
-    typeof payload.uid !== "string" ||
+    typeof payload.uuid !== "string" ||
     typeof payload.name !== "string" ||
-    !finite(payload.objective) ||
-    typeof payload.window !== "string" ||
-    !isRecord(payload.labels) ||
-    Object.values(payload.labels).some((value) => typeof value !== "string") ||
-    !["met", "unmet", "no_data"].includes(String(payload.status)) ||
-    typeof payload.evaluatedAt !== "string" ||
-    !Number.isFinite(Date.parse(payload.evaluatedAt)) ||
-    !isRecord(payload.errorBudget) ||
-    !finite(payload.errorBudget.remainingPercent) ||
-    !finite(payload.errorBudget.consumedPercent) ||
-    !Array.isArray(payload.burnRates)
-  ) {
+    !Array.isArray(payload.objectives) ||
+    payload.objectives.length !== 1 ||
+    !isRecord(payload.query)
+  )
     return undefined;
-  }
-  const burnRates = [];
-  for (const value of payload.burnRates) {
+  const objective: unknown = payload.objectives[0];
+  if (
+    !isRecord(objective) ||
+    typeof objective.value !== "number" ||
+    !Number.isFinite(objective.value) ||
+    objective.value < 0 ||
+    objective.value > 1 ||
+    typeof objective.window !== "string"
+  )
+    return undefined;
+  const labels: Record<string, string> = {};
+  if (payload.labels !== undefined && !Array.isArray(payload.labels)) return undefined;
+  for (const item of (payload.labels ?? []) as unknown[]) {
     if (
-      !isRecord(value) ||
-      typeof value.shortWindow !== "string" ||
-      typeof value.longWindow !== "string" ||
-      !finite(value.value)
-    ) {
+      !isRecord(item) ||
+      typeof item.key !== "string" ||
+      typeof item.value !== "string" ||
+      Object.hasOwn(labels, item.key)
+    )
       return undefined;
-    }
-    burnRates.push(
-      Object.freeze({
-        shortWindow: value.shortWindow,
-        longWindow: value.longWindow,
-        value: value.value
-      })
-    );
+    Object.defineProperty(labels, item.key, { value: item.value, enumerable: true });
   }
+  const query = payload.query;
+  const rawBody = typeof query.type === "string" ? query[query.type] : undefined;
+  const body = isRecord(rawBody) ? rawBody : undefined;
+  const destination: Record<string, unknown> = isRecord(payload.destinationDatasource)
+    ? payload.destinationDatasource
+    : {};
+  const datasourceUid =
+    typeof body?.sourceDatasourceUid === "string" ? body.sourceDatasourceUid : destination.uid;
   return Object.freeze({
-    uid: payload.uid,
+    uid: payload.uuid,
     name: payload.name,
-    objective: payload.objective,
-    window: payload.window,
-    labels: Object.freeze({ ...(payload.labels as Record<string, string>) }),
-    status: payload.status as SloSnapshot["status"],
-    evaluatedAt: new Date(payload.evaluatedAt).toISOString(),
-    remainingBudgetPercent: payload.errorBudget.remainingPercent,
-    consumedBudgetPercent: payload.errorBudget.consumedPercent,
-    burnRates: Object.freeze(burnRates)
+    objective: objective.value * 100,
+    window: objective.window,
+    labels: Object.freeze(labels),
+    query: Object.freeze({ ...query }),
+    ...(typeof datasourceUid === "string" && datasourceUid.length > 0 ? { datasourceUid } : {})
   });
+}
+export function indicatorQueries(slo: SloSnapshot): readonly string[] | undefined {
+  const query = slo.query;
+  if (
+    query.type === "freeform" &&
+    isRecord(query.freeform) &&
+    typeof query.freeform.query === "string" &&
+    query.freeform.query.trim().length > 0
+  )
+    return [query.freeform.query];
+  if (query.type === "ratio" && isRecord(query.ratio)) {
+    const { successMetric, totalMetric } = query.ratio;
+    if (
+      isRecord(successMetric) &&
+      isRecord(totalMetric) &&
+      typeof successMetric.prometheusMetric === "string" &&
+      successMetric.prometheusMetric.trim().length > 0 &&
+      typeof totalMetric.prometheusMetric === "string" &&
+      totalMetric.prometheusMetric.trim().length > 0
+    )
+      return [successMetric.prometheusMetric, totalMetric.prometheusMetric];
+  }
+  return undefined;
 }

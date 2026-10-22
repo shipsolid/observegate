@@ -95,6 +95,7 @@ export function executionReportDto(result: ExecutionResult): Readonly<Record<str
     startedAt: result.startedAt,
     completedAt: result.completedAt,
     evidenceCoveragePercent: result.evidenceCoveragePercent,
+    ...(result.providerTimings === undefined ? {} : { providerTimings: result.providerTimings.map((timing) => ({provider: timing.provider, calls: timing.calls, durationMs: timing.durationMs})) }),
     ...(result.artifactRetentionDays === undefined
       ? {}
       : { artifactRetentionDays: result.artifactRetentionDays }),
@@ -114,6 +115,22 @@ export function renderJson(result: ExecutionResult): string {
 }
 
 export function* jsonReportChunks(result: ExecutionResult): Iterable<string> {
-  yield* jsonChunks(executionReportDto(result));
-  yield "\n";
+  // Project one gate at a time so the output limit does not require a second full object graph.
+  const fields = Object.entries(executionReportDto({ ...result, gates: [] }));
+  yield "{\n";
+  for (let index = 0; index < fields.length; index += 1) {
+    const [key, value] = fields[index] as [string, unknown];
+    yield `  ${JSON.stringify(key)}: `;
+    if (key === "gates" && result.gates.length > 0) {
+      yield "[\n";
+      for (let gateIndex = 0; gateIndex < result.gates.length; gateIndex += 1) {
+        yield "    ";
+        yield* jsonChunks(gateDto(result.gates[gateIndex] as GateResult), 4);
+        yield gateIndex === result.gates.length - 1 ? "\n" : ",\n";
+      }
+      yield "  ]";
+    } else yield* jsonChunks(value, 2);
+    yield index === fields.length - 1 ? "\n" : ",\n";
+  }
+  yield "}\n";
 }

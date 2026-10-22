@@ -15,6 +15,9 @@ spec:
     matchLabels:
       app: checkout
   template:
+    metadata:
+      labels:
+        app: checkout
     spec:
       securityContext:
         runAsNonRoot: true

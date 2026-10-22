@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExecutionResult } from "@observability-gate/core";
-import { renderJson, renderJunit, renderMarkdown, renderSarif } from "../src/index.js";
+import { jsonReportChunks, renderJson, renderJunit, renderMarkdown, renderSarif } from "../src/index.js";
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error("Required report fixture value is missing.");
@@ -16,6 +16,21 @@ async function fixture(): Promise<ExecutionResult> {
 }
 
 describe("report projections", () => {
+  it("streams each gate before projecting the next gate", async () => {
+    const base = await fixture();
+    const gate = required(base.gates[0]);
+    let laterGateRead = false;
+    const later = {...gate, get assertions() { laterGateRead = true; return gate.assertions; }};
+    const iterator = jsonReportChunks({...base, gates: [gate, later]})[Symbol.iterator]();
+    let prefix = "";
+    while (!prefix.includes('"assertions"')) {
+      const chunk = iterator.next();
+      expect(chunk.done).toBe(false);
+      prefix += chunk.value;
+    }
+    expect(laterGateRead).toBe(false);
+    iterator.return?.();
+  });
   it("preserves declared artifact retention for the workflow uploader", async () => {
     const rendered = JSON.parse(renderJson({ ...(await fixture()), artifactRetentionDays: 14 }));
     expect(rendered.artifactRetentionDays).toBe(14);

@@ -76,6 +76,23 @@ function metric(value: number, labels: Record<string, string> = {}) {
 }
 
 describe("default provider session truthfulness", () => {
+  it("records provider acquisition events and timings without exposing queries", async () => {
+    const events: unknown[] = [];
+    const provider = createPolicyProviderSession({
+      policy: policy(), workspaceRoot: process.cwd(), environment: {},
+      fetch: async () => metric(1), resolveHostname: async () => ["203.0.113.10"],
+      clock: () => time,
+      onEvent: (event) => events.push(event)
+    });
+    await provider.resolveEvidence?.("metric.threshold", {source: {provider: "metrics", query: "secret-query"}, assertions: {operator: "greater_than", threshold: 0}}, context());
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({name: "provider_request_started", provider: "metrics"}),
+      expect.objectContaining({name: "provider_request_completed", provider: "metrics"}),
+      expect.objectContaining({name: "evidence_acquired"})
+    ]));
+    expect(JSON.stringify(events)).not.toContain("secret-query");
+    expect(provider.timings?.()).toEqual([expect.objectContaining({provider: "metrics", calls: 1})]);
+  });
   it("preserves a failing equality sample in a metric range", async () => {
     const provider = session(async () =>
       Response.json({

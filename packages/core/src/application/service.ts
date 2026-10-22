@@ -1,6 +1,6 @@
 import { aggregateDecision, type DecisionPolicy } from "../decisions/aggregate.js";
 import type { EvidenceRequirementCoverage } from "../decisions/coverage.js";
-import type { ExecutionRequest, ExecutionResult } from "../domain/execution.js";
+import type { ExecutionRequest, ExecutionResult, ProviderTiming } from "../domain/execution.js";
 import type { Diagnostic, GateResult } from "../domain/gates.js";
 import type { ReleaseIdentity, TargetIdentity } from "../domain/identity.js";
 import type { ExecutionPlan, ProviderRequirement } from "../domain/planning.js";
@@ -40,6 +40,7 @@ export interface ApplicationPolicyAdapter<TPolicy> {
 }
 
 export interface ProviderSession {
+  readonly timings?: () => readonly ProviderTiming[];
   readonly sample?: (signal: AbortSignal) => Promise<boolean>;
   readonly resolveEvidence?: (
     gateType: string,
@@ -262,12 +263,15 @@ export class ObservabilityGateService<TPolicy> {
         signal: deadline.signal,
         clock: this.clock,
         ...(providers.sample === undefined ? {} : { sample: providers.sample }),
-        executeGate: (gate, context) =>
-          this.dependencies.executeGate(
+        executeGate: async (gate, context) => {
+          const completed = await this.dependencies.executeGate(
             gate,
             { ...context, execution: prepared.execution },
             providers as ProviderSession
-          )
+          );
+          request.onEvent?.({name: "gate_completed", at: this.clock().toISOString(), phase: request.phase, gateId: gate.id, status: completed.status, durationMs: completed.durationMs});
+          return completed;
+        }
       });
       const summary = aggregateDecision({
         gates,
@@ -288,6 +292,7 @@ export class ObservabilityGateService<TPolicy> {
         startedAt: startedAt.toISOString(),
         completedAt: this.clock().toISOString(),
         evidenceCoveragePercent: summary.evidenceCoveragePercent,
+        ...(providers.timings === undefined ? {} : {providerTimings: providers.timings()}),
         ...(prepared.execution.artifactRetentionDays === undefined
           ? {}
           : { artifactRetentionDays: prepared.execution.artifactRetentionDays }),
@@ -295,7 +300,12 @@ export class ObservabilityGateService<TPolicy> {
           ? {}
           : { configurationFingerprint: prepared.execution.configurationFingerprint }),
         gates: summary.gates,
-        diagnostics: Object.freeze([]),
+        diagnostics: Object.freeze(summary.blockingReasons.filter((reason) => reason.gateId === "evidence-coverage").map((reason) => ({
+          code: "EVIDENCE_INVALID",
+          message: reason.message,
+          retryable: false,
+          gateId: reason.gateId
+        }))),
         links: prepared.execution.links
       });
     } catch (error) {
@@ -343,6 +353,7 @@ export class ObservabilityGateService<TPolicy> {
       initialization?.dispose();
       deadline.dispose();
     }
+    request.onEvent?.({name: "decision_completed", at: this.clock().toISOString(), phase: request.phase, decision: result.decision});
     return result;
   }
 
@@ -391,9 +402,11 @@ export class ObservabilityGateService<TPolicy> {
     readonly execution: PreparedExecution;
   }> {
     const loaded = await this.dependencies.policy.load(request);
+    request.onEvent?.({name: "configuration_loaded", at: this.clock().toISOString(), phase: request.phase});
     const policy = this.dependencies.policy.interpolate(loaded, request);
     const plan = this.dependencies.policy.createPlan(policy, request);
     const execution = this.dependencies.policy.describeExecution(policy, plan, request);
+    request.onEvent?.({name: "execution_planned", at: this.clock().toISOString(), phase: request.phase});
     return { policy, plan, execution };
   }
 }

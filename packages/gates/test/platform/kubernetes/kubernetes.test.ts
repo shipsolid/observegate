@@ -24,7 +24,7 @@ beforeAll(async () => {
   healthyPost = parsed.post;
 });
 
-function evaluate(type: string, phase: Phase, value: Value) {
+function evaluate(type: string, phase: Phase, value: Value, assertions: Value = {}) {
   const context: GateContext = {
     phase,
     targetId: "prod-checkout",
@@ -44,7 +44,7 @@ function evaluate(type: string, phase: Phase, value: Value) {
     diagnostics: []
   };
   return registerKubernetesGates(new GateCatalog())
-    .require(type, phase, {})
+    .require(type, phase, { assertions })
     .evaluate([evidence], context);
 }
 
@@ -361,5 +361,215 @@ describe("Kubernetes platform catalogue", () => {
     expect(evaluate(type, "post_deployment", value).some((item) => item.status === "failed")).toBe(
       true
     );
+  });
+});
+
+describe("Kubernetes controller and policy contracts", () => {
+  it.each(["StatefulSet", "DaemonSet"])(
+    "accepts healthy %s without Deployment conditions",
+    (workloadKind) => {
+      const value = copy(healthyPost);
+      value.workloadKind = workloadKind;
+      (value.rollout as Value).conditions = [];
+      (value.rollout as Value).currentRevision = "v2";
+      (value.rollout as Value).updateRevision = "v2";
+      expect(
+        evaluate("kubernetes.rollout_status", "post_deployment", value).every(
+          (r) => r.status === "passed"
+        )
+      ).toBe(true);
+    }
+  );
+  it("rejects a StatefulSet whose controller revisions differ", () => {
+    const value = copy(healthyPost);
+    value.workloadKind = "StatefulSet";
+    Object.assign(value.rollout as Value, { currentRevision: "v1", updateRevision: "v2" });
+    expect(
+      evaluate("kubernetes.rollout_status", "post_deployment", value).some(
+        (r) => r.status === "failed"
+      )
+    ).toBe(true);
+  });
+  it.each([{ minAvailable: 0 }, { maxUnavailable: "100%" }, { minAvailable: 4 }])(
+    "rejects ineffective disruption protection %j",
+    (disruptionBudget) => {
+      expect(
+        evaluate("kubernetes.resources", "pre_deployment", {
+          ...healthyPre,
+          disruptionBudget
+        }).some((r) => r.status === "failed")
+      ).toBe(true);
+    }
+  );
+  it("applies configured resource and readiness thresholds", () => {
+    expect(
+      evaluate("kubernetes.resources", "pre_deployment", healthyPre, {
+        production_minimum_replicas: 4
+      }).some((r) => r.status === "failed")
+    ).toBe(true);
+    expect(
+      evaluate("kubernetes.probes", "pre_deployment", healthyPre, {
+        timeout_seconds: { maximum: 1 }
+      }).some((r) => r.status === "failed")
+    ).toBe(true);
+    expect(
+      evaluate(
+        "kubernetes.pod_health",
+        "post_deployment",
+        { ...healthyPost, pods: [{ ready: true, restartIncrease: 1, probesHealthy: true }] },
+        { restart_increase: { less_than_or_equal: 2 } }
+      ).every((r) => r.status === "passed")
+    ).toBe(true);
+  });
+  it.each(["StatefulSet", "DaemonSet"])(
+    "evaluates %s strategy without Deployment-only deadlines",
+    (workloadKind) => {
+      const value = { ...healthyPre, workloadKind };
+      delete value.progressDeadlineSeconds;
+      expect(
+        evaluate("kubernetes.rollout_strategy", "pre_deployment", value).every(
+          (r) => r.status === "passed"
+        )
+      ).toBe(true);
+    }
+  );
+});
+
+describe("Kubernetes configurable assertions", () => {
+  it.each([
+    [
+      "kubernetes.manifest",
+      { forbid_privileged: false },
+      { containerSecurityContext: { privileged: true, readOnlyRootFilesystem: true } }
+    ],
+    [
+      "kubernetes.manifest",
+      { read_only_root_filesystem: false },
+      { containerSecurityContext: { readOnlyRootFilesystem: false } }
+    ],
+    ["kubernetes.manifest", { namespace_is_explicit: false }, { namespaceExplicit: false }],
+    ["kubernetes.probes", { readiness_probe_required: false }, { readinessProbe: undefined }],
+    ["kubernetes.probes", { liveness_probe_required: false }, { livenessProbe: undefined }],
+    [
+      "kubernetes.probes",
+      { failure_threshold: { minimum: 4 } },
+      {
+        readinessProbe: { failureThreshold: 4 },
+        livenessProbe: { failureThreshold: 4 },
+        startupProbe: { failureThreshold: 4 }
+      }
+    ],
+    ["kubernetes.resources", { production_minimum_replicas: 1 }, { replicas: 1 }],
+    [
+      "kubernetes.resources",
+      { disruption_budget_for_multiple_replicas: false },
+      { disruptionBudget: undefined }
+    ],
+    [
+      "kubernetes.resources",
+      { request_must_not_exceed_limit: false },
+      { resources: { requests: { cpu: "5", memory: "1Gi" }, limits: { cpu: "1", memory: "1Mi" } } }
+    ],
+    ["kubernetes.rollout_strategy", { allowed_strategies: ["Recreate"] }, { strategy: "Recreate" }],
+    [
+      "kubernetes.rollout_strategy",
+      { max_unavailable: { less_than_or_equal: 2 } },
+      { maxUnavailable: 2 }
+    ],
+    [
+      "kubernetes.rollout_strategy",
+      { progress_deadline_required: false },
+      { progressDeadlineSeconds: undefined }
+    ],
+    [
+      "kubernetes.rollout_strategy",
+      { minimum_ready_seconds: { greater_than_or_equal: 0 } },
+      { minimumReadySeconds: 0 }
+    ]
+  ] as [string, Value, Value][])("applies %s policy %j", (type, assertions, mutation) => {
+    expect(
+      evaluate(type, "pre_deployment", { ...copy(healthyPre), ...mutation }, assertions).every(
+        (r) => r.status === "passed"
+      )
+    ).toBe(true);
+  });
+  it.each([
+    ["kubernetes.probes", { startup_probe_required: true }, { startupProbe: undefined }],
+    ["kubernetes.probes", { failure_threshold: { minimum: 4 } }, {}],
+    ["kubernetes.resources", { requests_required: ["ephemeral-storage"] }, {}],
+    ["kubernetes.resources", { limits_required: ["cpu", "memory", "ephemeral-storage"] }, {}],
+    ["kubernetes.rollout_strategy", { allowed_strategies: ["OnDelete"] }, {}],
+    ["kubernetes.rollout_strategy", { minimum_ready_seconds: { greater_than_or_equal: 20 } }, {}],
+    ["kubernetes.resources", { production_minimum_replicas: 2 }, { workloadKind: "DaemonSet" }],
+    ["kubernetes.rollout_strategy", {}, { workloadKind: "DaemonSet", maxUnavailable: "25%" }],
+    ["kubernetes.rollout_strategy", {}, { workloadKind: "StatefulSet", partition: 1 }]
+  ] as [string, Value, Value][])(
+    "fails %s policy %j on violating evidence",
+    (type, assertions, mutation) => {
+      expect(
+        evaluate(type, "pre_deployment", { ...copy(healthyPre), ...mutation }, assertions).some(
+          (r) => r.status === "failed"
+        )
+      ).toBe(true);
+    }
+  );
+  it("uses configured ready percentages and forbidden pod reasons", () => {
+    const value = {
+      ...healthyPost,
+      pods: [
+        {
+          ready: true,
+          probesHealthy: true,
+          restartIncrease: 0,
+          waitingReasons: ["CustomWait"],
+          terminationReasons: []
+        },
+        {
+          ready: false,
+          probesHealthy: false,
+          restartIncrease: 0,
+          waitingReasons: [],
+          terminationReasons: []
+        }
+      ]
+    };
+    expect(
+      evaluate("kubernetes.pod_health", "post_deployment", value, {
+        ready_percent: { greater_than_or_equal: 50 }
+      }).every((r) => r.status === "passed")
+    ).toBe(true);
+    expect(
+      evaluate("kubernetes.pod_health", "post_deployment", value, {
+        ready_percent: { greater_than_or_equal: 50 },
+        forbidden_waiting_reasons: ["CustomWait"]
+      }).some((r) => r.status === "failed")
+    ).toBe(true);
+  });
+  it("allows controller assertion toggles and unavailable thresholds", () => {
+    const value = copy(healthyPost);
+    const rollout = value.rollout as Value;
+    rollout.generationObserved = false;
+    rollout.conditions = [];
+    rollout.replicas = { desired: 3, updated: 2, available: 2, unavailable: 1 };
+    expect(
+      evaluate("kubernetes.rollout_status", "post_deployment", value, {
+        observed_generation_matches: false,
+        progressing_condition: false,
+        available_condition: false,
+        updated_replicas_equal_desired: false,
+        available_replicas_equal_desired: false,
+        unavailable_replicas: { less_than_or_equal: 1 }
+      }).every((r) => r.status === "passed")
+    ).toBe(true);
+  });
+  it("reports the selected container index in manifest findings", () => {
+    const findings = evaluate("kubernetes.manifest", "pre_deployment", {
+      ...healthyPre,
+      containerIndex: 1,
+      image: "app:latest"
+    });
+    expect(findings.find((r) => r.assertion === "digest-pinned image")?.observed).toMatchObject({
+      path: "$.spec.template.spec.containers[1].image"
+    });
   });
 });

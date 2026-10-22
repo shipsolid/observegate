@@ -86,6 +86,16 @@ export function validateProviderAcquisition(
       add(
         "VM snapshots require runtime.expected_hosts and artifacts.runtime_evidence with measured host/service/agent/release facts"
       );
+    if (kind === "runtime.release_identity") {
+      const signature = record(record(record(policy.providers.evidence).deployment).signature);
+      const keySources = [signature.jwks_file, signature.jwks_url, signature.jwks_url_env].filter(
+        (value) => typeof value === "string" && value.length > 0
+      );
+      if (keySources.length !== 1)
+        add(
+          "requires exactly one trusted deployment signature JWKS source: jwks_file, jwks_url or jwks_url_env"
+        );
+    }
     if (kind === "metric.threshold") {
       if (typeof source.query !== "string")
         add("source.query must be an explicit bounded metric query");
@@ -109,6 +119,18 @@ export function validateProviderAcquisition(
       Object.keys(queries).length === 0
     )
       add("requires explicit source.queries or assertions.queries for measured quantities");
+    if (kind === "telemetry.cardinality_estimate" || kind === "telemetry.volume_estimate") {
+      const limits = kind === "telemetry.volume_estimate" ? record(a.estimated_growth_percent) : a;
+      if (Object.keys(limits).length === 0)
+        add("requires at least one per-dimension budget assertion");
+      if (source.provider !== "metrics") add("requires source.provider metrics");
+      for (const name of Object.keys(limits))
+        if (typeof record(source.queries)[name] !== "string")
+          add(`requires source.queries.${name} for the configured budget`);
+      for (const name of Object.keys(queries))
+        if (limits[name] === undefined)
+          add(`measurement ${name} requires its matching budget assertion`);
+    }
     if (
       ["telemetry.freshness", "telemetry.identity_consistency", "telemetry.correlation"].includes(
         kind
@@ -160,6 +182,10 @@ export function validateProviderAcquisition(
       add(
         "each assertions.windows pair requires short_query and long_query; a single normalized burn value cannot substitute both windows"
       );
+    if (kind === "grafana.slo_status" && typeof queries.status !== "string")
+      add("requires source.queries.status measured SLO status");
+    if (kind === "grafana.error_budget" && typeof queries.remaining_percent !== "string")
+      add("requires source.queries.remaining_percent measured error budget");
     if (
       kind === "grafana.error_budget" &&
       (a.maximum_consumed_during_release_percent !== undefined ||
