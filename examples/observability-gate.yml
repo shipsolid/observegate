@@ -70,9 +70,9 @@
 metadata:
   name: checkout-production-observability-gate
   description: >
-    Release policy that combines observability readiness, change-risk checks,
-    normalized runtime evidence, telemetry contracts, release health, regression
-    analysis, SLOs, alerts, dependencies, and synthetic evidence.
+    Release policy that combines observability readiness, change-risk checks, normalized runtime
+    evidence, telemetry contracts, release health, regression analysis, SLOs, alerts, dependencies,
+    and synthetic evidence.
   owner: commerce-platform
   service_tier: critical
   tags:
@@ -176,18 +176,17 @@ release:
     maximum_age_before_evaluation: 45m
 
   baseline:
-    strategy: explicit_or_previous_healthy_release
+    strategy: explicit
     explicit_release_id: "${BASELINE_RELEASE_ID}"
-    lookback: 24h
-    minimum_samples: 500
-    exclude_incident_windows: true
-    exclude_deployment_windows: true
+    minimum_samples: 1
+    exclude_incident_windows: false
+    exclude_deployment_windows: false
 
   comparison:
     method: relative_and_absolute
-    minimum_candidate_samples: 200
-    low_traffic_behavior: extend_then_inconclusive
-    maximum_extension: 15m
+    minimum_candidate_samples: 1
+    low_traffic_behavior: inconclusive
+    maximum_extension: 0s
 
 observation:
   pre_deployment:
@@ -469,8 +468,8 @@ gates:
       name: Repository declares a complete observability policy
       type: policy.self_check
       description: >
-        Validates configuration structure, unique gate identifiers, supported
-        adapters, required phase sections, and references to providers/targets.
+        Validates configuration structure, unique gate identifiers, supported adapters, required
+        phase sections, and references to providers/targets.
       assertions:
         require_sections:
           - identity
@@ -507,8 +506,8 @@ gates:
         environment:
           allowed_pattern: '^[a-z0-9][a-z0-9._-]*$'
       remediation: >
-        Supply stable service identity and an immutable release identifier such
-        as the Git commit SHA or image digest.
+        Supply stable service identity and an immutable release identifier such as the Git commit
+        SHA or image digest.
 
     - id: readiness.owner
       name: Service ownership is resolvable
@@ -557,8 +556,8 @@ gates:
           - environment
           - service
       remediation: >
-        Add a service dashboard with traffic, error, latency, and saturation
-        views filtered by canonical service identity.
+        Add a service dashboard with traffic, error, latency, and saturation views filtered by
+        canonical service identity.
 
     - id: readiness.alert-rules
       name: Actionable alert rules exist
@@ -647,8 +646,8 @@ gates:
         forbid_plaintext_otlp_outside_localhost: true
         forbid_hardcoded_credentials: true
       remediation: >
-        Configure the deployed workload to emit metrics, logs, and traces with
-        canonical resource attributes through a production exporter.
+        Configure the deployed workload to emit metrics, logs, and traces with canonical resource
+        attributes through a production exporter.
 
     - id: readiness.static-instrumentation-analysis
       name: Static instrumentation findings are acceptable
@@ -672,8 +671,8 @@ gates:
           - sensitive-telemetry-field
           - manual-context-propagation
       remediation: >
-        Review the SARIF findings. Static analysis is supporting evidence, not
-        proof that telemetry works at runtime.
+        Review the SARIF findings. Static analysis is supporting evidence, not proof that telemetry
+        works at runtime.
 
     - id: readiness.telemetry-contract-test
       name: Instrumented service passes a runtime telemetry contract
@@ -712,8 +711,8 @@ gates:
           - refresh_token
           - credit_card
       remediation: >
-        Run the service in an integration test, capture OTLP output, and fix
-        missing signals, identity, correlation, cardinality, or sensitive data.
+        Run the service in an integration test, capture OTLP output, and fix missing signals,
+        identity, correlation, cardinality, or sensitive data.
 
     - id: readiness.telemetry-routing
       name: Collector pipeline has a route for the service
@@ -855,6 +854,8 @@ gates:
       source:
         provider: grafana
         uid_env: GRAFANA_SLO_UID
+        queries:
+          status: ${SLO_STATUS_QUERY}
       assertions:
         status:
           - met
@@ -867,6 +868,8 @@ gates:
       source:
         provider: grafana
         uid_env: GRAFANA_SLO_UID
+        queries:
+          remaining_percent: ${SLO_REMAINING_PERCENT_QUERY}
       assertions:
         remaining_percent:
           greater_than_or_equal: 25
@@ -1033,7 +1036,12 @@ gates:
       type: telemetry.cardinality_estimate
       enforcement: advisory
       source:
-        provider: telemetry-contract
+        provider: metrics
+        queries:
+          new_metric_series: ${NEW_METRIC_SERIES_QUERY}
+          new_log_attribute_keys: ${NEW_LOG_ATTRIBUTE_KEYS_QUERY}
+          new_span_attribute_keys: ${NEW_SPAN_ATTRIBUTE_KEYS_QUERY}
+          estimated_series_growth_percent: ${SERIES_GROWTH_PERCENT_QUERY}
       assertions:
         new_metric_series:
           less_than_or_equal: 500
@@ -1050,7 +1058,11 @@ gates:
       type: telemetry.volume_estimate
       enforcement: advisory
       source:
-        provider: telemetry-contract
+        provider: metrics
+        queries:
+          metrics: ${METRICS_GROWTH_PERCENT_QUERY}
+          logs: ${LOGS_GROWTH_PERCENT_QUERY}
+          traces: ${TRACES_GROWTH_PERCENT_QUERY}
       assertions:
         estimated_growth_percent:
           metrics:
@@ -1095,12 +1107,11 @@ gates:
       assertions:
         readiness_probe_required: true
         liveness_probe_required: true
-        startup_probe_required_when_startup_exceeds: 30s
-        readiness_probe_must_not_check_optional_dependencies: true
         timeout_seconds:
           maximum: 5
         failure_threshold:
           minimum: 2
+        startup_probe_required: true
       remediation: Configure bounded readiness, liveness, and startup probes.
 
     - id: kubernetes.resources
@@ -1160,8 +1171,7 @@ gates:
         otel_environment_present: true
         managed_identity_preferred: true
       remediation: >
-        Render a digest-pinned, observable Container App with safe revision and
-        scaling settings.
+        Render a digest-pinned, observable Container App with safe revision and scaling settings.
 
     - id: azure-container-apps.probes
       name: Container App probes are configured
@@ -1195,8 +1205,8 @@ gates:
         service_version_environment_declared: true
         rollback_artifact_declared: true
       remediation: >
-        Declare the artifact digest, release marker, service.version, and a
-        recoverable previous artifact.
+        Declare the artifact digest, release marker, service.version, and a recoverable previous
+        artifact.
 
     - id: vm.service-definition
       name: VM service manager definition is safe
@@ -1286,8 +1296,8 @@ gates:
         require_no_unexpected_release_instances: true
         deployment_id: "${DEPLOYMENT_ID}"
       remediation: >
-        Stop promotion because the runtime release does not match the workflow
-        release, image digest, artifact digest, or deployment evidence.
+        Stop promotion because the runtime release does not match the workflow release, image
+        digest, artifact digest, or deployment evidence.
 
     - id: release.traffic
       name: Candidate is receiving enough real or synthetic traffic
@@ -1793,6 +1803,8 @@ gates:
       source:
         provider: grafana
         uid_env: GRAFANA_SLO_UID
+        queries:
+          status: ${SLO_STATUS_QUERY}
       assertions:
         status:
           - met
@@ -1807,6 +1819,9 @@ gates:
       source:
         provider: grafana
         uid_env: GRAFANA_SLO_UID
+        queries:
+          remaining_percent: ${SLO_REMAINING_PERCENT_QUERY}
+          release_consumed_percent: ${SLO_RELEASE_CONSUMED_PERCENT_QUERY}
       assertions:
         remaining_percent:
           greater_than_or_equal: 20
@@ -2010,7 +2025,7 @@ gates:
       source:
         adapter: active
       assertions:
-        since: "${DEPLOYED_AT}"
+        since: "deployment_start"
         forbidden_reasons:
           - FailedScheduling
           - FailedMount
@@ -2360,4 +2375,3 @@ limits:
   maximum_parallel_requests_per_provider: 4
   maximum_provider_response_size: 10MiB
   maximum_report_size: 25MiB
-

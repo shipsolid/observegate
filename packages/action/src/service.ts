@@ -75,7 +75,8 @@ export function createActionService(
           policy: context.policy,
           plan: context.plan,
           workspaceRoot: context.request.workspaceRoot,
-          environment: context.request.environment
+          environment: context.request.environment,
+          ...(context.request.onEvent === undefined ? {} : { onEvent: context.request.onEvent })
         });
       }
     },

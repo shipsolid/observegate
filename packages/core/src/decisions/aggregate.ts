@@ -95,7 +95,7 @@ export function aggregateDecision(input: AggregateDecisionInput): DecisionSummar
     decision = "error";
   } else if (blocking.some((gate) => gate.status === "failed") || coverageFailed) {
     decision = "fail";
-  } else if (blocking.some((gate) => gate.status === "inconclusive")) {
+  } else if (blocking.some((gate) => gate.status === "inconclusive" || gate.status === "warned")) {
     decision = "inconclusive";
   } else if (
     gates.some(
@@ -120,11 +120,16 @@ export function aggregateDecision(input: AggregateDecisionInput): DecisionSummar
     );
   }
   for (const gate of blocking) {
-    if (gate.status === "failed" || gate.status === "inconclusive" || gate.status === "error") {
+    if (
+      gate.status === "failed" ||
+      gate.status === "inconclusive" ||
+      gate.status === "warned" ||
+      gate.status === "error"
+    ) {
       blockingReasons.push(
         Object.freeze({
           gateId: gate.id,
-          status: gate.status,
+          status: gate.status === "warned" ? "inconclusive" : gate.status,
           message: reasonMessage(gate)
         })
       );

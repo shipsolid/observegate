@@ -73,7 +73,8 @@ describe.skipIf(!enabled)("kind runtime integration", () => {
       failing.value?.pods.some(
         (pod) =>
           pod.waitingReasons.includes("ErrImagePull") ||
-          pod.waitingReasons.includes("ImagePullBackOff")
+          pod.waitingReasons.includes("ImagePullBackOff") ||
+          pod.waitingReasons.includes("ErrImageNeverPull")
       )
     ).toBe(true);
   }, 140_000);

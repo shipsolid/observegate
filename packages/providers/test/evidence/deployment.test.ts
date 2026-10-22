@@ -171,11 +171,37 @@ describe("expected deployment run binding", () => {
   it("rejects a valid attestation replayed from another deployment ID", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const now = Date.now();
-    const expected = { target: "app", releaseId: "release", commit: "commit", artifactDigest: "sha256:digest", deploymentId: "current-run" };
+    const expected = {
+      target: "app",
+      releaseId: "release",
+      commit: "commit",
+      artifactDigest: "sha256:digest",
+      deploymentId: "current-run"
+    };
     const header = encoded({ alg: "RS256", kid: "key" });
-    const body = encoded({ ...expected, deploymentId: "previous-run", iss: "issuer", aud: "audience", sub: "subject", workflowIdentity: "workflow", deployedAt: new Date(now - 1000).toISOString(), iat: Math.floor(now / 1000), exp: Math.floor(now / 1000) + 300 });
-    const signature = sign("RSA-SHA256", Buffer.from(`${header}.${body}`), privateKey).toString("base64url");
-    const verifier = new CompactDeploymentVerifier({ trustedIssuer: "issuer", audience: "audience", expectedWorkflowIdentity: "workflow", keyResolver: async () => publicKey.export({ format: "jwk" }), clock: () => now });
-    await expect(verifier.verify(`${header}.${body}.${signature}`, expected)).rejects.toMatchObject({ code: "SECURITY_POLICY" });
+    const body = encoded({
+      ...expected,
+      deploymentId: "previous-run",
+      iss: "issuer",
+      aud: "audience",
+      sub: "subject",
+      workflowIdentity: "workflow",
+      deployedAt: new Date(now - 1000).toISOString(),
+      iat: Math.floor(now / 1000),
+      exp: Math.floor(now / 1000) + 300
+    });
+    const signature = sign("RSA-SHA256", Buffer.from(`${header}.${body}`), privateKey).toString(
+      "base64url"
+    );
+    const verifier = new CompactDeploymentVerifier({
+      trustedIssuer: "issuer",
+      audience: "audience",
+      expectedWorkflowIdentity: "workflow",
+      keyResolver: async () => publicKey.export({ format: "jwk" }),
+      clock: () => now
+    });
+    await expect(verifier.verify(`${header}.${body}.${signature}`, expected)).rejects.toMatchObject(
+      { code: "SECURITY_POLICY" }
+    );
   });
 });

@@ -66,7 +66,7 @@ export default [
                 type: "module",
                 bin: { observegate: "./observegate.js" },
                 engines: { node: ">=24" },
-                license: "Apache-2.0"
+                license: "MIT"
               },
               null,
               2

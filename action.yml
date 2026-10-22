@@ -18,6 +18,9 @@ inputs:
   github-token:
     description: Optional token for explicitly enabled GitHub reporting
     required: false
+  events-path:
+    description: Optional workspace-relative JSONL diagnostic path (no queries or credentials)
+    required: false
 outputs:
   decision:
     description: Final gate decision

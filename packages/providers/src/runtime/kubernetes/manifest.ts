@@ -98,6 +98,71 @@ function matchesSelector(
   );
 }
 
+interface SelectorRequirement {
+  readonly key: string;
+  readonly operator: string;
+  readonly values: readonly unknown[];
+}
+
+function requirements(value: unknown): readonly SelectorRequirement[] {
+  const selector = record(value);
+  return [
+    ...Object.entries(record(selector?.matchLabels) ?? {}).map(([key, value]) => ({
+      key,
+      operator: "In",
+      values: [value]
+    })),
+    ...(Array.isArray(selector?.matchExpressions) ? selector.matchExpressions : []).map((raw) => {
+      const expression = record(raw);
+      return {
+        key: String(expression?.key),
+        operator: String(expression?.operator),
+        values: Array.isArray(expression?.values) ? expression.values : []
+      };
+    })
+  ];
+}
+
+function constrainsWorkloadSelector(budget: unknown, workload: unknown): boolean {
+  const target = requirements(workload);
+  const candidates = requirements(budget);
+  // Prove each controller constraint independently. Unproven implication fails closed.
+  return (
+    target.length > 0 &&
+    target.every((required) =>
+      candidates.some((candidate) => {
+        if (candidate.key !== required.key) return false;
+        if (required.operator === "In")
+          return (
+            candidate.operator === "In" &&
+            candidate.values.length > 0 &&
+            candidate.values.every((value) => required.values.includes(value))
+          );
+        if (required.operator === "Exists")
+          return candidate.operator === "Exists" || candidate.operator === "In";
+        if (required.operator === "DoesNotExist") return candidate.operator === "DoesNotExist";
+        if (required.operator === "NotIn")
+          return (
+            candidate.operator === "DoesNotExist" ||
+            (candidate.operator === "In" &&
+              candidate.values.every((value) => !required.values.includes(value))) ||
+            (candidate.operator === "NotIn" &&
+              required.values.every((value) => candidate.values.includes(value)))
+          );
+        return false;
+      })
+    )
+  );
+}
+
+function podTemplateLabels(resource: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (resource.kind === "Pod") return record(record(resource.metadata)?.labels);
+  const spec = record(resource.spec);
+  const template =
+    record(spec?.template) ?? record(record(record(spec?.jobTemplate)?.spec)?.template);
+  return record(record(template?.metadata)?.labels);
+}
+
 export function parseKubernetesManifest(
   content: string,
   selector: KubernetesManifestSelector
@@ -170,6 +235,33 @@ export function parseKubernetesManifest(
       retryable: false
     });
   const budgetSpec = record(record(budgets[0])?.spec);
+  if (budgetSpec !== undefined) {
+    if (!constrainsWorkloadSelector(budgetSpec.selector, spec.selector))
+      throw new GateError({
+        code: "EVIDENCE_INVALID",
+        safeMessage:
+          "Pod disruption budget selector is broader than or cannot be proven to constrain the workload selector",
+        retryable: false
+      });
+    const shared = resources.some((raw, index) => {
+      const item = record(raw);
+      if (index === workloadIndex || item === undefined) return false;
+      const namespace = record(item.metadata)?.namespace;
+      if (namespace !== undefined && namespace !== selector.namespace) return false;
+      const labels = podTemplateLabels(item);
+      return (
+        labels !== undefined &&
+        matchesSelector(budgetSpec.selector, labels, record(budgets[0])?.apiVersion)
+      );
+    });
+    if (shared)
+      throw new GateError({
+        code: "EVIDENCE_INVALID",
+        safeMessage:
+          "Pod disruption budget is shared with another rendered workload and cannot prove workload-specific availability",
+        retryable: false
+      });
+  }
   const strategy = record(selector.kind === "Deployment" ? spec.strategy : spec.updateStrategy);
   const rollingUpdate = record(strategy?.rollingUpdate);
   return Object.freeze({

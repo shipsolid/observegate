@@ -1,8 +1,9 @@
-import require$$2$2, { createHash, randomUUID as randomUUID$1, createPrivateKey, verify as verify$1, createPublicKey } from 'node:crypto';
+import require$$2$2, { createHash, randomUUID as randomUUID$1, createPrivateKey, createPublicKey, verify as verify$1 } from 'node:crypto';
 import require$$3, { inspect, promisify } from 'node:util';
-import fs, { mkdir, lstat, rename, rm, open as open$2, realpath, stat, readFile, constants as constants$i } from 'node:fs/promises';
-import path, { join, isAbsolute, resolve, relative, sep as sep$1, extname, delimiter } from 'node:path';
-import require$$2$4, { existsSync, readFileSync, accessSync, constants as constants$h, statSync } from 'fs';
+import fs, { mkdir, lstat, rename, rm, open as open$2, realpath, stat, readFile, constants as constants$j } from 'node:fs/promises';
+import path, { join, isAbsolute, resolve, relative, sep as sep$1, dirname, extname, delimiter } from 'node:path';
+import fs$1, { openSync, constants as constants$h, fchmodSync, closeSync, writeSync, appendFile, appendFileSync, createReadStream, existsSync as existsSync$1 } from 'node:fs';
+import require$$2$4, { existsSync, readFileSync, accessSync, constants as constants$i, statSync } from 'fs';
 import require$$0$b, { EOL } from 'os';
 import * as require$$1 from 'http';
 import require$$1__default from 'http';
@@ -32,7 +33,6 @@ import require$$1$5 from 'node:async_hooks';
 import require$$1$6 from 'node:console';
 import require$$1$7 from 'node:dns';
 import require$$5$2 from 'string_decoder';
-import fs$1, { appendFile, appendFileSync, createReadStream, existsSync as existsSync$1 } from 'node:fs';
 import https, { request as request$5 } from 'node:https';
 import { lookup } from 'node:dns/promises';
 import require$$1$8 from 'node:sqlite';
@@ -633,7 +633,7 @@ function aggregateDecision(input) {
     else if (blocking.some((gate) => gate.status === "failed") || coverageFailed) {
         decision = "fail";
     }
-    else if (blocking.some((gate) => gate.status === "inconclusive")) {
+    else if (blocking.some((gate) => gate.status === "inconclusive" || gate.status === "warned")) {
         decision = "inconclusive";
     }
     else if (gates.some((gate) => gate.enforcement === "advisory" && gate.status !== "passed" && gate.status !== "skipped") ||
@@ -652,10 +652,13 @@ function aggregateDecision(input) {
         }));
     }
     for (const gate of blocking) {
-        if (gate.status === "failed" || gate.status === "inconclusive" || gate.status === "error") {
+        if (gate.status === "failed" ||
+            gate.status === "inconclusive" ||
+            gate.status === "warned" ||
+            gate.status === "error") {
             blockingReasons.push(Object.freeze({
                 gateId: gate.id,
-                status: gate.status,
+                status: gate.status === "warned" ? "inconclusive" : gate.status,
                 message: reasonMessage(gate)
             }));
         }
@@ -812,7 +815,18 @@ class ObservabilityGateService {
                 signal: deadline.signal,
                 clock: this.clock,
                 ...(providers.sample === undefined ? {} : { sample: providers.sample }),
-                executeGate: (gate, context) => this.dependencies.executeGate(gate, { ...context, execution: prepared.execution }, providers)
+                executeGate: async (gate, context) => {
+                    const completed = await this.dependencies.executeGate(gate, { ...context, execution: prepared.execution }, providers);
+                    request.onEvent?.({
+                        name: "gate_completed",
+                        at: this.clock().toISOString(),
+                        phase: request.phase,
+                        gateId: gate.id,
+                        status: completed.status,
+                        durationMs: completed.durationMs
+                    });
+                    return completed;
+                }
             });
             const summary = aggregateDecision({
                 gates,
@@ -828,6 +842,7 @@ class ObservabilityGateService {
                 startedAt: startedAt.toISOString(),
                 completedAt: this.clock().toISOString(),
                 evidenceCoveragePercent: summary.evidenceCoveragePercent,
+                ...(providers.timings === undefined ? {} : { providerTimings: providers.timings() }),
                 ...(prepared.execution.artifactRetentionDays === undefined
                     ? {}
                     : { artifactRetentionDays: prepared.execution.artifactRetentionDays }),
@@ -835,7 +850,14 @@ class ObservabilityGateService {
                     ? {}
                     : { configurationFingerprint: prepared.execution.configurationFingerprint }),
                 gates: summary.gates,
-                diagnostics: Object.freeze([]),
+                diagnostics: Object.freeze(summary.blockingReasons
+                    .filter((reason) => reason.gateId === "evidence-coverage")
+                    .map((reason) => ({
+                    code: "EVIDENCE_INVALID",
+                    message: reason.message,
+                    retryable: false,
+                    gateId: reason.gateId
+                }))),
                 links: prepared.execution.links
             });
         }
@@ -874,6 +896,12 @@ class ObservabilityGateService {
             initialization?.dispose();
             deadline.dispose();
         }
+        request.onEvent?.({
+            name: "decision_completed",
+            at: this.clock().toISOString(),
+            phase: request.phase,
+            decision: result.decision
+        });
         return result;
     }
     addFailure(result, failure) {
@@ -913,9 +941,19 @@ class ObservabilityGateService {
     }
     async prepare(request) {
         const loaded = await this.dependencies.policy.load(request);
+        request.onEvent?.({
+            name: "configuration_loaded",
+            at: this.clock().toISOString(),
+            phase: request.phase
+        });
         const policy = this.dependencies.policy.interpolate(loaded, request);
         const plan = this.dependencies.policy.createPlan(policy, request);
         const execution = this.dependencies.policy.describeExecution(policy, plan, request);
+        request.onEvent?.({
+            name: "execution_planned",
+            at: this.clock().toISOString(),
+            phase: request.phase
+        });
         return { policy, plan, execution };
     }
 }
@@ -1097,6 +1135,15 @@ function executionReportDto(result) {
         startedAt: result.startedAt,
         completedAt: result.completedAt,
         evidenceCoveragePercent: result.evidenceCoveragePercent,
+        ...(result.providerTimings === undefined
+            ? {}
+            : {
+                providerTimings: result.providerTimings.map((timing) => ({
+                    provider: timing.provider,
+                    calls: timing.calls,
+                    durationMs: timing.durationMs
+                }))
+            }),
         ...(result.artifactRetentionDays === undefined
             ? {}
             : { artifactRetentionDays: result.artifactRetentionDays }),
@@ -1109,8 +1156,26 @@ function executionReportDto(result) {
     };
 }
 function* jsonReportChunks(result) {
-    yield* jsonChunks(executionReportDto(result));
-    yield "\n";
+    // Project one gate at a time so the output limit does not require a second full object graph.
+    const fields = Object.entries(executionReportDto({ ...result, gates: [] }));
+    yield "{\n";
+    for (let index = 0; index < fields.length; index += 1) {
+        const [key, value] = fields[index];
+        yield `  ${JSON.stringify(key)}: `;
+        if (key === "gates" && result.gates.length > 0) {
+            yield "[\n";
+            for (let gateIndex = 0; gateIndex < result.gates.length; gateIndex += 1) {
+                yield "    ";
+                yield* jsonChunks(gateDto(result.gates[gateIndex]), 4);
+                yield gateIndex === result.gates.length - 1 ? "\n" : ",\n";
+            }
+            yield "  ]";
+        }
+        else
+            yield* jsonChunks(value, 2);
+        yield index === fields.length - 1 ? "\n" : ",\n";
+    }
+    yield "}\n";
 }
 
 function escapeXml(value) {
@@ -1247,6 +1312,14 @@ function* markdownReportChunks(result, options = {}) {
                 "## Execution diagnostics",
                 "",
                 ...result.diagnostics.map((diagnostic) => `- ${diagnostic.code}: ${diagnostic.message}`),
+                ""
+            ]),
+        ...(result.providerTimings === undefined || result.providerTimings.length === 0
+            ? []
+            : [
+                "## Provider acquisition timings",
+                "",
+                ...result.providerTimings.map((timing) => `- ${timing.provider}: ${timing.durationMs} ms across ${timing.calls} calls`),
                 ""
             ]),
         "## Gates",
@@ -1417,7 +1490,7 @@ async function stageWrite(path, chunks, maximumBytes, signal) {
         checkCancellation(signal);
         const handle = await open$2(temporaryPath, "wx", 0o600);
         let bytes = 0;
-        let pending = "";
+        const pending = Buffer.allocUnsafe(64 * 1024);
         let pendingBytes = 0;
         try {
             for (const raw of chunks) {
@@ -1436,19 +1509,17 @@ async function stageWrite(path, chunks, maximumBytes, signal) {
                             retryable: false
                         });
                     }
-                    pending += chunk;
-                    pendingBytes += chunkBytes;
-                    if (pendingBytes >= 64 * 1024) {
-                        await handle.writeFile(pending, "utf8");
-                        pending = "";
+                    if (pendingBytes + chunkBytes > pending.byteLength) {
+                        await handle.writeFile(pending.subarray(0, pendingBytes));
                         pendingBytes = 0;
                         checkCancellation(signal);
                     }
+                    pendingBytes += pending.write(chunk, pendingBytes, "utf8");
                     offset = end;
                 }
             }
             if (pendingBytes > 0)
-                await handle.writeFile(pending, "utf8");
+                await handle.writeFile(pending.subarray(0, pendingBytes));
             await handle.sync();
         }
         finally {
@@ -1539,6 +1610,80 @@ async function writeReports(result, options) {
     for (const report of staged)
         paths[report.format] = report.path;
     return Object.freeze({ paths: Object.freeze(paths), totalBytes });
+}
+
+function security$1() {
+    throw new GateError({
+        code: "SECURITY_POLICY",
+        safeMessage: "Diagnostic event path must stay inside the workspace without symlinks.",
+        retryable: false
+    });
+}
+async function createEventWriter(options) {
+    const root = await realpath(options.workspaceRoot);
+    if (isAbsolute(options.path))
+        security$1();
+    const path = resolve(root, options.path), child = relative(root, path);
+    if (child === "" || child === ".." || child.startsWith(`..${sep$1}`))
+        security$1();
+    let parent = root;
+    for (const segment of relative(root, dirname(path)).split(sep$1).filter(Boolean)) {
+        parent = join(parent, segment);
+        await mkdir(parent, { mode: 0o700 }).catch((error) => {
+            if (!(typeof error === "object" &&
+                error !== null &&
+                "code" in error &&
+                error.code === "EEXIST"))
+                throw error;
+        });
+        if ((await realpath(parent)) !== parent)
+            security$1();
+    }
+    let descriptor;
+    try {
+        descriptor = openSync(path, constants$h.O_WRONLY | constants$h.O_CREAT | constants$h.O_TRUNC | constants$h.O_NOFOLLOW, 0o600);
+    }
+    catch (cause) {
+        throw new GateError({
+            code: "REPORTING",
+            safeMessage: "Diagnostic event stream could not be opened.",
+            retryable: false,
+            cause
+        });
+    }
+    fchmodSync(descriptor, 0o600);
+    let bytes = 0, closed = false;
+    return {
+        write(event) {
+            const safe = { name: event.name, at: event.at };
+            for (const key of ["phase", "provider", "gateId", "status", "decision"]) {
+                const value = event[key];
+                if (typeof value === "string" && /^[A-Za-z0-9_.-]{1,128}$/u.test(value))
+                    safe[key] = value;
+            }
+            for (const key of ["durationMs", "attempt"]) {
+                const value = event[key];
+                if (typeof value === "number" && Number.isFinite(value) && value >= 0)
+                    safe[key] = value;
+            }
+            const line = `${JSON.stringify(safe)}\n`;
+            const size = Buffer.byteLength(line);
+            if (closed || bytes + size > (options.maximumBytes ?? 2 * 1024 * 1024))
+                throw new GateError({
+                    code: "REPORTING",
+                    safeMessage: "Diagnostic event stream exceeds its size limit.",
+                    retryable: false
+                });
+            writeSync(descriptor, line);
+            bytes += size;
+        },
+        close() {
+            if (!closed) {
+                closed = true;
+                closeSync(descriptor);
+            }
+        }
+    };
 }
 
 class Context {
@@ -43481,7 +43626,7 @@ function nanoidOfLength(length) {
     return new RegExp(`^[a-zA-Z0-9_-]{${length}}$`);
 }
 /** ISO 8601-1 duration regex. Does not support the 8601-2 extensions like negative durations or fractional/negative components. */
-const duration$1 = /^P(?:(\d+W)|(?!.*W)(?=\d|T\d)(\d+Y)?(\d+M)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+([.,]\d+)?S)?)?)$/;
+const duration$3 = /^P(?:(\d+W)|(?!.*W)(?=\d|T\d)(\d+Y)?(\d+M)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+([.,]\d+)?S)?)?)$/;
 /** A regex for any UUID-like identifier: 8-4-4-4-12 hex pattern */
 const guid = /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
 /** Returns a regex for validating an RFC 9562/4122 UUID.
@@ -44321,7 +44466,7 @@ const $ZodISOTime = /*@__PURE__*/ $constructor("$ZodISOTime", (inst, def) => {
     $ZodStringFormat.init(inst, def);
 });
 const $ZodISODuration = /*@__PURE__*/ $constructor("$ZodISODuration", (inst, def) => {
-    def.pattern ?? (def.pattern = duration$1);
+    def.pattern ?? (def.pattern = duration$3);
     $ZodStringFormat.init(inst, def);
 });
 const $ZodIPv4 = /*@__PURE__*/ $constructor("$ZodIPv4", (inst, def) => {
@@ -49047,20 +49192,19 @@ const releaseSchema = object$2({
     })
         .strict(),
     baseline: object$2({
-        strategy: string$1(),
-        explicit_release_id: string$1().optional(),
-        lookback: durationSchema,
+        strategy: literal("explicit"),
+        explicit_release_id: string$1().min(1),
         minimum_samples: number$1().int().nonnegative(),
-        exclude_incident_windows: boolean(),
-        exclude_deployment_windows: boolean()
+        exclude_incident_windows: literal(false).optional(),
+        exclude_deployment_windows: literal(false).optional()
     })
         .strict()
         .optional(),
     comparison: object$2({
-        method: string$1(),
+        method: literal("relative_and_absolute"),
         minimum_candidate_samples: number$1().int().nonnegative(),
-        low_traffic_behavior: string$1(),
-        maximum_extension: durationSchema
+        low_traffic_behavior: literal("inconclusive"),
+        maximum_extension: literal("0s")
     })
         .strict()
         .optional()
@@ -49097,6 +49241,12 @@ const outcomeSchema = object$2({
     conclusion: string$1().min(1)
 })
     .strict();
+function fixedDeclarations(values) {
+    return array$1(_enum(values))
+        .length(values.length)
+        .refine((items) => new Set(items).size === values.length, "Expected the complete canonical declaration set.")
+        .meta({ uniqueItems: true });
+}
 const decisionSchema = object$2({
     outcomes: object$2({
         pass: outcomeSchema,
@@ -49107,9 +49257,17 @@ const decisionSchema = object$2({
     })
         .strict(),
     aggregate: object$2({
-        fail_when: array$1(string$1()),
-        warn_when: array$1(string$1()),
-        pass_when: array$1(string$1())
+        fail_when: fixedDeclarations([
+            "any_blocking_gate_is_fail",
+            "any_blocking_gate_is_error",
+            "any_blocking_gate_is_inconclusive",
+            "evidence_coverage_below_minimum"
+        ]),
+        warn_when: fixedDeclarations([
+            "one_or_more_advisory_gates_fail",
+            "one_or_more_gates_are_skipped"
+        ]),
+        pass_when: fixedDeclarations(["all_blocking_gates_pass"])
     })
         .strict()
         .optional()
@@ -49152,13 +49310,20 @@ const providersSchema = object$2({
 })
     .strict();
 const gateDefaultsSchema = object$2({
-    enabled: boolean().optional(),
+    enabled: literal(true).optional(),
     enforcement: _enum(["blocking", "advisory"]).optional(),
     timeout: durationSchema.optional(),
-    retries: configValueSchema.optional(),
-    target: string$1().optional(),
-    emit: array$1(string$1()).optional(),
-    redact: array$1(string$1()).optional()
+    retries: literal("inherit").optional(),
+    target: literal("active").optional(),
+    emit: fixedDeclarations(["result", "evidence_summary", "remediation"]).optional(),
+    redact: fixedDeclarations([
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "query_string",
+        "request_body",
+        "response_body"
+    ]).optional()
 })
     .strict();
 const gatesSchema = object$2({
@@ -51518,73 +51683,12 @@ const gateContracts = {
     "telemetry.cardinality_estimate": {
         source: {
             provider: "string",
-            query: {
-                anyOf: [
-                    "string",
-                    {
-                        "resource.service.name": "string",
-                        "resource.service.namespace": "string",
-                        "resource.service.version": "string",
-                        "resource.deployment.environment.name": "string"
-                    }
-                ]
-            },
             queries: {
-                "*": {
-                    anyOf: [
-                        "string",
-                        {
-                            candidate: {
-                                release_id: "string",
-                                query: "string",
-                                request_count_query: "string"
-                            },
-                            baseline: {
-                                release_id: "string",
-                                query: "string",
-                                request_count_query: "string"
-                            },
-                            candidate_query: "string",
-                            baseline_query: "string",
-                            candidate_request_count_query: "string",
-                            baseline_request_count_query: "string",
-                            unit: "string"
-                        }
-                    ]
-                }
-            },
-            request_count_query: "string",
-            candidate_query: "string",
-            baseline_query: "string",
-            files: ["string"],
-            file: "string",
-            url: "string",
-            url_env: "string",
-            uid: "string",
-            uid_env: "string",
-            caller: "string",
-            traffic_observed: "boolean",
-            sampling_probability: "number",
-            runtime_release_query: "string",
-            probes: {
-                "*": {
-                    query: {
-                        anyOf: [
-                            "string",
-                            {
-                                "resource.service.name": "string",
-                                "resource.service.namespace": "string",
-                                "resource.service.version": "string",
-                                "resource.deployment.environment.name": "string"
-                            }
-                        ]
-                    },
-                    uid: "string"
-                }
-            },
-            candidate_request_count_query: "string",
-            baseline_request_count_query: "string",
-            window: "string"
+                new_metric_series: "string",
+                new_log_attribute_keys: "string",
+                new_span_attribute_keys: "string",
+                estimated_series_growth_percent: "string"
+            }
         },
         assertions: {
             new_metric_series: {
@@ -51618,73 +51722,11 @@ const gateContracts = {
     "telemetry.volume_estimate": {
         source: {
             provider: "string",
-            query: {
-                anyOf: [
-                    "string",
-                    {
-                        "resource.service.name": "string",
-                        "resource.service.namespace": "string",
-                        "resource.service.version": "string",
-                        "resource.deployment.environment.name": "string"
-                    }
-                ]
-            },
             queries: {
-                "*": {
-                    anyOf: [
-                        "string",
-                        {
-                            candidate: {
-                                release_id: "string",
-                                query: "string",
-                                request_count_query: "string"
-                            },
-                            baseline: {
-                                release_id: "string",
-                                query: "string",
-                                request_count_query: "string"
-                            },
-                            candidate_query: "string",
-                            baseline_query: "string",
-                            candidate_request_count_query: "string",
-                            baseline_request_count_query: "string",
-                            unit: "string"
-                        }
-                    ]
-                }
-            },
-            request_count_query: "string",
-            candidate_query: "string",
-            baseline_query: "string",
-            files: ["string"],
-            file: "string",
-            url: "string",
-            url_env: "string",
-            uid: "string",
-            uid_env: "string",
-            caller: "string",
-            traffic_observed: "boolean",
-            sampling_probability: "number",
-            runtime_release_query: "string",
-            probes: {
-                "*": {
-                    query: {
-                        anyOf: [
-                            "string",
-                            {
-                                "resource.service.name": "string",
-                                "resource.service.namespace": "string",
-                                "resource.service.version": "string",
-                                "resource.deployment.environment.name": "string"
-                            }
-                        ]
-                    },
-                    uid: "string"
-                }
-            },
-            candidate_request_count_query: "string",
-            baseline_request_count_query: "string",
-            window: "string"
+                metrics: "string",
+                logs: "string",
+                traces: "string"
+            }
         },
         assertions: {
             estimated_growth_percent: {
@@ -51896,6 +51938,7 @@ const gateContracts = {
             window: "string"
         },
         assertions: {
+            startup_probe_required: "boolean",
             readiness_probe_required: "boolean",
             liveness_probe_required: "boolean",
             startup_probe_required_when_startup_exceeds: "string",
@@ -53583,11 +53626,11 @@ const gateContracts = {
             window: "string"
         },
         assertions: {
-            absolute_increase_percentage_points: "any",
-            relative_increase_percent: "any",
+            absolute_increase_percentage_points: { less_than_or_equal: "number" },
+            relative_increase_percent: { less_than_or_equal: "number" },
             minimum_candidate_requests: "number",
             minimum_baseline_requests: "number",
-            absolute_increase: "any",
+            absolute_increase: { less_than_or_equal: "number", unit: "string" },
             absolute_decrease_percentage_points: {
                 less_than_or_equal: "number"
             },
@@ -55471,7 +55514,7 @@ const authentication = {
     subscription_id_env: "string"
 };
 const tls = { verify: "boolean" };
-const provider = {
+const providerContract = {
     type: "string",
     endpoint: "string",
     endpoint_env: "string",
@@ -55511,7 +55554,7 @@ const provider = {
     jwks_url: "string",
     jwks_url_env: "string"
 };
-const runtime = {
+const runtimeContract = {
     type: "string",
     provider: "string",
     distribution: "string",
@@ -55559,7 +55602,7 @@ const runtime = {
     service_name: "string",
     host_group: "string"
 };
-const security$1 = {
+const securityContract = {
     read_only: "boolean",
     prohibited_operations: ["string"],
     secrets: {
@@ -55592,7 +55635,7 @@ const security$1 = {
     },
     commands: { shell_execution: "string", dynamic_plugins: "string" }
 };
-const reporting = {
+const reportingContract = {
     github: {
         check_run: {
             enabled: "boolean",
@@ -55621,18 +55664,18 @@ const reporting = {
 function validatePolicyContracts(policy) {
     for (const [name, definition] of Object.entries(policy.targets.definitions)) {
         const path = `targets.${name}.runtime`;
-        validateContract(definition.runtime, runtime, path);
+        validateContract(definition.runtime, runtimeContract, path);
         validateRuntime(definition.runtime, path);
     }
     for (const [group, providers] of Object.entries(policy.providers)) {
         for (const [name, definition] of Object.entries(providers ?? {})) {
             const path = `providers.${group}.${name}`;
-            validateContract(definition, provider, path);
+            validateContract(definition, providerContract, path);
             validateProvider(definition, group, path);
         }
     }
-    validateContract(policy.security, security$1, "security");
-    validateContract(policy.reporting, reporting, "reporting");
+    validateContract(policy.security, securityContract, "security");
+    validateContract(policy.reporting, reportingContract, "reporting");
     validateSecurity(policy.security);
     validateReporting(policy.reporting);
     validateNestedSemantics(policy.limits, "limits");
@@ -55642,6 +55685,16 @@ function validatePolicyContracts(policy) {
             if (contract === undefined)
                 continue;
             validateGate(gate, `${phase}.${gate.id}`);
+            if ([
+                "telemetry.cardinality_estimate",
+                "telemetry.volume_estimate",
+                "comparison.telemetry_volume"
+            ].includes(gate.type) &&
+                (gate.enforcement ??
+                    policy.gate_defaults.enforcement ??
+                    policy.execution.enforcement?.default ??
+                    "blocking") !== "advisory")
+                invalid$5(`${phase}.${gate.id}.enforcement`, "Telemetry budget gates support advisory enforcement only.");
             for (const key of [
                 "source",
                 "sources",
@@ -55700,7 +55753,7 @@ function requireString(value, path) {
     if (typeof value !== "string" || value.trim().length === 0)
         invalid$5(path, "Expected a nonempty string.");
 }
-function duration(value, path, positive = false) {
+function duration$2(value, path, positive = false) {
     if (!durationSchema.safeParse(value).success ||
         (positive && Number.parseFloat(String(value)) <= 0))
         invalid$5(path, "Expected a bounded duration.");
@@ -55808,24 +55861,24 @@ function validateNestedSemantics(value, path) {
                 typeof item === "object" &&
                 !Array.isArray(item)) {
                 for (const [signal, limit] of Object.entries(item))
-                    duration(limit, `${location}.${signal}`);
+                    duration$2(limit, `${location}.${signal}`);
             }
             else
-                duration(item, location, key === "request_timeout" || key === "timeout");
+                duration$2(item, location, key === "request_timeout" || key === "timeout");
         }
         if (key === "window" && typeof item === "string")
-            duration(item, location);
+            duration$2(item, location);
         if (path.endsWith(".window") && (key === "minimum" || key === "maximum"))
-            duration(item, location);
+            duration$2(item, location);
         if (key === "maximum_duration") {
             if (typeof item === "string")
-                duration(item, location, true);
+                duration$2(item, location, true);
             else
                 for (const [name, limit] of Object.entries(data(item)))
-                    duration(limit, `${location}.${name}`, true);
+                    duration$2(limit, `${location}.${name}`, true);
         }
         if (path.endsWith(".last_successful_export_age") && key === "less_than_or_equal")
-            duration(item, location);
+            duration$2(item, location);
         if (bytes.has(key) && parseByteSize(item, -1) < 1)
             invalid$5(location, "Expected a positive byte count or B/KiB/MiB size.");
         if (/^(?:minimum|maximum|consecutive|required_consecutive)_(?:.*_)?(?:samples|requests|records|traces|replicas|instances|panels|rules|events|hosts)$/u.test(key))
@@ -55886,6 +55939,19 @@ function validateProvider(value, group, path) {
     choice(auth.strategy, ["ambient_or_kubeconfig", "workload_identity", "bearer_token", "ambient"], `${path}.authentication.strategy`);
     if (auth.username_env !== undefined || auth.password_env !== undefined)
         invalid$5(`${path}.authentication`, "Password authentication is unsupported; use bearer-token or ambient identity.");
+    const signature = data(value.signature);
+    const keySources = [signature.jwks_file, signature.jwks_url, signature.jwks_url_env].filter((source) => source !== undefined);
+    if (keySources.length > 1)
+        invalid$5(`${path}.signature`, "Configure exactly one JWKS source: jwks_file, jwks_url or jwks_url_env.");
+    if (signature.jwks_file !== undefined) {
+        requireString(signature.jwks_file, `${path}.signature.jwks_file`);
+        const file = String(signature.jwks_file);
+        if (file.includes("\0") ||
+            file.startsWith("/") ||
+            file.includes(":") ||
+            file.split(/[\\/]/u).includes(".."))
+            invalid$5(`${path}.signature.jwks_file`, "Expected a workspace-relative trusted JWKS filename.");
+    }
     if (data(value.signature).required === false)
         invalid$5(`${path}.signature.required`, "Signature verification cannot be disabled.");
     for (const key of ["endpoint", "jwks_url"]) {
@@ -55981,6 +56047,37 @@ function validateReporting(value) {
 }
 function validateGate(gate, path) {
     const assertions = data(gate.assertions), source = data(gate.source);
+    if (source.provider === "traces" && typeof source.query === "string")
+        invalid$5(`${path}.source.query`, "Raw TraceQL is unsupported; use an identity-object trace selector.");
+    if (gate.type === "telemetry.query_validation") {
+        choices(assertions.validate_queries_from, ["gates.pre_deployment", "gates.post_deployment"], `${path}.assertions.validate_queries_from`);
+        if (assertions.maximum_query_range !== undefined)
+            duration$2(assertions.maximum_query_range, `${path}.assertions.maximum_query_range`, true);
+        for (const [name, provider] of Object.entries(data(gate.sources)))
+            if (!["metrics", "logs", "traces"].includes(name) || provider !== name)
+                invalid$5(`${path}.sources.${name}`, "Use the canonical metrics, logs, or traces provider name.");
+    }
+    if (gate.type === "policy.self_check") {
+        const sections = [
+            "identity",
+            "targets",
+            "providers",
+            "gates.pre_deployment",
+            "gates.post_deployment",
+            "reporting",
+            "security"
+        ];
+        choices(assertions.require_sections, sections, `${path}.assertions.require_sections`);
+        if (assertions.require_sections !== undefined &&
+            assertions.require_sections.length !== sections.length)
+            invalid$5(`${path}.assertions.require_sections`, "Self-check always requires the canonical section set.");
+        mustRemainTrue(assertions, [
+            "unique_gate_ids",
+            "reject_unknown_fields",
+            "reject_inline_secrets",
+            "require_at_least_one_blocking_post_gate"
+        ], `${path}.assertions`);
+    }
     if (gate.type === "metric.threshold") {
         if (gate.assertions === undefined)
             invalid$5(`${path}.assertions`, "Metric thresholds require operator and threshold assertions.");
@@ -56004,6 +56101,56 @@ function validateGate(gate, path) {
             new Set(required).size !== required.length)
             invalid$5(`${path}.assertions.required_tests`, "Synthetic results require nonempty distinct named test requirements.");
     }
+    if (gate.type === "telemetry.cardinality_estimate" || gate.type === "telemetry.volume_estimate") {
+        const limits = gate.type === "telemetry.volume_estimate"
+            ? data(assertions.estimated_growth_percent)
+            : assertions;
+        const queries = data(source.queries);
+        if (Object.keys(limits).length === 0)
+            invalid$5(`${path}.assertions`, "At least one per-dimension budget is required.");
+        if (source.provider !== "metrics")
+            invalid$5(`${path}.source.provider`, "Telemetry estimates require the metrics provider and explicit measured queries.");
+        for (const [name, comparison] of Object.entries(limits)) {
+            requireString(queries[name], `${path}.source.queries.${name}`);
+            const limit = data(comparison).less_than_or_equal;
+            if (typeof limit !== "number" || !Number.isFinite(limit) || limit < 0)
+                invalid$5(`${path}.assertions.${name}`, "Expected a finite nonnegative less_than_or_equal budget.");
+            if (!name.endsWith("_percent") && gate.type === "telemetry.cardinality_estimate")
+                count$1(limit, `${path}.assertions.${name}`);
+        }
+        for (const name of Object.keys(queries))
+            if (limits[name] === undefined)
+                invalid$5(`${path}.source.queries.${name}`, "Every measurement query requires its corresponding budget assertion.");
+    }
+    if (gate.type === "comparison.multi_metric" || gate.type === "comparison.telemetry_volume") {
+        if (assertions.normalized_per_request === false)
+            invalid$5(`${path}.assertions.normalized_per_request`, "This comparison always normalizes per request; false is unsupported.");
+    }
+    if (gate.type === "comparison.trace_metrics" &&
+        data(assertions.p95_absolute_increase).unit !== undefined)
+        choice(data(assertions.p95_absolute_increase).unit, ["seconds", "milliseconds"], `${path}.assertions.p95_absolute_increase.unit`);
+    if (gate.type === "grafana.dashboard")
+        choices(assertions.required_panel_signals, ["traffic", "errors", "latency", "saturation"], `${path}.assertions.required_panel_signals`);
+    if (gate.type === "grafana.slo_definition") {
+        const objective = data(assertions.objective_percent);
+        for (const [name, limit] of Object.entries(objective))
+            if (typeof limit !== "number" || limit < 0 || limit > 100)
+                invalid$5(`${path}.assertions.objective_percent.${name}`, "Expected an objective between 0 and 100 percent.");
+        if (typeof objective.minimum === "number" &&
+            typeof objective.maximum === "number" &&
+            objective.minimum > objective.maximum)
+            invalid$5(`${path}.assertions.objective_percent`, "Minimum objective cannot exceed maximum.");
+        if (data(assertions.window).minimum !== undefined)
+            duration$2(data(assertions.window).minimum, `${path}.assertions.window.minimum`, true);
+    }
+    if (gate.type === "kubernetes.probes") {
+        if (assertions.startup_probe_required_when_startup_exceeds !== undefined)
+            invalid$5(`${path}.assertions.startup_probe_required_when_startup_exceeds`, "Measured startup duration is unavailable; use startup_probe_required.");
+        if (assertions.readiness_probe_must_not_check_optional_dependencies === true)
+            invalid$5(`${path}.assertions.readiness_probe_must_not_check_optional_dependencies`, "Dependency semantics cannot be inferred from a manifest.");
+    }
+    if (gate.type === "kubernetes.events")
+        choice(assertions.since, ["deployment_start"], `${path}.assertions.since`);
     if (source.adapter !== undefined)
         choice(source.adapter, ["active"], `${path}.source.adapter`);
     validateNestedSemantics(gate, path);
@@ -57019,18 +57166,32 @@ const kubernetesRolloutStatusGate = createEvidenceGate({
     type: "kubernetes.rollout_status",
     description: "Validate Kubernetes observed generation, conditions, replicas, and rollout duration.",
     phases: ["post_deployment"],
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
+        const deployment = value.workloadKind === undefined || value.workloadKind === "Deployment";
         const rollout = record$5(value.rollout) ?? {};
         const replicas = record$5(rollout.replicas) ?? {};
         const conditions = records(rollout.conditions);
         const desired = typeof replicas.desired === "number" ? replicas.desired : 0;
         return [
-            assertion("observed generation", rollout.generationObserved === true, "Controller observed the intended generation"),
-            assertion("progressing condition", conditionIs(conditions, "Progressing", "True"), "Rollout is progressing"),
-            assertion("available condition", conditionIs(conditions, "Available", "True"), "Workload is available"),
-            assertion("updated replicas", replicas.updated === desired && desired > 0, "Updated replicas equal desired replicas", replicas.updated, desired),
-            assertion("available replicas", replicas.available === desired && desired > 0, "Available replicas equal desired replicas", replicas.available, desired),
-            assertion("unavailable replicas", replicas.unavailable === 0, "No replicas are unavailable", replicas.unavailable, 0),
+            ...(value.workloadKind === "StatefulSet"
+                ? [
+                    assertion("controller revision", typeof rollout.currentRevision === "string" &&
+                        rollout.currentRevision === rollout.updateRevision, "StatefulSet current revision equals update revision", rollout.currentRevision, rollout.updateRevision)
+                ]
+                : []),
+            assertion("observed generation", a.observed_generation_matches === false || rollout.generationObserved === true, "Controller observed the intended generation"),
+            assertion("progressing condition", a.progressing_condition === false ||
+                !deployment ||
+                conditionIs(conditions, "Progressing", "True"), "Rollout is progressing"),
+            assertion("available condition", a.available_condition === false ||
+                !deployment ||
+                conditionIs(conditions, "Available", "True"), "Workload is available"),
+            assertion("updated replicas", a.updated_replicas_equal_desired === false || (replicas.updated === desired && desired > 0), "Updated replicas equal desired replicas", replicas.updated, desired),
+            assertion("available replicas", a.available_replicas_equal_desired === false ||
+                (replicas.available === desired && desired > 0), "Available replicas equal desired replicas", replicas.available, desired),
+            assertion("unavailable replicas", typeof replicas.unavailable === "number" &&
+                replicas.unavailable <= Number(record$5(a.unavailable_replicas)?.less_than_or_equal ?? 0), "No replicas are unavailable", replicas.unavailable, record$5(a.unavailable_replicas)?.less_than_or_equal ?? 0),
             assertion("rollout duration", typeof rollout.durationMs === "number" &&
                 typeof rollout.maximumDurationMs === "number" &&
                 rollout.durationMs <= rollout.maximumDurationMs, "Rollout completed within policy", rollout.durationMs, rollout.maximumDurationMs)
@@ -57041,13 +57202,17 @@ const kubernetesImageIdentityGate = createEvidenceGate({
     type: "kubernetes.image_identity",
     description: "Compare ready pod imageID digests with the expected release digest.",
     phases: ["post_deployment"],
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
         const expected = value.expectedImageDigest;
         const ready = records(value.pods).filter((pod) => pod.ready === true);
         const mismatches = ready.filter((pod) => pod.imageDigest !== expected);
         return [
             assertion("ready pods", ready.length > 0, "At least one ready pod reports image identity", ready.length),
-            assertion("imageID digest", typeof expected === "string" && mismatches.length === 0, "Every ready pod imageID matches the expected digest", mismatches.map((pod) => pod.name), expected)
+            assertion("imageID digest", typeof expected === "string" &&
+                (a.all_ready_pods_match === false
+                    ? ready.some((pod) => pod.imageDigest === expected)
+                    : mismatches.length === 0), "Every ready pod imageID matches the expected digest", mismatches.map((pod) => pod.name), expected)
         ];
     }
 });
@@ -57055,18 +57220,18 @@ const kubernetesPodHealthGate = createEvidenceGate({
     type: "kubernetes.pod_health",
     description: "Validate Kubernetes pod readiness, restart deltas, states, and probes.",
     phases: ["post_deployment"],
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
         const pods = records(value.pods);
         const ready = pods.filter((pod) => pod.ready === true).length;
         const readyPercent = pods.length > 0 ? (ready / pods.length) * 100 : 0;
-        const restartIncrease = pods.reduce((sum, pod) => sum + (typeof pod.restartIncrease === "number" ? pod.restartIncrease : 0), 0);
-        const forbiddenWaiting = new Set([
-            "CrashLoopBackOff",
-            "ImagePullBackOff",
-            "ErrImagePull",
-            "CreateContainerConfigError"
-        ]);
-        const forbiddenTerminations = new Set(["OOMKilled", "Error"]);
+        const restartIncrease = pods.reduce((sum, pod) => sum + (typeof pod.restartIncrease === "number" ? pod.restartIncrease : Infinity), 0);
+        const forbiddenWaiting = new Set(Array.isArray(a.forbidden_waiting_reasons)
+            ? a.forbidden_waiting_reasons.map(String)
+            : ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError"]);
+        const forbiddenTerminations = new Set(Array.isArray(a.forbidden_termination_reasons)
+            ? a.forbidden_termination_reasons.map(String)
+            : ["OOMKilled", "Error"]);
         const waiting = pods
             .flatMap((pod) => records(pod.waitingReasons).map(String))
             .filter((reason) => forbiddenWaiting.has(reason));
@@ -57074,11 +57239,12 @@ const kubernetesPodHealthGate = createEvidenceGate({
             .flatMap((pod) => records(pod.terminationReasons).map(String))
             .filter((reason) => forbiddenTerminations.has(reason));
         return [
-            assertion("ready pods", readyPercent === 100, "All candidate pods are ready", readyPercent, 100),
-            assertion("restart increase", restartIncrease === 0, "Candidate pod restarts did not increase", restartIncrease, 0),
+            assertion("ready pods", readyPercent >= Number(record$5(a.ready_percent)?.greater_than_or_equal ?? 100), "All candidate pods are ready", readyPercent, record$5(a.ready_percent)?.greater_than_or_equal ?? 100),
+            assertion("restart increase", restartIncrease <= Number(record$5(a.restart_increase)?.less_than_or_equal ?? 0), "Candidate pod restarts did not increase", restartIncrease, record$5(a.restart_increase)?.less_than_or_equal ?? 0),
             assertion("waiting states", waiting.length === 0, "Pods have no forbidden waiting reasons", waiting),
             assertion("termination states", terminated.length === 0, "Pods have no forbidden termination reasons", terminated),
-            assertion("probe health", pods.length > 0 && pods.every((pod) => pod.probesHealthy === true), "Candidate pod probes remain healthy")
+            assertion("probe health", pods.length > 0 &&
+                pods.filter((pod) => pod.ready === true).every((pod) => pod.probesHealthy === true), "Candidate pod probes remain healthy")
         ];
     }
 });
@@ -57099,98 +57265,154 @@ const kubernetesEventsGate = createEvidenceGate({
 });
 
 function located(value, name, passed, message, observed, path, expected) {
-    return assertion(name, passed, message, { value: observed, path, document: typeof value.document === "number" ? value.document : 0 }, expected);
+    const index = typeof value.containerIndex === "number" ? value.containerIndex : 0;
+    return assertion(name, passed, message, {
+        value: observed,
+        path: path.replaceAll("containers[0]", `containers[${index}]`),
+        document: typeof value.document === "number" ? value.document : 0
+    }, expected);
 }
 function quantity(value) {
     if (typeof value === "number")
-        return value;
+        return Number.isFinite(value) && value >= 0 ? value : undefined;
     if (typeof value !== "string")
         return undefined;
     const match = /^(\d+(?:\.\d+)?)(m|Ki|Mi|Gi|Ti)?$/.exec(value);
     if (match === null)
         return undefined;
-    const amount = Number(match[1]);
-    const multiplier = { m: 0.001, Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4 }[match[2] ?? ""] ?? 1;
-    return amount * multiplier;
+    return (Number(match[1]) *
+        ({ m: 0.001, Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4 }[match[2] ?? ""] ?? 1));
+}
+function limit(value, replicas, round = "up") {
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0)
+        return value;
+    if (typeof value !== "string" || !/^\d+%$/.test(value))
+        return undefined;
+    const percentage = Number(value.slice(0, -1));
+    if (percentage > 100)
+        return undefined;
+    return (round === "up" ? Math.ceil : Math.floor)((replicas * percentage) / 100);
+}
+function protectedByBudget(value, replicas) {
+    const budget = record$5(value.disruptionBudget);
+    if (budget === undefined ||
+        (budget.minAvailable !== undefined) === (budget.maxUnavailable !== undefined))
+        return false;
+    const minimum = budget.minAvailable !== undefined
+        ? limit(budget.minAvailable, replicas)
+        : replicas - (limit(budget.maxUnavailable, replicas) ?? Infinity);
+    return minimum !== undefined && minimum >= 1 && minimum <= replicas;
 }
 const kubernetesManifestGate = createEvidenceGate({
     type: "kubernetes.manifest",
     description: "Validate immutable, explicit, least-privileged Kubernetes workload manifests.",
     phases: ["pre_deployment"],
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
         const image = typeof value.image === "string" ? value.image : "";
         const security = record$5(value.containerSecurityContext) ?? {};
         const digest = image.match(/@(sha256:[a-f0-9]{64})$/iu)?.[1];
+        const check = (name, passed, observed, path, expected) => located(value, name, passed, name, observed, path, expected);
         return [
-            located(value, "digest-pinned image", digest !== undefined, "Container image is pinned by sha256 digest", image, "$.spec.template.spec.containers[0].image"),
-            located(value, "expected image digest", typeof value.expectedImageDigest !== "string" || digest === value.expectedImageDigest, "Container image matches the expected release digest", digest, "$.spec.template.spec.containers[0].image", value.expectedImageDigest),
-            located(value, "forbid latest", !/(?:^|:)latest(?:@|$)/iu.test(image), "Container image does not use the latest tag", image, "$.spec.template.spec.containers[0].image"),
-            located(value, "explicit namespace", value.namespaceExplicit === true, "Workload namespace is explicit", value.namespaceExplicit, "$.metadata.namespace", true),
-            located(value, "not privileged", security.privileged !== true, "Container is not privileged", security.privileged, "$.spec.template.spec.containers[0].securityContext.privileged", false),
-            located(value, "read-only root filesystem", security.readOnlyRootFilesystem === true, "Container root filesystem is read-only", security.readOnlyRootFilesystem, "$.spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem", true)
+            check("workload exists", a.workload_exists === false || value.namespaceExplicit !== undefined, value.workloadKind, "$.kind"),
+            check("container exists", a.container_exists === false || image.length > 0, image, "$.spec.template.spec.containers[0]"),
+            check("digest-pinned image", a.image_is_digest_pinned === false || digest !== undefined, image, "$.spec.template.spec.containers[0].image"),
+            check("expected image digest", typeof value.expectedImageDigest !== "string" || digest === value.expectedImageDigest, digest, "$.spec.template.spec.containers[0].image", value.expectedImageDigest),
+            check("forbid latest", a.forbid_latest_tag === false || !/(?:^|:)latest(?:@|$)/iu.test(image), image, "$.spec.template.spec.containers[0].image"),
+            check("explicit namespace", a.namespace_is_explicit === false || value.namespaceExplicit === true, value.namespaceExplicit, "$.metadata.namespace", true),
+            check("not privileged", a.forbid_privileged === false || security.privileged !== true, security.privileged, "$.spec.template.spec.containers[0].securityContext.privileged", false),
+            check("read-only root filesystem", a.read_only_root_filesystem === false || security.readOnlyRootFilesystem === true, security.readOnlyRootFilesystem, "$.spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem", true)
         ];
     }
 });
-function probeAssertions(value, name, probeValue) {
-    const probe = record$5(probeValue);
-    const path = `$.spec.template.spec.containers[0].${name}Probe`;
-    return [
-        located(value, `${name} probe`, probe !== undefined, `${name} probe is configured`, probe !== undefined, path, true),
-        located(value, `${name} timeout`, probe !== undefined && Number(probe.timeoutSeconds ?? 1) <= 5, `${name} probe timeout is bounded`, probe?.timeoutSeconds ?? 1, `${path}.timeoutSeconds`, 5),
-        located(value, `${name} failure threshold`, probe !== undefined && Number(probe.failureThreshold ?? 3) >= 2, `${name} probe failure threshold is resilient`, probe?.failureThreshold ?? 3, `${path}.failureThreshold`, 2)
-    ];
-}
 const kubernetesProbesGate = createEvidenceGate({
     type: "kubernetes.probes",
     description: "Validate bounded Kubernetes startup, readiness, and liveness probes.",
     phases: ["pre_deployment"],
-    evaluate(_definition, value) {
-        const results = [
-            ...probeAssertions(value, "readiness", value.readinessProbe),
-            ...probeAssertions(value, "liveness", value.livenessProbe)
-        ];
-        if (value.startupProbeRequired === true)
-            results.push(...probeAssertions(value, "startup", value.startupProbe));
-        results.push(located(value, "readiness dependency scope", value.readinessChecksOptionalDependencies !== true, "Readiness does not depend on optional downstreams", value.readinessChecksOptionalDependencies, "$.spec.template.spec.containers[0].readinessProbe"));
-        return results;
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
+        const maximum = Number(record$5(a.timeout_seconds)?.maximum ?? 5);
+        const minimum = Number(record$5(a.failure_threshold)?.minimum ?? 2);
+        return ["readiness", "liveness", "startup"].flatMap((name) => {
+            const required = name === "startup"
+                ? (a.startup_probe_required ?? value.startupProbeRequired) === true
+                : a[`${name}_probe_required`] !== false;
+            const probe = record$5(value[`${name}Probe`]);
+            if (!required && probe === undefined)
+                return [];
+            const path = `$.spec.template.spec.containers[0].${name}Probe`;
+            return [
+                located(value, `${name} probe`, probe !== undefined, `${name} probe is configured`, probe !== undefined, path, true),
+                located(value, `${name} timeout`, probe !== undefined && Number(probe.timeoutSeconds ?? 1) <= maximum, `${name} probe timeout is bounded`, probe?.timeoutSeconds ?? 1, `${path}.timeoutSeconds`, maximum),
+                located(value, `${name} failure threshold`, probe !== undefined && Number(probe.failureThreshold ?? 3) >= minimum, `${name} probe failure threshold is resilient`, probe?.failureThreshold ?? 3, `${path}.failureThreshold`, minimum)
+            ];
+        });
     }
 });
 const kubernetesResourcesGate = createEvidenceGate({
     type: "kubernetes.resources",
     description: "Validate Kubernetes resources, replicas, and disruption protection.",
     phases: ["pre_deployment"],
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
         const resources = record$5(value.resources) ?? {};
-        const requests = record$5(resources.requests);
-        const limits = record$5(resources.limits);
-        const cpuRequest = quantity(requests?.cpu);
-        const cpuLimit = quantity(limits?.cpu);
-        const memoryRequest = quantity(requests?.memory);
-        const memoryLimit = quantity(limits?.memory);
-        const replicas = typeof value.replicas === "number" ? value.replicas : 0;
-        return [
-            located(value, "CPU request", cpuRequest !== undefined, "CPU request is declared", requests?.cpu, "$.spec.template.spec.containers[0].resources.requests.cpu"),
-            located(value, "memory request", memoryRequest !== undefined, "Memory request is declared", requests?.memory, "$.spec.template.spec.containers[0].resources.requests.memory"),
-            located(value, "memory limit", memoryLimit !== undefined, "Memory limit is declared", limits?.memory, "$.spec.template.spec.containers[0].resources.limits.memory"),
-            located(value, "CPU request and limit", cpuRequest !== undefined && (cpuLimit === undefined || cpuRequest <= cpuLimit), "CPU request does not exceed its limit", cpuRequest, "$.spec.template.spec.containers[0].resources"),
-            located(value, "memory request and limit", memoryRequest !== undefined && memoryLimit !== undefined && memoryRequest <= memoryLimit, "Memory request does not exceed its limit", memoryRequest, "$.spec.template.spec.containers[0].resources"),
-            located(value, "production replicas", value.production !== true || replicas >= 2, "Production workload has at least two replicas", replicas, "$.spec.replicas", 2),
-            located(value, "disruption budget", replicas < 2 || record$5(value.disruptionBudget) !== undefined, "Multi-replica workload has a disruption budget", value.disruptionBudget, "$[PodDisruptionBudget].spec")
+        const requests = record$5(resources.requests) ?? {};
+        const limits = record$5(resources.limits) ?? {};
+        const results = [
+            ...["requests", "limits"].flatMap((kind) => {
+                const names = a[`${kind}_required`] ?? (kind === "requests" ? ["cpu", "memory"] : ["memory"]);
+                return (Array.isArray(names) ? names.map(String) : []).map((name) => {
+                    const raw = (kind === "requests" ? requests : limits)[name];
+                    return located(value, `${name} ${kind}`, quantity(raw) !== undefined, `${name} ${kind} is declared`, raw, `$.spec.template.spec.containers[0].resources.${kind}.${name}`);
+                });
+            }),
+            ...Object.keys(requests)
+                .filter((name) => limits[name] !== undefined)
+                .map((name) => located(value, `${name} request and limit`, a.request_must_not_exceed_limit === false ||
+                (quantity(requests[name]) !== undefined &&
+                    quantity(limits[name]) !== undefined &&
+                    Number(quantity(requests[name])) <= Number(quantity(limits[name]))), `${name} request does not exceed its limit`, requests[name], "$.spec.template.spec.containers[0].resources", limits[name]))
         ];
+        if (value.workloadKind !== "DaemonSet") {
+            const replicas = typeof value.replicas === "number" ? value.replicas : 0;
+            const minimum = Number(a.production_minimum_replicas ?? 2);
+            results.push(located(value, "production replicas", value.production !== true || replicas >= minimum, "Production workload satisfies replica minimum", replicas, "$.spec.replicas", minimum), located(value, "disruption budget", a.disruption_budget_for_multiple_replicas === false ||
+                replicas < 2 ||
+                protectedByBudget(value, replicas), "Multi-replica workload has effective disruption protection", value.disruptionBudget, "$[PodDisruptionBudget].spec"));
+        }
+        if (value.workloadKind === "DaemonSet" &&
+            (a.production_minimum_replicas !== undefined ||
+                a.disruption_budget_for_multiple_replicas === true))
+            results.push(located(value, "controller resource assertions", false, "DaemonSet scheduling cannot prove replica-count or PDB assertions from static manifests", value.workloadKind, "$.kind"));
+        return results;
     }
 });
 const kubernetesRolloutStrategyGate = createEvidenceGate({
     type: "kubernetes.rollout_strategy",
     description: "Validate an availability-preserving Kubernetes rollout strategy.",
     phases: ["pre_deployment"],
-    evaluate(_definition, value) {
-        const maximumUnavailable = typeof value.maxUnavailable === "number" ? value.maxUnavailable : Number.POSITIVE_INFINITY;
-        return [
-            located(value, "strategy", value.strategy === "RollingUpdate", "Workload uses RollingUpdate", value.strategy, "$.spec.strategy.type", "RollingUpdate"),
-            located(value, "maximum unavailable", maximumUnavailable <= 1, "At most one replica may be unavailable", value.maxUnavailable, "$.spec.strategy.rollingUpdate.maxUnavailable", 1),
-            located(value, "progress deadline", typeof value.progressDeadlineSeconds === "number" && value.progressDeadlineSeconds > 0, "Progress deadline is declared", value.progressDeadlineSeconds, "$.spec.progressDeadlineSeconds"),
-            located(value, "minimum ready seconds", typeof value.minimumReadySeconds === "number" && value.minimumReadySeconds >= 5, "Minimum ready duration is at least five seconds", value.minimumReadySeconds, "$.spec.minReadySeconds", 5)
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
+        const deployment = value.workloadKind === undefined || value.workloadKind === "Deployment";
+        const path = deployment ? "$.spec.strategy" : "$.spec.updateStrategy";
+        const allowed = Array.isArray(a.allowed_strategies) ? a.allowed_strategies : ["RollingUpdate"];
+        const maximum = Number(record$5(a.max_unavailable)?.less_than_or_equal ?? 1);
+        const minimum = Number(record$5(a.minimum_ready_seconds)?.greater_than_or_equal ?? 5);
+        const unavailable = value.workloadKind === "DaemonSet" && typeof value.maxUnavailable === "string"
+            ? undefined
+            : limit(value.maxUnavailable, Number(value.replicas ?? 1), deployment ? "down" : "up");
+        const results = [
+            located(value, "strategy", allowed.includes(value.strategy), "Workload uses an allowed strategy", value.strategy, `${path}.type`, allowed),
+            located(value, "maximum unavailable", value.strategy !== "RollingUpdate" || (unavailable !== undefined && unavailable <= maximum), "Unavailable replicas are within policy", value.maxUnavailable, `${path}.rollingUpdate.maxUnavailable`, maximum),
+            located(value, "minimum ready seconds", typeof value.minimumReadySeconds === "number" && value.minimumReadySeconds >= minimum, "Minimum ready duration satisfies policy", value.minimumReadySeconds, "$.spec.minReadySeconds", minimum)
         ];
+        if (deployment || a.progress_deadline_required === true)
+            results.push(located(value, "progress deadline", a.progress_deadline_required === false ||
+                (typeof value.progressDeadlineSeconds === "number" &&
+                    value.progressDeadlineSeconds > 0), "Progress deadline is declared", value.progressDeadlineSeconds, "$.spec.progressDeadlineSeconds"));
+        if (value.workloadKind === "StatefulSet")
+            results.push(located(value, "partition", value.partition === undefined || value.partition === 0, "All StatefulSet replicas participate in rollout", value.partition, "$.spec.updateStrategy.rollingUpdate.partition", 0));
+        return results;
     }
 });
 
@@ -57685,10 +57907,10 @@ const comparisonTelemetryVolumeGate = {
     ...gate,
     parseDefinition(input) {
         const definition = parseGateDefinition(input);
-        if (definition.enforcement === "blocking" && definition.allowBlockingBudget !== true) {
+        if (definition.enforcement === "blocking" || definition.allowBlockingBudget !== undefined) {
             throw new GateError({
                 code: "CONFIG_SCHEMA",
-                safeMessage: "comparison.telemetry_volume is advisory unless blocking enforcement is explicitly allowed",
+                safeMessage: "comparison.telemetry_volume supports advisory enforcement only",
                 retryable: false
             });
         }
@@ -57935,41 +58157,79 @@ const assetUrlGate = createEvidenceGate({
         ];
     }
 });
+function nonempty(value) {
+    return typeof value === "string" && value.trim().length > 0;
+}
+function duration$1(value) {
+    if (typeof value !== "string")
+        return Number.NaN;
+    const match = /^(\d+(?:\.\d+)?)(ms|s|m|h|d|w)$/u.exec(value);
+    return match === null
+        ? Number.NaN
+        : Number(match[1]) *
+            ({ ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000, w: 604800000 }[match[2] ?? ""] ??
+                Number.NaN);
+}
 const dashboardGate = createEvidenceGate({
     type: "grafana.dashboard",
-    description: "Validate service dashboard metadata.",
+    description: "Validate configured service dashboard metadata and panel coverage.",
     phases: ["pre_deployment"],
     providerRequirements: grafana,
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
         const panels = Array.isArray(value.panels) ? value.panels : [];
         const variables = Array.isArray(value.variables) ? value.variables : [];
+        const requiredVariables = Array.isArray(a.required_template_variables)
+            ? a.required_template_variables
+            : [];
+        const requiredSignals = Array.isArray(a.required_panel_signals) ? a.required_panel_signals : [];
+        const minimum = typeof a.minimum_panels === "number" ? a.minimum_panels : 0;
         return [
-            assertion("dashboard exists", typeof value.uid === "string", "Dashboard exists"),
-            assertion("panel coverage", panels.length >= 4, "Dashboard contains at least four panels", panels.length, 4),
-            assertion("template variables", ["service", "environment"].every((name) => variables.some((item) => item.name === name)), "Dashboard is filterable by service and environment")
+            assertion("dashboard exists", nonempty(value.uid), "Dashboard exists"),
+            assertion("panel coverage", panels.length >= minimum, "Dashboard meets the configured panel count", panels.length, minimum),
+            ...(typeof a.title_contains !== "string"
+                ? []
+                : [
+                    assertion("dashboard title", typeof value.title === "string" && value.title.includes(a.title_contains), "Dashboard title contains the configured text", value.title, a.title_contains)
+                ]),
+            assertion("panel signals", requiredSignals.every((signal) => panels.some((panel) => {
+                const item = record$5(panel) ?? {};
+                return Array.isArray(item.signals) && item.signals.includes(signal);
+            })), "Dashboard panels cover every configured operational signal", panels.map((panel) => record$5(panel)?.signals), requiredSignals),
+            assertion("template variables", requiredVariables.every((name) => variables.some((item) => record$5(item)?.name === name)), "Dashboard exposes every configured template variable", variables, requiredVariables)
         ];
     }
 });
 const alertRulesGate = createEvidenceGate({
     type: "grafana.alert_rules",
-    description: "Validate actionable alert rules.",
+    description: "Validate actionable alert rule configuration.",
     phases: ["pre_deployment"],
     providerRequirements: grafana,
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
         const rules = Array.isArray(value.rules)
             ? value.rules
             : Array.isArray(value.items)
                 ? value.items
                 : [];
-        const enabled = rules.filter((rule) => rule.enabled === true);
+        const enabled = rules.map((rule) => record$5(rule) ?? {}).filter((rule) => rule.enabled === true);
+        const minimum = typeof a.minimum_enabled_rules === "number" ? a.minimum_enabled_rules : 0;
         return [
-            assertion("enabled rules", enabled.length >= 2, "At least two alert rules are enabled", enabled.length, 2),
-            assertion("actionable metadata", enabled.every((rule) => {
-                const item = rule;
-                return (typeof item.severity === "string" &&
-                    typeof item.owner === "string" &&
-                    typeof item.runbookUrl === "string");
-            }), "Enabled rules have severity, owner, and runbook metadata")
+            assertion("enabled rules", enabled.length >= minimum, "Enabled alert rule count meets the configured minimum", enabled.length, minimum),
+            ...[
+                ["require_severity_label", "severity"],
+                ["require_owner_label", "owner"],
+                ["require_runbook_annotation", "runbookUrl"]
+            ]
+                .filter(([flag]) => a[flag] === true)
+                .map(([flag, field]) => assertion(flag, enabled.every((rule) => nonempty(rule[field])), "Enabled alert rules have the required metadata")),
+            ...(a.forbid_no_data_ok_on_critical_rules !== true
+                ? []
+                : [
+                    assertion("critical no-data behavior", enabled
+                        .filter((rule) => rule.severity === "critical")
+                        .every((rule) => typeof rule.noDataState === "string" && rule.noDataState !== "OK"), "Critical rules do not treat missing data as OK")
+                ])
         ];
     }
 });
@@ -57978,24 +58238,53 @@ const notificationPolicyGate = createEvidenceGate({
     description: "Validate critical notification routing.",
     phases: ["pre_deployment"],
     providerRequirements: grafana,
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
         return [
-            assertion("receiver", typeof value.receiver === "string" && value.receiver.length > 0, "Critical alerts have a receiver"),
-            assertion("deployment mute", value.mutedDuringDeployment !== true, "Mute timing does not cover the deployment window")
+            assertion("receiver", nonempty(value.receiver), "Critical alerts have an effective receiver"),
+            ...(a.receiver_is_configured !== true
+                ? []
+                : [
+                    assertion("configured receiver", value.receiverConfigured === true, "Every effective receiver has a configured contact point")
+                ]),
+            ...(a.mute_timing_does_not_cover_deployment_window === false
+                ? []
+                : [
+                    assertion("deployment mute", value.mutedDuringDeployment === false, "No mute or inactive timing overlaps the deployment window")
+                ])
         ];
     }
 });
 const sloDefinitionGate = createEvidenceGate({
     type: "grafana.slo_definition",
-    description: "Validate the service SLO definition.",
+    description: "Validate the configured service SLO definition.",
     phases: ["pre_deployment"],
     providerRequirements: grafana,
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
+        const a = record$5(definition.assertions) ?? {};
+        const bounds = record$5(a.objective_percent) ?? {};
         const objective = typeof value.objective === "number" ? value.objective : Number.NaN;
+        const minimum = typeof bounds.minimum === "number" ? bounds.minimum : 0;
+        const maximum = typeof bounds.maximum === "number" ? bounds.maximum : 100;
+        const minimumWindow = record$5(a.window)?.minimum;
         return [
-            assertion("SLO objective", objective >= 99 && objective <= 100, "SLO objective is between 99 and 100 percent", objective),
-            assertion("SLO window", typeof value.window === "string" && /(?:[7-9]|[1-9]\d+)d$/u.test(value.window), "SLO window is at least seven days", value.window),
-            assertion("identity labels", value.labelsMatchIdentity === true, "SLO labels match canonical identity")
+            ...(a.exists !== true ? [] : [assertion("SLO exists", nonempty(value.uid), "SLO exists")]),
+            assertion("SLO objective", objective >= minimum && objective <= maximum, "SLO objective meets the configured percentage bounds", objective, { minimum, maximum }),
+            ...(minimumWindow === undefined
+                ? []
+                : [
+                    assertion("SLO window", duration$1(value.window) >= duration$1(minimumWindow), "SLO window meets the configured minimum duration", value.window, minimumWindow)
+                ]),
+            ...(a.indicator_query_is_valid !== true
+                ? []
+                : [
+                    assertion("indicator query", value.indicatorQueryIsValid === true, "SLO indicator queries have been validated against their configured datasource")
+                ]),
+            ...(a.labels_match_identity !== true
+                ? []
+                : [
+                    assertion("identity labels", value.labelsMatchIdentity === true, "SLO labels match canonical identity")
+                ])
         ];
     }
 });
@@ -58125,13 +58414,36 @@ const queryValidationGate = createEvidenceGate({
     type: "telemetry.query_validation",
     description: "Validate bounded and scoped telemetry queries.",
     phases: ["pre_deployment"],
-    evaluate(_definition, value) {
+    evaluate(definition, value) {
         const queries = Array.isArray(value.queries) ? value.queries : [];
-        const forbidden = new Set(["user_id", "session_id", "request_id", "trace_id"]);
+        const a = record$5(definition.assertions) ?? {};
+        const forbidden = new Set(Array.isArray(a.reject_high_cardinality_grouping)
+            ? a.reject_high_cardinality_grouping.map(String)
+            : ["user_id", "session_id", "request_id", "trace_id"]);
+        const duration = typeof a.maximum_query_range === "string"
+            ? /^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/u.exec(a.maximum_query_range)
+            : null;
+        const maximumRange = duration === null
+            ? Number.NaN
+            : Number(duration[1]) *
+                ({ ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 }[duration[2] ?? ""] ?? Number.NaN);
         return [
             assertion("queries compile", queries.length > 0 && queries.every((query) => query.valid === true), "Every configured query compiles"),
-            assertion("scalar threshold shape", queries.every((query) => query.threshold !== true || query.shape === "scalar"), "Threshold queries return scalars"),
+            assertion("scalar threshold shape", a.require_scalar_for_threshold_gates === false ||
+                queries.every((query) => query.threshold !== true || query.shape === "scalar"), "Threshold queries return scalars"),
             assertion("identity scope", queries.every((query) => query.production !== true || query.scoped === true), "Production queries include service and environment scope"),
+            ...(a.reject_unbounded_log_queries !== true
+                ? []
+                : [
+                    assertion("bounded log queries", queries.every((query) => query.signal !== "logs" || query.bounded === true), "Log queries have positive stream selectors and finite request bounds")
+                ]),
+            ...(a.maximum_query_range === undefined
+                ? []
+                : [
+                    assertion("maximum query range", queries.every((query) => typeof query.rangeMs === "number" &&
+                        Number.isFinite(query.rangeMs) &&
+                        query.rangeMs <= maximumRange), "Every query stays within the configured maximum range")
+                ]),
             assertion("cardinality grouping", queries.every((query) => !Array.isArray(query.groupBy) ||
                 query.groupBy.every((label) => !forbidden.has(String(label)))), "Queries avoid high-cardinality grouping labels")
         ];
@@ -58265,22 +58577,48 @@ function budgetGate(type) {
         type,
         description: "Evaluate a pre-deployment telemetry FinOps estimate.",
         phases: ["pre_deployment"],
-        evaluate(_definition, value) {
-            const estimate = typeof value.estimate === "number" ? value.estimate : Number.POSITIVE_INFINITY;
-            const budget = typeof value.budget === "number" ? value.budget : 0;
-            return [
-                assertion("telemetry budget", estimate <= budget, "Telemetry estimate remains within budget", estimate, budget)
-            ];
+        providerRequirements: [
+            { provider: "metrics", capability: "metrics.query.instant", required: true }
+        ],
+        evaluate(definition, value) {
+            const assertions = record$5(definition.assertions) ?? {};
+            const limits = type === "telemetry.volume_estimate"
+                ? (record$5(assertions.estimated_growth_percent) ?? {})
+                : assertions;
+            const measurements = record$5(value.measurements) ?? {};
+            if (Object.keys(limits).length === 0)
+                return [
+                    {
+                        assertion: "telemetry budget",
+                        status: "inconclusive",
+                        message: "No per-dimension budget assertions are configured"
+                    }
+                ];
+            return Object.entries(limits).map(([name, comparison]) => {
+                const observed = measurements[name];
+                const expected = record$5(comparison)?.less_than_or_equal;
+                const unit = type === "telemetry.volume_estimate" || name.endsWith("_percent") ? "percent" : "count";
+                if (typeof observed !== "number" ||
+                    !Number.isFinite(observed) ||
+                    typeof expected !== "number" ||
+                    !Number.isFinite(expected))
+                    return {
+                        assertion: `${name} budget (${unit})`,
+                        status: "inconclusive",
+                        message: `Missing measured evidence or limit for ${name}`
+                    };
+                return assertion(`${name} budget (${unit})`, observed <= expected, `${name} measured ${unit} remains within its configured budget`, observed, expected);
+            });
         }
     });
     return {
         ...gate,
         parseDefinition(input) {
             const definition = parseGateDefinition(input);
-            if (definition.enforcement === "blocking" && definition.allowBlockingBudget !== true) {
+            if (definition.enforcement === "blocking" || definition.allowBlockingBudget !== undefined) {
                 throw new GateError({
                     code: "CONFIG_SCHEMA",
-                    safeMessage: `${type} is advisory unless blocking enforcement is explicitly allowed`,
+                    safeMessage: `${type} supports advisory enforcement only`,
                     retryable: false
                 });
             }
@@ -58608,20 +58946,21 @@ function normalizeAlertRules(payload, selector) {
     for (const value of payload) {
         if (!isRecord$5(value))
             return undefined;
-        const labels = stringLabels(value.labels);
+        const labels = stringLabels(value.labels ?? {});
+        const annotations = stringLabels(value.annotations ?? {});
         if (labels === undefined ||
+            annotations === undefined ||
             typeof value.uid !== "string" ||
             typeof value.title !== "string" ||
-            typeof value.isPaused !== "boolean" ||
-            !["normal", "pending", "firing", "no_data", "error"].includes(String(value.state)) ||
-            !["ok", "error", "no_data"].includes(String(value.health)) ||
-            typeof value.lastEvaluation !== "string" ||
-            !Number.isFinite(Date.parse(value.lastEvaluation))) {
+            typeof value.isPaused !== "boolean")
             return undefined;
-        }
-        if (Object.entries(selector).some(([key, expected]) => labels[key] !== expected)) {
+        // Recording rules share the provisioning endpoint but cannot page an operator.
+        if (value.record !== undefined && value.record !== null)
             continue;
-        }
+        if (!["OK", "NoData", "Alerting", "KeepLast"].includes(String(value.noDataState)))
+            return undefined;
+        if (Object.entries(selector).some(([key, expected]) => labels[key] !== expected))
+            continue;
         rules.push(Object.freeze({
             uid: value.uid,
             title: value.title,
@@ -58629,53 +58968,108 @@ function normalizeAlertRules(payload, selector) {
             labels,
             ...(labels.severity === undefined ? {} : { severity: labels.severity }),
             ...(labels.owner === undefined ? {} : { owner: labels.owner }),
-            ...(labels.runbook_url === undefined ? {} : { runbookUrl: labels.runbook_url }),
-            state: value.state,
-            health: value.health,
-            evaluatedAt: new Date(value.lastEvaluation).toISOString()
+            ...(annotations.runbook_url === undefined ? {} : { runbookUrl: annotations.runbook_url }),
+            noDataState: value.noDataState
         }));
     }
     return Object.freeze(rules);
 }
 function normalizeNotificationRoute(payload, request) {
-    if (!isRecord$5(payload) || !Array.isArray(payload.routes)) {
+    if (!isRecord$5(payload))
         return undefined;
-    }
-    const route = payload.routes.find((value) => {
-        if (!isRecord$5(value) || !Array.isArray(value.object_matchers))
+    if (!Number.isFinite(Date.parse(request.deploymentStart)) ||
+        !Number.isFinite(Date.parse(request.deploymentEnd)) ||
+        Date.parse(request.deploymentEnd) < Date.parse(request.deploymentStart))
+        return undefined;
+    const selected = [];
+    let unsupported;
+    const matches = (route) => {
+        if (route.matchers !== undefined || route.match_re !== undefined || route.match !== undefined) {
+            unsupported = "Unsupported notification matcher syntax; cannot establish effective routing";
+            return undefined;
+        }
+        if (route.object_matchers === undefined)
+            return true;
+        if (!Array.isArray(route.object_matchers))
+            return undefined;
+        let result = true;
+        for (const m of route.object_matchers) {
+            if (!Array.isArray(m) || m.length !== 3 || m.some((v) => typeof v !== "string"))
+                return undefined;
+            const [key, operator, value] = m;
+            if (operator !== "=" && operator !== "!=") {
+                unsupported =
+                    "Regex notification matchers are unsupported; cannot establish effective routing";
+                return undefined;
+            }
+            // The selector is a partial label set: absent labels are unknown, not empty.
+            if (!Object.hasOwn(request.selector, key)) {
+                unsupported = "Notification routing depends on labels absent from source.match";
+                return undefined;
+            }
+            result &&=
+                operator === "=" ? request.selector[key] === value : request.selector[key] !== value;
+        }
+        return result;
+    };
+    const names = (value) => value === undefined
+        ? []
+        : Array.isArray(value) && value.every((v) => typeof v === "string")
+            ? value
+            : undefined;
+    const visit = (route, inheritedReceiver, inheritedMute, inheritedActive, depth) => {
+        if (depth > 32)
             return false;
-        const objectMatchers = value.object_matchers;
-        return Object.entries(request.selector).every(([key, expected]) => objectMatchers.some((matcher) => Array.isArray(matcher) &&
-            matcher[0] === key &&
-            matcher[1] === "=" &&
-            matcher[2] === expected));
-    });
-    if (!isRecord$5(route) || typeof route.receiver !== "string") {
-        return undefined;
-    }
-    const muteTimeIntervals = route.mute_time_intervals ?? [];
-    if (!Array.isArray(muteTimeIntervals) ||
-        muteTimeIntervals.some((item) => typeof item !== "string")) {
-        return undefined;
-    }
-    const deploymentStart = Date.parse(request.deploymentStart);
-    const deploymentEnd = Date.parse(request.deploymentEnd);
-    if (!Number.isFinite(deploymentStart) || !Number.isFinite(deploymentEnd)) {
-        return undefined;
-    }
-    const muteWindows = Array.isArray(payload.mute_windows) ? payload.mute_windows : [];
-    const mutedDuringDeployment = muteWindows.some((window) => {
-        if (!isRecord$5(window) || typeof window.name !== "string")
+        const receiver = typeof route.receiver === "string" && route.receiver.length > 0
+            ? route.receiver
+            : inheritedReceiver;
+        const ownMute = names(route.mute_time_intervals);
+        const ownActive = names(route.active_time_intervals);
+        // Ancestor schedules also require evaluation before this path can prove unmuted.
+        const mute = ownMute === undefined ? undefined : [...inheritedMute, ...ownMute];
+        const active = ownActive === undefined ? undefined : [...inheritedActive, ...ownActive];
+        if (mute === undefined ||
+            active === undefined ||
+            (route.continue !== undefined && typeof route.continue !== "boolean"))
             return false;
-        return (muteTimeIntervals.includes(window.name) &&
-            Date.parse(String(window.start)) <= deploymentStart &&
-            Date.parse(String(window.end)) >= deploymentEnd);
-    });
+        const children = route.routes ?? [];
+        if (!Array.isArray(children))
+            return false;
+        let matched = false;
+        for (const child of children) {
+            if (!isRecord$5(child))
+                return false;
+            const match = matches(child);
+            if (match === undefined)
+                return false;
+            if (!match)
+                continue;
+            matched = true;
+            if (!visit(child, receiver, mute, active, depth + 1))
+                return false;
+            if (child.continue !== true)
+                break;
+        }
+        if (!matched)
+            selected.push({ receiver, mute, active });
+        return true;
+    };
+    const complete = visit(payload, "", [], [], 0);
+    if (!complete && unsupported === undefined)
+        return undefined;
+    const receivers = [...new Set(selected.map((v) => v.receiver))];
+    const muteTimeIntervals = [...new Set(selected.flatMap((v) => v.mute))];
+    const hasTimings = selected.some((v) => v.mute.length > 0 || v.active.length > 0);
+    if (hasTimings && request.requireUnmuted !== false)
+        unsupported =
+            "Referenced mute or active time intervals require recurring schedule evaluation, which is unsupported";
     return Object.freeze({
-        receiver: route.receiver,
+        receiver: receivers[0] ?? "",
+        receivers: Object.freeze(receivers),
         matchers: Object.freeze({ ...request.selector }),
-        muteTimeIntervals: Object.freeze([...muteTimeIntervals]),
-        mutedDuringDeployment
+        muteTimeIntervals: Object.freeze(muteTimeIntervals),
+        ...(!hasTimings && unsupported === undefined ? { mutedDuringDeployment: false } : {}),
+        ...(unsupported === undefined ? {} : { unsupportedReason: unsupported })
     });
 }
 function normalizeActiveAlerts(payload, selector, maximumStartAtMs) {
@@ -58738,16 +59132,38 @@ function normalizeDashboard(payload, expectedTitle) {
         return undefined;
     }
     const panels = [];
-    for (const value of dashboard.panels) {
-        if (!isRecord$4(value) || typeof value.id !== "number" || typeof value.title !== "string") {
-            return undefined;
+    const visit = (items, depth) => {
+        if (depth > 32)
+            return false;
+        for (const value of items) {
+            if (!isRecord$4(value) || typeof value.id !== "number" || typeof value.title !== "string")
+                return false;
+            if (value.type === "row") {
+                if (value.panels !== undefined &&
+                    (!Array.isArray(value.panels) || !visit(value.panels, depth + 1)))
+                    return false;
+                continue;
+            }
+            // Operational coverage is classified from explicit panel titles, not datasource type.
+            const signals = [
+                ["traffic", /\b(?:traffic|request rate|throughput)\b/iu],
+                ["errors", /\b(?:errors?|failures?)\b/iu],
+                ["latency", /\b(?:latency|duration|response time)\b/iu],
+                ["saturation", /\b(?:saturation|utilization)\b/iu]
+            ]
+                .filter(([, pattern]) => pattern.test(value.title))
+                .map(([signal]) => signal);
+            panels.push(Object.freeze({
+                id: value.id,
+                title: value.title,
+                signal: signalFor(value.datasource),
+                signals: Object.freeze(signals)
+            }));
         }
-        panels.push(Object.freeze({
-            id: value.id,
-            title: value.title,
-            signal: signalFor(value.datasource)
-        }));
-    }
+        return true;
+    };
+    if (!visit(dashboard.panels, 0))
+        return undefined;
     const templating = isRecord$4(dashboard.templating) ? dashboard.templating : {};
     const rawVariables = templating.list === undefined ? [] : templating.list;
     if (!Array.isArray(rawVariables)) {
@@ -58765,7 +59181,9 @@ function normalizeDashboard(payload, expectedTitle) {
     return Object.freeze({
         uid: dashboard.uid,
         title: dashboard.title,
-        ...(expectedTitle === undefined ? {} : { titleMatches: dashboard.title === expectedTitle }),
+        ...(expectedTitle === undefined
+            ? {}
+            : { titleMatches: dashboard.title.includes(expectedTitle) }),
         ...(updatedAt === undefined ? {} : { updatedAt }),
         panels: Object.freeze(panels),
         variables: Object.freeze(variables)
@@ -58775,52 +59193,68 @@ function normalizeDashboard(payload, expectedTitle) {
 function isRecord$3(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function finite(value) {
-    return typeof value === "number" && Number.isFinite(value);
-}
 function normalizeSlo(payload) {
     if (!isRecord$3(payload) ||
-        typeof payload.uid !== "string" ||
+        typeof payload.uuid !== "string" ||
         typeof payload.name !== "string" ||
-        !finite(payload.objective) ||
-        typeof payload.window !== "string" ||
-        !isRecord$3(payload.labels) ||
-        Object.values(payload.labels).some((value) => typeof value !== "string") ||
-        !["met", "unmet", "no_data"].includes(String(payload.status)) ||
-        typeof payload.evaluatedAt !== "string" ||
-        !Number.isFinite(Date.parse(payload.evaluatedAt)) ||
-        !isRecord$3(payload.errorBudget) ||
-        !finite(payload.errorBudget.remainingPercent) ||
-        !finite(payload.errorBudget.consumedPercent) ||
-        !Array.isArray(payload.burnRates)) {
+        !Array.isArray(payload.objectives) ||
+        payload.objectives.length !== 1 ||
+        !isRecord$3(payload.query))
         return undefined;
-    }
-    const burnRates = [];
-    for (const value of payload.burnRates) {
-        if (!isRecord$3(value) ||
-            typeof value.shortWindow !== "string" ||
-            typeof value.longWindow !== "string" ||
-            !finite(value.value)) {
+    const objective = payload.objectives[0];
+    if (!isRecord$3(objective) ||
+        typeof objective.value !== "number" ||
+        !Number.isFinite(objective.value) ||
+        objective.value < 0 ||
+        objective.value > 1 ||
+        typeof objective.window !== "string")
+        return undefined;
+    const labels = {};
+    if (payload.labels !== undefined && !Array.isArray(payload.labels))
+        return undefined;
+    for (const item of (payload.labels ?? [])) {
+        if (!isRecord$3(item) ||
+            typeof item.key !== "string" ||
+            typeof item.value !== "string" ||
+            Object.hasOwn(labels, item.key))
             return undefined;
-        }
-        burnRates.push(Object.freeze({
-            shortWindow: value.shortWindow,
-            longWindow: value.longWindow,
-            value: value.value
-        }));
+        Object.defineProperty(labels, item.key, { value: item.value, enumerable: true });
     }
+    const query = payload.query;
+    const rawBody = typeof query.type === "string" ? query[query.type] : undefined;
+    const body = isRecord$3(rawBody) ? rawBody : undefined;
+    const destination = isRecord$3(payload.destinationDatasource)
+        ? payload.destinationDatasource
+        : {};
+    const datasourceUid = typeof body?.sourceDatasourceUid === "string" ? body.sourceDatasourceUid : destination.uid;
     return Object.freeze({
-        uid: payload.uid,
+        uid: payload.uuid,
         name: payload.name,
-        objective: payload.objective,
-        window: payload.window,
-        labels: Object.freeze({ ...payload.labels }),
-        status: payload.status,
-        evaluatedAt: new Date(payload.evaluatedAt).toISOString(),
-        remainingBudgetPercent: payload.errorBudget.remainingPercent,
-        consumedBudgetPercent: payload.errorBudget.consumedPercent,
-        burnRates: Object.freeze(burnRates)
+        objective: objective.value * 100,
+        window: objective.window,
+        labels: Object.freeze(labels),
+        query: Object.freeze({ ...query }),
+        ...(typeof datasourceUid === "string" && datasourceUid.length > 0 ? { datasourceUid } : {})
     });
+}
+function indicatorQueries(slo) {
+    const query = slo.query;
+    if (query.type === "freeform" &&
+        isRecord$3(query.freeform) &&
+        typeof query.freeform.query === "string" &&
+        query.freeform.query.trim().length > 0)
+        return [query.freeform.query];
+    if (query.type === "ratio" && isRecord$3(query.ratio)) {
+        const { successMetric, totalMetric } = query.ratio;
+        if (isRecord$3(successMetric) &&
+            isRecord$3(totalMetric) &&
+            typeof successMetric.prometheusMetric === "string" &&
+            successMetric.prometheusMetric.trim().length > 0 &&
+            typeof totalMetric.prometheusMetric === "string" &&
+            totalMetric.prometheusMetric.trim().length > 0)
+            return [successMetric.prometheusMetric, totalMetric.prometheusMetric];
+    }
+    return undefined;
 }
 
 function hasHttpStatus(error) {
@@ -58836,21 +59270,103 @@ class GrafanaClient {
         this.clock = options.clock ?? Date.now;
     }
     async getDashboard(request) {
-        return this.load(request, `api/dashboards/uid/${encodeURIComponent(request.uid)}`, "grafana.dashboard", "dashboard.read", (payload) => normalizeDashboard(payload, request.expectedTitle), (value) => value.updatedAt);
+        return this.load(request, `api/dashboards/uid/${encodeURIComponent(request.uid)}`, "grafana.dashboard", "dashboard.read", (payload) => {
+            const value = normalizeDashboard(payload, request.expectedTitle);
+            return value?.uid === request.uid ? value : undefined;
+        }, (value) => value.updatedAt);
     }
     async getAlertRules(request) {
-        return this.load(request, "api/v1/provisioning/alert-rules", "grafana.alert-rules", "alerting.rules.read", (payload) => normalizeAlertRules(payload, request.selector), (value) => value.reduce((latest, rule) => latest === undefined || rule.evaluatedAt > latest ? rule.evaluatedAt : latest, undefined), true);
+        return this.load(request, "api/v1/provisioning/alert-rules", "grafana.alert-rules", "alerting.rules.read", (payload) => normalizeAlertRules(payload, request.selector), () => new Date(this.clock()).toISOString());
     }
     async getActiveAlerts(request) {
         return this.load(request, "api/prometheus/grafana/api/v1/alerts", "grafana.active-alerts", "alerting.state.read", (payload) => normalizeActiveAlerts(payload, request.selector, this.clock() + request.maximumFutureSkewMs), () => new Date(this.clock()).toISOString(), true);
     }
     async getNotificationRoute(request) {
-        return this.load(request, "api/v1/provisioning/policies", "grafana.notification-route", "alerting.policies.read", (payload) => normalizeNotificationRoute(payload, request));
+        const route = await this.load(request, "api/v1/provisioning/policies", "grafana.notification-route", "alerting.policies.read", (payload) => normalizeNotificationRoute(payload, request));
+        if (route.state !== "valid" || route.value === undefined)
+            return route;
+        if (route.value.unsupportedReason !== undefined)
+            return this.insufficient(route, route.value.unsupportedReason);
+        if (request.verifyReceiver === false)
+            return route;
+        const contacts = await this.load(request, "api/v1/provisioning/contact-points", "grafana.contact-points", "alerting.receivers.read", (payload) => {
+            if (!Array.isArray(payload) ||
+                payload.some((v) => v === null ||
+                    typeof v !== "object" ||
+                    typeof v.name !== "string" ||
+                    v.name.length === 0 ||
+                    typeof v.type !== "string" ||
+                    v.type.length === 0 ||
+                    v.settings === null ||
+                    typeof v.settings !== "object"))
+                return undefined;
+            return payload.map((v) => String(v.name));
+        });
+        if (contacts.state !== "valid" || contacts.value === undefined)
+            return Object.freeze({ ...route, state: contacts.state, diagnostics: contacts.diagnostics });
+        return Object.freeze({
+            ...route,
+            value: Object.freeze({
+                ...route.value,
+                receiverConfigured: route.value.receivers.length > 0 &&
+                    route.value.receivers.every((receiver) => contacts.value?.includes(receiver))
+            })
+        });
     }
     async getSlo(request) {
-        return this.load(request, `api/plugins/grafana-slo-app/resources/v1/slo/${encodeURIComponent(request.uid)}`, "grafana.slo", "slo.read", normalizeSlo, (value) => value.evaluatedAt, true);
+        const raw = await this.load(request, `api/plugins/grafana-slo-app/resources/v1/slo/${encodeURIComponent(request.uid)}`, "grafana.slo", "slo.read", normalizeSlo, undefined, false, "Grafana SLO evidence must use uuid, labels as key/value pairs, and exactly one fractional objective with its window");
+        if (raw.state !== "valid" || raw.value === undefined)
+            return raw;
+        if (raw.value.uid !== request.uid)
+            return Object.freeze({
+                ...raw,
+                state: "invalid",
+                diagnostics: Object.freeze([
+                    {
+                        code: "EVIDENCE_INVALID",
+                        message: "Grafana SLO UUID does not match the requested identity",
+                        retryable: false
+                    }
+                ])
+            });
+        if (request.validateIndicatorQuery !== true)
+            return raw;
+        const queries = indicatorQueries(raw.value);
+        if (queries === undefined || raw.value.datasourceUid === undefined)
+            return this.insufficient(raw, "SLO indicator validation supports ratio/freeform Prometheus queries with an explicit datasource UID");
+        for (const query of queries) {
+            const parameters = new URLSearchParams({ query });
+            const result = await this.load(request, `api/datasources/proxy/uid/${encodeURIComponent(raw.value.datasourceUid)}/api/v1/query?${parameters.toString()}`, "grafana.slo-indicator", "datasources.query.read", (payload) => {
+                if (payload === null ||
+                    typeof payload !== "object" ||
+                    !("status" in payload) ||
+                    payload.status !== "success" ||
+                    !("data" in payload) ||
+                    payload.data === null ||
+                    typeof payload.data !== "object" ||
+                    !("resultType" in payload.data) ||
+                    !["vector", "scalar", "matrix"].includes(String(payload.data.resultType)) ||
+                    !("result" in payload.data) ||
+                    !Array.isArray(payload.data.result))
+                    return undefined;
+                return true;
+            });
+            if (result.state !== "valid")
+                return Object.freeze({ ...raw, state: result.state, diagnostics: result.diagnostics });
+        }
+        return Object.freeze({
+            ...raw,
+            value: Object.freeze({ ...raw.value, indicatorQueryIsValid: true })
+        });
     }
-    async load(request, path, kind, capability, normalize, observedAtFor, freshnessSensitive = false) {
+    insufficient(raw, message) {
+        return Object.freeze({
+            ...raw,
+            state: "insufficient",
+            diagnostics: Object.freeze([{ code: "EVIDENCE_INSUFFICIENT", message, retryable: false }])
+        });
+    }
+    async load(request, path, kind, capability, normalize, observedAtFor, freshnessSensitive = false, invalidMessage = "Grafana returned malformed evidence") {
         const acquiredAt = new Date(this.clock()).toISOString();
         const base = {
             id: stableFingerprint({
@@ -58896,7 +59412,7 @@ class GrafanaClient {
             const diagnostics = Object.freeze([
                 {
                     code: "EVIDENCE_INVALID",
-                    message: "Grafana returned malformed evidence",
+                    message: invalidMessage,
                     retryable: false
                 }
             ]);
@@ -60046,6 +60562,7 @@ async function withCancellation(operation, signal) {
     }
 }
 
+/// <reference lib="es2024.arraybuffer" />
 class HttpFailure extends GateError {
     retryAfterMs;
     httpStatus;
@@ -60113,17 +60630,19 @@ async function readBoundedBody(response, limit, signal, responseType = "json") {
             retryable: false
         });
     }
-    const decoder = new TextDecoder("utf-8", { fatal: true });
-    let text = "";
+    // Keep network fragments outside the JS string heap; JSON.parse otherwise flattens a
+    // retained decoded rope into a second complete response string.
+    const bytes = new ArrayBuffer(Math.min(limit, 64 * 1024), { maxByteLength: limit });
     let size = 0;
+    let text;
     try {
         while (true) {
             const { done, value } = await withCancellation(() => reader.read(), signal);
             if (done) {
                 break;
             }
-            size += value.byteLength;
-            if (size > limit) {
+            const nextSize = size + value.byteLength;
+            if (nextSize > limit) {
                 await withCancellation(() => reader.cancel(), signal);
                 throw new GateError({
                     code: "PROVIDER_PROTOCOL",
@@ -60131,9 +60650,12 @@ async function readBoundedBody(response, limit, signal, responseType = "json") {
                     retryable: false
                 });
             }
-            text += decoder.decode(value, { stream: true });
+            if (nextSize > bytes.byteLength)
+                bytes.resize(Math.min(limit, Math.max(nextSize, bytes.byteLength * 2)));
+            new Uint8Array(bytes).set(value, size);
+            size = nextSize;
         }
-        text += decoder.decode();
+        text = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes, 0, size));
     }
     catch (cause) {
         void reader.cancel().catch(() => undefined);
@@ -60150,6 +60672,7 @@ async function readBoundedBody(response, limit, signal, responseType = "json") {
         });
     }
     finally {
+        bytes.resize(0);
         reader.releaseLock();
     }
     if (responseType === "text")
@@ -60235,6 +60758,7 @@ class GuardedTransport {
                     if (request.deadlineAtMs !== undefined && this.clock() + delay >= request.deadlineAtMs) {
                         throw gateError;
                     }
+                    request.onRetry?.(attempt + 1);
                     await withCancellation(() => sleepWithCancellation(delay, signal, this.sleep), signal);
                 }
             }
@@ -60765,6 +61289,109 @@ function record$4(value) {
         ? value
         : undefined;
 }
+function matchesSelector(value, labels, version) {
+    const selector = record$4(value);
+    if (selector === undefined)
+        return false;
+    const matchLabels = record$4(selector.matchLabels) ?? {};
+    if ((selector.matchLabels !== undefined && record$4(selector.matchLabels) === undefined) ||
+        Object.values(matchLabels).some((value) => typeof value !== "string") ||
+        (selector.matchExpressions !== undefined && !Array.isArray(selector.matchExpressions)))
+        throw new GateError({
+            code: "EVIDENCE_INVALID",
+            safeMessage: "Pod disruption budget selector is malformed",
+            retryable: false
+        });
+    const expressions = Array.isArray(selector.matchExpressions) ? selector.matchExpressions : [];
+    if (Object.keys(matchLabels).length === 0 && expressions.length === 0)
+        return version === "policy/v1";
+    return (Object.entries(matchLabels).every(([key, value]) => labels[key] === value) &&
+        expressions.every((raw) => {
+            const expression = record$4(raw);
+            if (typeof expression?.key !== "string")
+                throw new GateError({
+                    code: "EVIDENCE_INVALID",
+                    safeMessage: "Pod disruption budget selector is malformed",
+                    retryable: false
+                });
+            const exists = Object.hasOwn(labels, expression.key);
+            const values = Array.isArray(expression.values) ? expression.values : [];
+            if ((["In", "NotIn"].includes(String(expression.operator)) &&
+                (values.length === 0 || values.some((value) => typeof value !== "string"))) ||
+                (["Exists", "DoesNotExist"].includes(String(expression.operator)) && values.length !== 0))
+                throw new GateError({
+                    code: "EVIDENCE_INVALID",
+                    safeMessage: "Pod disruption budget selector is malformed",
+                    retryable: false
+                });
+            switch (expression.operator) {
+                case "In":
+                    return exists && values.includes(labels[expression.key]);
+                case "NotIn":
+                    return !exists || !values.includes(labels[expression.key]);
+                case "Exists":
+                    return exists;
+                case "DoesNotExist":
+                    return !exists;
+                default:
+                    throw new GateError({
+                        code: "EVIDENCE_INVALID",
+                        safeMessage: "Pod disruption budget selector is unsupported",
+                        retryable: false
+                    });
+            }
+        }));
+}
+function requirements(value) {
+    const selector = record$4(value);
+    return [
+        ...Object.entries(record$4(selector?.matchLabels) ?? {}).map(([key, value]) => ({
+            key,
+            operator: "In",
+            values: [value]
+        })),
+        ...(Array.isArray(selector?.matchExpressions) ? selector.matchExpressions : []).map((raw) => {
+            const expression = record$4(raw);
+            return {
+                key: String(expression?.key),
+                operator: String(expression?.operator),
+                values: Array.isArray(expression?.values) ? expression.values : []
+            };
+        })
+    ];
+}
+function constrainsWorkloadSelector(budget, workload) {
+    const target = requirements(workload);
+    const candidates = requirements(budget);
+    // Prove each controller constraint independently. Unproven implication fails closed.
+    return (target.length > 0 &&
+        target.every((required) => candidates.some((candidate) => {
+            if (candidate.key !== required.key)
+                return false;
+            if (required.operator === "In")
+                return (candidate.operator === "In" &&
+                    candidate.values.length > 0 &&
+                    candidate.values.every((value) => required.values.includes(value)));
+            if (required.operator === "Exists")
+                return candidate.operator === "Exists" || candidate.operator === "In";
+            if (required.operator === "DoesNotExist")
+                return candidate.operator === "DoesNotExist";
+            if (required.operator === "NotIn")
+                return (candidate.operator === "DoesNotExist" ||
+                    (candidate.operator === "In" &&
+                        candidate.values.every((value) => !required.values.includes(value))) ||
+                    (candidate.operator === "NotIn" &&
+                        required.values.every((value) => candidate.values.includes(value))));
+            return false;
+        })));
+}
+function podTemplateLabels(resource) {
+    if (resource.kind === "Pod")
+        return record$4(record$4(resource.metadata)?.labels);
+    const spec = record$4(resource.spec);
+    const template = record$4(spec?.template) ?? record$4(record$4(record$4(spec?.jobTemplate)?.spec)?.template);
+    return record$4(record$4(template?.metadata)?.labels);
+}
 function parseKubernetesManifest(content, selector) {
     const documents = parseAllDocuments(content, { uniqueKeys: true });
     if (documents.some((document) => document.errors.length > 0)) {
@@ -60788,7 +61415,20 @@ function parseKubernetesManifest(content, selector) {
     const template = record$4(spec?.template);
     const podSpec = record$4(template?.spec);
     const containers = Array.isArray(podSpec?.containers) ? podSpec.containers : [];
-    const container = record$4(containers[0]);
+    const selected = containers.flatMap((value, index) => {
+        const container = record$4(value);
+        return selector.container === undefined || container?.name === selector.container
+            ? [{ container, index }]
+            : [];
+    });
+    const selectedContainer = selected[0];
+    if (selected.length !== 1 || selectedContainer === undefined)
+        throw new GateError({
+            code: "EVIDENCE_INVALID",
+            safeMessage: "Kubernetes container selection is missing or ambiguous; configure workload.container",
+            retryable: false
+        });
+    const container = selectedContainer.container;
     if (object === undefined ||
         spec === undefined ||
         podSpec === undefined ||
@@ -60800,30 +61440,68 @@ function parseKubernetesManifest(content, selector) {
             retryable: false
         });
     }
-    const budget = resources.find((value) => {
+    const labels = record$4(record$4(template?.metadata)?.labels) ?? {};
+    const budgets = resources.filter((value) => {
         const item = record$4(value);
-        const metadata = record$4(item?.metadata);
-        return item?.kind === "PodDisruptionBudget" && metadata?.namespace === selector.namespace;
+        return (item?.kind === "PodDisruptionBudget" &&
+            record$4(item.metadata)?.namespace === selector.namespace &&
+            matchesSelector(record$4(item.spec)?.selector, labels, item.apiVersion));
     });
-    const budgetSpec = record$4(record$4(budget)?.spec);
-    const strategy = record$4(spec.strategy);
+    if (budgets.length > 1)
+        throw new GateError({
+            code: "EVIDENCE_INVALID",
+            safeMessage: "Multiple pod disruption budgets select the workload",
+            retryable: false
+        });
+    const budgetSpec = record$4(record$4(budgets[0])?.spec);
+    if (budgetSpec !== undefined) {
+        if (!constrainsWorkloadSelector(budgetSpec.selector, spec.selector))
+            throw new GateError({
+                code: "EVIDENCE_INVALID",
+                safeMessage: "Pod disruption budget selector is broader than or cannot be proven to constrain the workload selector",
+                retryable: false
+            });
+        const shared = resources.some((raw, index) => {
+            const item = record$4(raw);
+            if (index === workloadIndex || item === undefined)
+                return false;
+            const namespace = record$4(item.metadata)?.namespace;
+            if (namespace !== undefined && namespace !== selector.namespace)
+                return false;
+            const labels = podTemplateLabels(item);
+            return (labels !== undefined &&
+                matchesSelector(budgetSpec.selector, labels, record$4(budgets[0])?.apiVersion));
+        });
+        if (shared)
+            throw new GateError({
+                code: "EVIDENCE_INVALID",
+                safeMessage: "Pod disruption budget is shared with another rendered workload and cannot prove workload-specific availability",
+                retryable: false
+            });
+    }
+    const strategy = record$4(selector.kind === "Deployment" ? spec.strategy : spec.updateStrategy);
     const rollingUpdate = record$4(strategy?.rollingUpdate);
     return Object.freeze({
         document: workloadIndex,
+        workloadKind: selector.kind,
+        containerIndex: selectedContainer.index,
+        ...(selector.kind === "StatefulSet"
+            ? { partition: typeof rollingUpdate?.partition === "number" ? rollingUpdate.partition : 0 }
+            : {}),
         image: container.image,
         namespaceExplicit: typeof record$4(object.metadata)?.namespace === "string",
-        ...(typeof spec.replicas === "number" ? { replicas: spec.replicas } : {}),
-        ...(typeof strategy?.type === "string" ? { strategy: strategy.type } : {}),
+        ...(selector.kind === "DaemonSet"
+            ? {}
+            : { replicas: typeof spec.replicas === "number" ? spec.replicas : 1 }),
+        strategy: typeof strategy?.type === "string" ? strategy.type : "RollingUpdate",
         ...(typeof rollingUpdate?.maxUnavailable === "number" ||
             typeof rollingUpdate?.maxUnavailable === "string"
             ? { maxUnavailable: rollingUpdate.maxUnavailable }
-            : {}),
+            : { maxUnavailable: selector.kind === "Deployment" ? "25%" : 1 }),
         ...(typeof spec.progressDeadlineSeconds === "number"
             ? { progressDeadlineSeconds: spec.progressDeadlineSeconds }
             : {}),
-        ...(typeof spec.minReadySeconds === "number"
-            ? { minimumReadySeconds: spec.minReadySeconds }
-            : {}),
+        minimumReadySeconds: typeof spec.minReadySeconds === "number" ? spec.minReadySeconds : 0,
         podSecurityContext: Object.freeze({ ...(record$4(podSpec.securityContext) ?? {}) }),
         containerSecurityContext: Object.freeze({ ...(record$4(container.securityContext) ?? {}) }),
         ...(record$4(container.readinessProbe) === undefined
@@ -63875,12 +64553,19 @@ async function resolveArtifact(base, kind, definition, context) {
     }
     else if (kind.startsWith("kubernetes.") && context.phase === "pre_deployment") {
         const files = await loadFiles(base, definition, array(artifacts.rendered_manifests));
-        const workload = record$1(runtime.workload), name = field(workload, "name", base.environment), namespace = field(runtime, "namespace", base.environment), workloadKind = string(workload.kind);
+        const workload = record$1(runtime.workload), name = field(workload, "name", base.environment), namespace = field(runtime, "namespace", base.environment), workloadKind = string(workload.kind), container = field(workload, "container", base.environment);
+        if (workload.container_env !== undefined && container === undefined)
+            configuration("Kubernetes workload.container_env must resolve to a container name");
         if (name === undefined ||
             namespace === undefined ||
             !["Deployment", "StatefulSet", "DaemonSet"].includes(workloadKind ?? ""))
             configuration("Kubernetes artifact gates require active runtime workload.kind/name and namespace");
-        const parsed = parseKubernetesManifest(files.map((f) => f.content.toString("utf8")).join("\n---\n"), { kind: workloadKind, name, namespace });
+        const parsed = parseKubernetesManifest(files.map((f) => f.content.toString("utf8")).join("\n---\n"), {
+            kind: workloadKind,
+            name,
+            namespace,
+            ...(container === undefined ? {} : { container })
+        });
         value = {
             ...parsed,
             production: record$1(base.policy.identity.canonical).environment === "production",
@@ -64117,6 +64802,8 @@ async function logRecords(base, query, context) {
 async function traceRecords(base, source, context) {
     if (base.traces === undefined)
         configuration("Trace acquisition requires a configured traces provider");
+    if (typeof source.query === "string")
+        configuration("Raw TraceQL is unsupported; use an identity-object trace selector or canonical identity defaults");
     const query = record$1(source.query), expected = identity(base.policy), range = windowFor(base, context);
     const service = {
         name: string(query["resource.service.name"]) ?? String(expected.serviceName ?? ""),
@@ -64478,10 +65165,7 @@ async function resolveTelemetry(base, kind, definition, context) {
                 }),
                 ...raws
             ];
-        return [
-            combined(raws, kind, { estimate: values.estimate, budget: assertions.budget }),
-            ...raws
-        ];
+        return [combined(raws, kind, { measurements: values }), ...raws];
     }
     return undefined;
 }
@@ -64489,6 +65173,12 @@ async function resolveTelemetry(base, kind, definition, context) {
 async function resolveComparison(base, kind, definition, context) {
     if (!kind.startsWith("comparison."))
         return undefined;
+    const baselineSettings = record$1(base.policy.release.baseline);
+    if ((baselineSettings.strategy !== undefined && baselineSettings.strategy !== "explicit") ||
+        baselineSettings.lookback !== undefined ||
+        baselineSettings.exclude_incident_windows === true ||
+        baselineSettings.exclude_deployment_windows === true)
+        configuration("Only explicit baselines without automatic discovery or window filtering are supported");
     const source = record$1(definition.source), a = record$1(definition.assertions), candidate = record$1(source.candidate ?? definition.candidate), baseline = record$1(source.baseline ?? definition.baseline);
     const candidateId = string(candidate.release_id) ?? context.releaseId, configuredId = string(baseline.release_id), baselineId = configuredId === undefined || configuredId === "release.baseline"
         ? string(record$1(base.policy.release.baseline).explicit_release_id)
@@ -64532,8 +65222,12 @@ async function resolveComparison(base, kind, definition, context) {
                 requests: br === undefined ? undefined : scalar(br),
                 releaseId: baselineId
             },
-            minimumCandidateSamples: number(a.minimum_candidate_samples) ?? 1,
-            minimumBaselineSamples: number(a.minimum_baseline_samples) ?? 1,
+            minimumCandidateSamples: number(a.minimum_candidate_samples) ??
+                number(record$1(base.policy.release.comparison).minimum_candidate_samples) ??
+                1,
+            minimumBaselineSamples: number(a.minimum_baseline_samples) ??
+                number(record$1(base.policy.release.baseline).minimum_samples) ??
+                1,
             minimumCandidateRequests,
             minimumBaselineRequests,
             normalizedPerRequest: normalized,
@@ -64583,10 +65277,17 @@ async function resolveComparison(base, kind, definition, context) {
                             samples: bv.length,
                             releaseId: baselineId
                         },
-                        minimumCandidateSamples: 1,
-                        minimumBaselineSamples: 1,
-                        maximumRelativeRegressionPercent: number(record$1(a.p95_relative_increase_percent).less_than_or_equal),
-                        maximumAbsoluteRegression: 1000 * (number(record$1(a.p95_absolute_increase).less_than_or_equal) ?? Infinity)
+                        minimumCandidateSamples: number(a.minimum_candidate_samples) ??
+                            number(record$1(base.policy.release.comparison).minimum_candidate_samples) ??
+                            1,
+                        minimumBaselineSamples: number(a.minimum_baseline_samples) ??
+                            number(record$1(base.policy.release.baseline).minimum_samples) ??
+                            1,
+                        maximumRelativeRegressionPercent: number(a.maximum_relative_regression_percent) ??
+                            number(record$1(a.p95_relative_increase_percent).less_than_or_equal),
+                        maximumAbsoluteRegression: number(a.maximum_absolute_regression) ??
+                            (record$1(a.p95_absolute_increase).unit === "milliseconds" ? 1 : 1000) *
+                                (number(record$1(a.p95_absolute_increase).less_than_or_equal) ?? Infinity)
                     }
                 };
             })
@@ -64657,6 +65358,8 @@ async function resolveGrafana(base, grafana, kind, definition, context) {
             await grafana.getNotificationRoute({
                 ...request,
                 selector: Object.fromEntries(Object.entries(record$1(source.match)).filter((e) => typeof e[1] === "string")),
+                requireUnmuted: a.mute_timing_does_not_cover_deployment_window !== false,
+                verifyReceiver: a.receiver_is_configured === true,
                 deploymentStart: start,
                 deploymentEnd: new Date(base.now() +
                     durationMs(record$1(base.policy.observation.post_deployment).evaluation_window, 600000)).toISOString()
@@ -64666,7 +65369,11 @@ async function resolveGrafana(base, grafana, kind, definition, context) {
     const uid = field(source, "uid", base.environment);
     if (uid === undefined)
         configuration(`${kind} requires source.uid or source.uid_env`);
-    const raw = await grafana.getSlo({ ...request, uid }), slo = raw.value;
+    const raw = await grafana.getSlo({
+        ...request,
+        uid,
+        validateIndicatorQuery: kind === "grafana.slo_definition" && a.indicator_query_is_valid === true
+    }), slo = raw.value;
     if (kind === "grafana.slo_definition") {
         const expected = identity(base.policy), labels = slo?.labels ?? {};
         return [
@@ -64677,18 +65384,39 @@ async function resolveGrafana(base, grafana, kind, definition, context) {
             })
         ];
     }
-    if (kind === "grafana.slo_status")
-        return [mapped(raw, kind, { fresh: raw.state === "valid", status: slo?.status })];
+    if (kind === "grafana.slo_status") {
+        const query = record$1(source.queries).status;
+        if (typeof query !== "string")
+            configuration("grafana.slo_status requires source.queries.status returning exactly 1 (met) or 0 (unmet)");
+        const measured = await metric(base, query, context);
+        const status = scalar(measured);
+        if (measured.state === "valid" && status !== 0 && status !== 1)
+            invalid("grafana.slo_status query must return exactly 1 (met) or 0 (unmet)");
+        return [
+            combined([raw, measured], kind, {
+                fresh: raw.state === "valid" && measured.state === "valid",
+                status: status === 1 ? "met" : status === 0 ? "unmet" : undefined
+            }),
+            raw,
+            measured
+        ];
+    }
     if (kind === "grafana.error_budget") {
         const maximumConsumed = number(a.maximum_consumed_during_release_percent) ??
             number(record$1(a.consumed_during_release_percent).less_than_or_equal), query = record$1(source.queries).release_consumed_percent;
         if (maximumConsumed !== undefined && typeof query !== "string")
             configuration("Release-specific error-budget consumption requires source.queries.release_consumed_percent; Grafana cumulative consumedPercent cannot represent release consumption");
+        const remainingQuery = record$1(source.queries).remaining_percent;
+        if (typeof remainingQuery !== "string")
+            configuration("grafana.error_budget requires source.queries.remaining_percent; the SLO definition API does not expose a measured budget");
+        const remaining = await metric(base, remainingQuery, context);
         const consumed = typeof query === "string" ? await metric(base, query, context) : undefined;
         return [
-            combined(consumed === undefined ? [raw] : [raw, consumed], kind, {
-                fresh: raw.state === "valid",
-                remainingPercent: slo?.remainingBudgetPercent,
+            combined(consumed === undefined ? [raw, remaining] : [raw, remaining, consumed], kind, {
+                fresh: raw.state === "valid" &&
+                    remaining.state === "valid" &&
+                    (consumed === undefined || consumed.state === "valid"),
+                remainingPercent: scalar(remaining),
                 minimumRemainingPercent: number(a.minimum_remaining_percent) ??
                     number(record$1(a.remaining_percent).greater_than_or_equal) ??
                     0,
@@ -64700,6 +65428,7 @@ async function resolveGrafana(base, grafana, kind, definition, context) {
                     })
             }),
             raw,
+            remaining,
             ...(consumed === undefined ? [] : [consumed])
         ];
     }
@@ -64720,6 +65449,312 @@ async function resolveGrafana(base, grafana, kind, definition, context) {
         return [combined(raws, kind, { fresh: raw.state === "valid", pairs }), ...raws];
     }
     return undefined;
+}
+
+const signals = new Set(["metrics", "logs", "traces"]);
+function signal$2(value) {
+    return typeof value === "string" && signals.has(value) ? value : undefined;
+}
+function defaultSignal(gate) {
+    const provider = record$1(gate.source).provider;
+    if (signal$2(provider))
+        return signal$2(provider);
+    const kind = String(gate.type);
+    if (kind.startsWith("trace.") || kind === "comparison.trace_metrics")
+        return "traces";
+    if (kind.startsWith("log."))
+        return "logs";
+    if (/^(?:metric\.|comparison\.|grafana\.|runtime\.)/u.test(kind) ||
+        [
+            "dependency.health",
+            "telemetry.collector_health",
+            "telemetry.cardinality_estimate",
+            "telemetry.volume_estimate"
+        ].includes(kind))
+        return "metrics";
+    return undefined;
+}
+function duration(value) {
+    const parts = [...value.matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h|d|w|y)/gu)];
+    if (parts.length === 0 || parts.map((p) => p[0]).join("") !== value)
+        return Number.NaN;
+    return parts.reduce((total, part) => total +
+        Number(part[1]) *
+            ({ ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000, w: 604800000, y: 31536000000 }[part[2] ?? ""] ?? Number.NaN), 0);
+}
+function unquoted(query) {
+    return query.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`/gu, '""');
+}
+function lookbackMs(query) {
+    const text = unquoted(query);
+    // Absolute @ timestamps and negative offsets cannot establish a bounded lookback here.
+    if (text.includes("@") || /\boffset\s*-/u.test(text))
+        return Number.NaN;
+    const selectors = [...text.matchAll(/\[([^\]]*)\]/gu)].map((match) => duration(String(match[1]).split(":")[0] ?? ""));
+    const offsets = [...text.matchAll(/\boffset\s+([\d.]+[a-z\d.]*)/gu)].map((match) => duration(match[1] ?? ""));
+    // Summing selectors is a conservative upper bound for nested subqueries and offsets.
+    return [...selectors, ...offsets].reduce((total, part) => total + part, 0);
+}
+function selectors(query) {
+    const found = [];
+    let quote;
+    let start;
+    for (let index = 0; index < query.length; index++) {
+        const character = query[index];
+        if (quote !== undefined) {
+            if (character === "\\" && quote !== "`")
+                index++;
+            else if (character === quote)
+                quote = undefined;
+            continue;
+        }
+        if (character === '"' || character === "'" || character === "`") {
+            quote = character;
+            continue;
+        }
+        if (character === "{")
+            start = index + 1;
+        else if (character === "}" && start !== undefined) {
+            found.push(query.slice(start, index));
+            start = undefined;
+        }
+    }
+    return found;
+}
+function hasBareVector(query) {
+    const residual = unquoted(query)
+        .replace(/(?:[a-zA-Z_:][\w:]*\s*)?\{[^{}]*\}/gu, "0")
+        .replace(/\b(?:by|without|on|ignoring|group_left|group_right)\s*\([^)]*\)/gu, "")
+        .replace(/\[[^\]]*\]/gu, "")
+        .replace(/\boffset\s+-?[\d.]+[a-z\d.]*/gu, "")
+        .replace(/\b[a-zA-Z_][\w]*\s*(?=\()/gu, "")
+        .replace(/\b(?:and|or|unless|bool|Inf|NaN)\b/gu, "")
+        .replace(/\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/gu, "");
+    // Unknown bare identifiers cannot prove tenant scope without a full PromQL parser.
+    return /[a-zA-Z_:][\w:]*/u.test(residual);
+}
+function matchers(selector) {
+    return [...selector.matchAll(/([a-zA-Z_][\w]*)\s*(=~|!=|!~|=)\s*("(?:\\.|[^"\\])*")/gu)].map((match) => ({
+        label: match[1] ?? "",
+        operator: match[2] ?? "",
+        value: JSON.parse(match[3] ?? '""')
+    }));
+}
+function scoped(base, query) {
+    const expected = record$1(base.policy.identity.canonical);
+    if (query.signal === "traces") {
+        const selector = record$1(query.query);
+        return ((selector["resource.service.name"] ?? expected.service_name) === expected.service_name &&
+            (selector["resource.deployment.environment.name"] ?? expected.environment) ===
+                expected.environment);
+    }
+    const mapping = record$1(record$1(base.policy.identity.provider_mappings)[query.signal]);
+    const service = string(mapping["service.name"]) ?? (query.signal === "metrics" ? "service_name" : "service");
+    const environment = string(mapping["deployment.environment.name"]) ??
+        (query.signal === "metrics" ? "deployment_environment" : "environment");
+    const streamSelectors = selectors(String(query.query));
+    if (query.signal === "metrics" && hasBareVector(String(query.query)))
+        return false;
+    return (streamSelectors.length > 0 &&
+        streamSelectors.every((selector) => {
+            const labels = matchers(selector);
+            return (labels.some((m) => m.label === service && m.operator === "=" && m.value === expected.service_name) &&
+                labels.some((m) => m.label === environment && m.operator === "=" && m.value === expected.environment));
+        }));
+}
+function boundedLog(query) {
+    return selectors(query).some((selector) => matchers(selector).some((m) => {
+        if (m.operator === "=")
+            return m.value.length > 0;
+        if (m.operator !== "=~")
+            return false;
+        try {
+            return !new RegExp(`^(?:${m.value})$`, "u").test("");
+        }
+        catch {
+            return false;
+        }
+    }));
+}
+function collect(base, definition, context) {
+    const a = record$1(definition.assertions);
+    const scopes = a.validate_queries_from === undefined
+        ? ["gates.pre_deployment", "gates.post_deployment"]
+        : array(a.validate_queries_from);
+    if (scopes.some((scope) => scope !== "gates.pre_deployment" && scope !== "gates.post_deployment"))
+        configuration("Query validation scope must be gates.pre_deployment or gates.post_deployment");
+    const sources = record$1(definition.sources);
+    if (Object.entries(sources).some(([key, value]) => signal$2(key) === undefined || value !== key))
+        configuration("Query validation sources must select the canonical metrics, logs, or traces provider");
+    const allowed = Object.keys(sources).length === 0 ? signals : new Set(Object.keys(sources));
+    const found = new Map();
+    for (const scope of new Set(scopes)) {
+        const phase = scope === "gates.pre_deployment" ? "pre_deployment" : "post_deployment";
+        for (const gate of array(base.policy.gates[phase]).map(record$1)) {
+            if (gate.type === "telemetry.query_validation")
+                continue;
+            const source = record$1(gate.source);
+            const fallback = defaultSignal(gate);
+            const threshold = gate.type === "metric.threshold" || gate.type === "metric.multi_threshold";
+            const add = (backend, value) => {
+                if (backend === undefined)
+                    configuration("Cannot determine telemetry backend for a selected query");
+                if (!allowed.has(backend))
+                    return;
+                if (backend === "traces" && typeof value === "string")
+                    configuration("Raw TraceQL query validation is unsupported; use the supported trace identity selector");
+                if (backend !== "traces" && (typeof value !== "string" || value.trim().length === 0))
+                    configuration("Selected metric and log queries must be nonempty strings");
+                const query = typeof value === "string" ? value : record$1(value);
+                const queryContext = { ...context, phase };
+                const range = windowFor(base, queryContext);
+                const configuredWindow = source.window ?? gate.window;
+                const requested = configuredWindow === undefined
+                    ? 0
+                    : typeof configuredWindow === "string"
+                        ? duration(configuredWindow)
+                        : Number.NaN;
+                const requestRangeMs = Math.max(requested, backend === "metrics" && gate.type !== "metric.range"
+                    ? 0
+                    : Date.parse(range.end) - Date.parse(range.start));
+                const fingerprint = stableFingerprint({ backend, query });
+                const previous = found.get(fingerprint);
+                if (previous !== undefined) {
+                    previous.threshold ||= threshold;
+                    if (requestRangeMs > previous.requestRangeMs) {
+                        previous.requestRangeMs = requestRangeMs;
+                        previous.phase = phase;
+                    }
+                }
+                else
+                    found.set(fingerprint, {
+                        signal: backend,
+                        query,
+                        fingerprint,
+                        source,
+                        phase,
+                        threshold,
+                        requestRangeMs
+                    });
+            };
+            const walk = (value, backend, depth) => {
+                if (depth > 32)
+                    configuration("Query definition nesting exceeds the supported bound");
+                if (Array.isArray(value)) {
+                    for (const child of value)
+                        walk(child, backend, depth + 1);
+                    return;
+                }
+                const node = record$1(value);
+                const local = signal$2(node.provider) ?? backend;
+                for (const [key, child] of Object.entries(node)) {
+                    if (key === "query" || key.endsWith("_query")) {
+                        add(key === "short_query" ||
+                            key === "long_query" ||
+                            key.endsWith("request_count_query") ||
+                            key === "runtime_release_query"
+                            ? "metrics"
+                            : local, child);
+                        continue;
+                    }
+                    if (key === "queries" || key === "probes") {
+                        for (const [name, item] of Object.entries(record$1(child))) {
+                            const hint = signal$2(name) ?? local;
+                            if (typeof item === "string" ||
+                                (hint === "traces" &&
+                                    Object.keys(record$1(item)).some((k) => k.startsWith("resource."))))
+                                add(hint, item);
+                            else if (key === "probes" && hint === "traces" && record$1(item).query === undefined)
+                                add("traces", {});
+                            else
+                                walk(item, hint, depth + 1);
+                        }
+                        continue;
+                    }
+                    if (child !== null && typeof child === "object")
+                        walk(child, local, depth + 1);
+                }
+            };
+            walk(gate, fallback, 0);
+            if (fallback === "traces" &&
+                source.query === undefined &&
+                !found.has(stableFingerprint({ backend: "traces", query: {} })))
+                add("traces", {});
+        }
+    }
+    if (found.size === 0)
+        configuration("Query validation requires at least one query in the selected scopes and sources");
+    return [...found.values()];
+}
+async function resolveQueryValidation(base, definition, context) {
+    const a = record$1(definition.assertions);
+    const maximum = a.maximum_query_range === undefined ? Infinity : durationMs(a.maximum_query_range, Number.NaN);
+    if (!(maximum > 0))
+        configuration("Query validation maximum_query_range must be a positive supported duration");
+    const queries = [];
+    const raws = [];
+    for (const query of collect(base, definition, context)) {
+        const rangeMs = query.requestRangeMs + (typeof query.query === "string" ? lookbackMs(query.query) : 0);
+        const bounded = query.signal !== "logs" || boundedLog(String(query.query));
+        const withinRange = Number.isFinite(rangeMs) && rangeMs <= maximum;
+        let raw;
+        if ((maximum === Infinity || withinRange) &&
+            (a.reject_unbounded_log_queries !== true || bounded)) {
+            const queryContext = { ...context, phase: query.phase };
+            raw =
+                query.signal === "metrics"
+                    ? await metric(base, query.query, queryContext)
+                    : query.signal === "logs"
+                        ? await logRecords(base, query.query, queryContext)
+                        : await traceRecords(base, { ...query.source, query: query.query }, queryContext);
+        }
+        const value = record$1(raw?.value);
+        // A successfully parsed empty/stale response proves compilation, not telemetry health.
+        const valid = raw !== undefined &&
+            raw.value !== undefined &&
+            ["valid", "missing", "stale", "insufficient"].includes(raw.state);
+        const groupBy = typeof query.query !== "string"
+            ? []
+            : [...unquoted(query.query).matchAll(/\bby\s*\(([^)]*)\)/gu)].flatMap((match) => String(match[1])
+                .split(",")
+                .map((label) => label.trim())
+                .filter((label) => /^[a-zA-Z_][\w]*$/u.test(label)));
+        const summary = {
+            fingerprint: query.fingerprint,
+            signal: query.signal,
+            valid,
+            threshold: query.threshold,
+            shape: query.signal === "metrics"
+                ? array(value.samples).length === 1
+                    ? "scalar"
+                    : "vector"
+                : query.signal === "logs"
+                    ? "records"
+                    : "traces",
+            production: record$1(base.policy.identity.canonical).environment === "production",
+            scoped: scoped(base, query),
+            bounded,
+            groupBy,
+            ...(Number.isFinite(rangeMs) ? { rangeMs } : {}),
+            rangeSupported: Number.isFinite(rangeMs)
+        };
+        queries.push(summary);
+        const normalized = evidence("telemetry.query-validation.query", context, new Date(base.now()).toISOString(), summary, query.signal, "query.validate");
+        raws.push(Object.freeze({
+            ...normalized,
+            ...(raw !== undefined && !valid
+                ? {
+                    state: raw.state,
+                    diagnostics: Object.freeze(raw.diagnostics.map((d) => ({
+                        code: d.code,
+                        retryable: d.retryable,
+                        message: "Telemetry backend could not validate a selected query"
+                    })))
+                }
+                : {})
+        }));
+    }
+    return [combined(raws, "telemetry.query_validation", { queries }), ...raws];
 }
 
 // Polyfill for `File` global required by undici v7+.
@@ -207902,8 +208937,11 @@ function replicas(kind, spec, status) {
             unavailable: count(status.numberUnavailable)
         });
     }
-    const desired = count(spec.replicas);
-    const available = count(status.availableReplicas);
+    const desired = spec.replicas === undefined ? 1 : count(spec.replicas);
+    const available = count(status.availableReplicas ??
+        (kind === "StatefulSet" && (spec.minReadySeconds === undefined || spec.minReadySeconds === 0)
+            ? status.readyReplicas
+            : undefined));
     return Object.freeze({
         desired,
         updated: count(status.updatedReplicas),
@@ -207914,17 +208952,25 @@ function replicas(kind, spec, status) {
             : Math.max(0, desired - available)
     });
 }
-function podEvidence(value) {
+function podEvidence(value, selectedContainer) {
     const pod = object(value);
     const metadata = optionalObject(pod.metadata);
     const status = optionalObject(pod.status);
     const containerStatuses = Array.isArray(status.containerStatuses) ? status.containerStatuses : [];
+    const selectedStatuses = containerStatuses.filter((raw) => selectedContainer === undefined || object(raw).name === selectedContainer);
+    if ((selectedContainer === undefined && containerStatuses.length > 1) ||
+        (selectedContainer !== undefined && selectedStatuses.length !== 1))
+        throw new GateError({
+            code: "EVIDENCE_INVALID",
+            safeMessage: "Kubernetes pod container selection is missing or ambiguous",
+            retryable: false
+        });
     const waitingReasons = [];
     const terminationReasons = [];
     const images = [];
     let restarts = 0;
     let imageDigest;
-    for (const raw of containerStatuses) {
+    for (const raw of selectedStatuses) {
         const container = object(raw);
         restarts += count(container.restartCount);
         if (typeof container.image === "string")
@@ -207998,7 +209044,7 @@ function normalizeKubernetesSnapshot(input) {
         const owners = ownerUids(podMetadata);
         return owners.length === 0 || owners.some((uid) => acceptedOwners.has(uid));
     })
-        .map(podEvidence);
+        .map((pod) => podEvidence(pod, input.container));
     const involvedUids = new Set([metadata.uid, ...selectedPods.flatMap((pod) => pod.uid ?? [])]);
     const deploymentStartedAt = input.deploymentStartedAt === undefined ? undefined : Date.parse(input.deploymentStartedAt);
     const warningEvents = input.events.flatMap((raw) => {
@@ -208059,6 +209105,12 @@ function normalizeKubernetesSnapshot(input) {
         workloadKind: kind,
         workloadName: metadata.name,
         rollout: Object.freeze({
+            ...(typeof status.currentRevision === "string"
+                ? { currentRevision: status.currentRevision }
+                : {}),
+            ...(typeof status.updateRevision === "string"
+                ? { updateRevision: status.updateRevision }
+                : {}),
             generation,
             observedGeneration,
             generationObserved: observedGeneration >= generation,
@@ -208122,6 +209174,7 @@ class KubernetesRuntimeAdapter {
             const acquiredAt = new Date(this.clock()).toISOString();
             const value = normalizeKubernetesSnapshot({
                 target: request.target,
+                ...(request.container === undefined ? {} : { container: request.container }),
                 workload,
                 replicaSets,
                 pods,
@@ -273470,7 +274523,7 @@ class AzureArc extends BaseManagedIdentitySource {
                  * check if the himds executable exists and its permissions allow it to be read
                  * returns undefined if true, throws an error otherwise
                  */
-                accessSync(fileDetectionPath, constants$h.F_OK | constants$h.R_OK);
+                accessSync(fileDetectionPath, constants$i.F_OK | constants$i.R_OK);
                 identityEndpoint = DEFAULT_AZURE_ARC_IDENTITY_ENDPOINT;
                 imdsEndpoint = HIMDS_EXECUTABLE_HELPER_STRING;
             }
@@ -278019,7 +279072,9 @@ function createRuntimeResolver(base, clients = {}) {
                     ...(contextName === undefined ? {} : { context: contextName }),
                     ...(kubeconfigPath === undefined ? {} : { kubeconfigPath })
                 }), base.now);
-            const workload = record$1(runtime.workload), kind = string(workload.kind);
+            const workload = record$1(runtime.workload), kind = string(workload.kind), container = field(workload, "container", env);
+            if (workload.container_env !== undefined && container === undefined)
+                configuration("Kubernetes workload.container_env must resolve to a container name");
             if (kind !== "Deployment" && kind !== "StatefulSet" && kind !== "DaemonSet")
                 configuration("Kubernetes runtime workload.kind must be Deployment, StatefulSet, or DaemonSet");
             return kube.getSnapshot({
@@ -278027,6 +279082,7 @@ function createRuntimeResolver(base, clients = {}) {
                 namespace: required(field(runtime, "namespace", env), "namespace"),
                 kind: kind,
                 name: required(field(workload, "name", env), "workload.name"),
+                ...(container === undefined ? {} : { container }),
                 deploymentStartedAt: string(record$1(base.policy.release.candidate).deployed_at) ??
                     new Date(base.now()).toISOString(),
                 signal: context.signal
@@ -278356,20 +279412,9 @@ class GuardedJwksKeyResolver {
             signal
         };
         const payload = (await this.options.transport.request(request)).data;
-        const envelope = record(payload);
-        if (!Array.isArray(envelope?.keys) || envelope.keys.length > 32) {
-            throw security("JWKS response is invalid or exceeds the key limit");
-        }
-        for (const value of envelope.keys) {
-            const key = record(value);
-            if (key === undefined ||
-                typeof key.kid !== "string" ||
-                (key.use !== undefined && key.use !== "sig") ||
-                !["RSA", "EC"].includes(String(key.kty))) {
-                throw security("JWKS contains an invalid signing key");
-            }
-            this.cache.set(key.kid, key);
-        }
+        const keys = parsePublicJwks(payload);
+        for (const [id, key] of keys)
+            this.cache.set(id, key);
         const resolved = this.cache.get(kid);
         if (resolved === undefined)
             throw security("JWKS does not contain the requested signing key");
@@ -278383,6 +279428,36 @@ function record(value) {
 }
 function security(message, cause) {
     return new GateError({ code: "SECURITY_POLICY", safeMessage: message, retryable: false, cause });
+}
+function parsePublicJwks(value) {
+    const envelope = record(value);
+    if (!Array.isArray(envelope?.keys) || envelope.keys.length === 0 || envelope.keys.length > 32)
+        throw security("JWKS is invalid or exceeds the key limit");
+    const keys = new Map();
+    for (const raw of envelope.keys) {
+        const key = record(raw);
+        if (key === undefined ||
+            typeof key.kid !== "string" ||
+            key.kid.length === 0 ||
+            (key.use !== undefined && key.use !== "sig") ||
+            (key.key_ops !== undefined &&
+                (!Array.isArray(key.key_ops) || !key.key_ops.includes("verify"))) ||
+            (key.kty !== "RSA" && key.kty !== "EC") ||
+            (key.kty === "EC" && key.crv !== "P-256") ||
+            (key.alg !== undefined && key.alg !== (key.kty === "RSA" ? "RS256" : "ES256")) ||
+            ["d", "p", "q", "dp", "dq", "qi", "oth", "k"].some((field) => key[field] !== undefined))
+            throw security("JWKS contains an invalid or non-public signing key");
+        if (keys.has(key.kid))
+            throw security("JWKS contains duplicate signing key identifiers");
+        try {
+            createPublicKey({ key: key, format: "jwk" });
+        }
+        catch (cause) {
+            throw security("JWKS contains a malformed public signing key", cause);
+        }
+        keys.set(key.kid, key);
+    }
+    return keys;
 }
 function parsePart(value) {
     try {
@@ -278471,7 +279546,8 @@ class CompactDeploymentVerifier {
             payload.iat > nowSeconds + skewSeconds) {
             throw security("Signed deployment evidence is expired or issued in the future");
         }
-        if (payload.target !== expected.target ||
+        if ((expected.deploymentId !== undefined && payload.deploymentId !== expected.deploymentId) ||
+            payload.target !== expected.target ||
             payload.releaseId !== expected.releaseId ||
             payload.commit !== expected.commit ||
             payload.artifactDigest !== expected.artifactDigest) {
@@ -278508,19 +279584,42 @@ class CompactDeploymentVerifier {
 
 async function verifiedDeployment(base, transport, context) {
     const config = record$1(record$1(base.policy.providers.evidence).deployment), signature = record$1(config.signature), canonical = record$1(base.policy.identity.canonical), runtime = activeRuntime(base.policy);
-    const issuer = field(signature, "trusted_issuer", base.environment), jwks = field(signature, "jwks_url", base.environment), workflow = field(signature, "workflow_identity", base.environment), audience = string(signature.audience);
+    const issuer = field(signature, "trusted_issuer", base.environment), jwks = field(signature, "jwks_url", base.environment), workflow = field(signature, "workflow_identity", base.environment), audience = string(signature.audience), jwksFile = string(signature.jwks_file);
     if (issuer === undefined ||
-        jwks === undefined ||
+        (jwks === undefined && jwksFile === undefined) ||
         workflow === undefined ||
         audience === undefined)
-        configuration("Signed deployment evidence requires providers.evidence.deployment.signature trusted_issuer, jwks_url, workflow_identity (or their _env references), and audience");
+        configuration("Signed deployment evidence requires providers.evidence.deployment.signature trusted_issuer, jwks_url or jwks_file, workflow_identity (or their _env references), and audience");
     const files = await loadFiles(base, { source: { provider: "deployment" } });
-    const keys = new GuardedJwksKeyResolver({ jwksUrl: jwks, transport, signal: context.signal });
+    if (jwks !== undefined && jwksFile !== undefined)
+        configuration("Signed deployment evidence requires exactly one of jwks_url or jwks_file");
+    let localKeys;
+    if (jwksFile !== undefined) {
+        const trusted = await base.files.load({ path: jwksFile, blocking: true });
+        if (trusted.content.byteLength > 256 * 1024)
+            configuration("Trusted JWKS file exceeds the size limit");
+        let payload;
+        try {
+            payload = JSON.parse(trusted.content.toString("utf8"));
+        }
+        catch {
+            configuration("Trusted JWKS file is not valid JSON");
+        }
+        localKeys = parsePublicJwks(payload);
+    }
+    const keys = jwks === undefined
+        ? undefined
+        : new GuardedJwksKeyResolver({ jwksUrl: jwks, transport, signal: context.signal });
     const verifier = new CompactDeploymentVerifier({
         trustedIssuer: issuer,
         audience,
         expectedWorkflowIdentity: workflow,
-        keyResolver: (kid) => keys.resolve(kid),
+        keyResolver: async (kid) => {
+            if (keys !== undefined)
+                return keys.resolve(kid);
+            return (localKeys?.get(kid) ??
+                configuration("Trusted JWKS file does not contain the requested signing key"));
+        },
         clock: base.now,
         maximumClockSkewMs: base.maximumFutureSkewMs
     });
@@ -278529,6 +279628,9 @@ async function verifiedDeployment(base, transport, context) {
     if (digest === undefined)
         configuration("Signed deployment evidence verification requires active runtime.expected artifact_digest or image_digest");
     return verifier.verify(files[0].content.toString("utf8"), {
+        ...(typeof canonical.deployment_id === "string"
+            ? { deploymentId: canonical.deployment_id }
+            : {}),
         target: context.targetId,
         releaseId: context.releaseId ?? String(canonical.release_id ?? ""),
         commit: field(record$1(base.policy.release.candidate), "commit", base.environment) ??
@@ -278594,6 +279696,12 @@ function validateProviderAcquisition(policy, phase) {
             (array(runtime.expected_hosts).length === 0 ||
                 array(record$1(runtime.artifacts).runtime_evidence).length === 0))
             add("VM snapshots require runtime.expected_hosts and artifacts.runtime_evidence with measured host/service/agent/release facts");
+        if (kind === "runtime.release_identity") {
+            const signature = record$1(record$1(record$1(policy.providers.evidence).deployment).signature);
+            const keySources = [signature.jwks_file, signature.jwks_url, signature.jwks_url_env].filter((value) => typeof value === "string" && value.length > 0);
+            if (keySources.length !== 1)
+                add("requires exactly one trusted deployment signature JWKS source: jwks_file, jwks_url or jwks_url_env");
+        }
         if (kind === "metric.threshold") {
             if (typeof source.query !== "string")
                 add("source.query must be an explicit bounded metric query");
@@ -278611,6 +279719,19 @@ function validateProviderAcquisition(policy, phase) {
         ].includes(kind) &&
             Object.keys(queries).length === 0)
             add("requires explicit source.queries or assertions.queries for measured quantities");
+        if (kind === "telemetry.cardinality_estimate" || kind === "telemetry.volume_estimate") {
+            const limits = kind === "telemetry.volume_estimate" ? record$1(a.estimated_growth_percent) : a;
+            if (Object.keys(limits).length === 0)
+                add("requires at least one per-dimension budget assertion");
+            if (source.provider !== "metrics")
+                add("requires source.provider metrics");
+            for (const name of Object.keys(limits))
+                if (typeof record$1(source.queries)[name] !== "string")
+                    add(`requires source.queries.${name} for the configured budget`);
+            for (const name of Object.keys(queries))
+                if (limits[name] === undefined)
+                    add(`measurement ${name} requires its matching budget assertion`);
+        }
         if (["telemetry.freshness", "telemetry.identity_consistency", "telemetry.correlation"].includes(kind)) {
             if (kind !== "telemetry.correlation" && typeof queries.metrics !== "string")
                 add("requires source.queries.metrics");
@@ -278639,6 +279760,10 @@ function validateProviderAcquisition(policy, phase) {
         if (kind === "grafana.burn_rate" &&
             !array(a.windows).every((w) => typeof record$1(w).short_query === "string" && typeof record$1(w).long_query === "string"))
             add("each assertions.windows pair requires short_query and long_query; a single normalized burn value cannot substitute both windows");
+        if (kind === "grafana.slo_status" && typeof queries.status !== "string")
+            add("requires source.queries.status measured SLO status");
+        if (kind === "grafana.error_budget" && typeof queries.remaining_percent !== "string")
+            add("requires source.queries.remaining_percent measured error budget");
         if (kind === "grafana.error_budget" &&
             (a.maximum_consumed_during_release_percent !== undefined ||
                 a.consumed_during_release_percent !== undefined) &&
@@ -278813,6 +279938,15 @@ function endpointFor(configuration, environment) {
 }
 function createPolicyProviderSession(options) {
     const now = options.clock ?? Date.now;
+    const timing = new Map();
+    const recordTiming = (provider, startedAt) => {
+        const prior = timing.get(provider);
+        timing.set(provider, {
+            provider,
+            calls: (prior?.calls ?? 0) + 1,
+            durationMs: (prior?.durationMs ?? 0) + Math.max(0, now() - startedAt)
+        });
+    };
     const providerGroups = record$1(options.policy.providers);
     const telemetry = record$1(providerGroups.telemetry);
     const httpProviders = record$1(providerGroups.http);
@@ -278849,8 +279983,25 @@ function createPolicyProviderSession(options) {
                 (options.plan?.maximumQueryLengthBytes ??
                     parseByteSize(options.policy.limits.maximum_query_length, 16 * 1024)))
                 configuration("Provider query exceeds limits.maximum_query_length");
-            return guarded.request({
+            const provider = Object.entries(telemetry).find(([, value]) => {
+                const endpoint = endpointFor(record$1(value), options.environment);
+                return endpoint !== undefined && new URL(endpoint).origin === url.origin;
+            })?.[0] ?? (request.kind === "probe" ? "http" : "jwks");
+            const startedAt = now();
+            options.onEvent?.({
+                name: "provider_request_started",
+                at: new Date(startedAt).toISOString(),
+                provider
+            });
+            return guarded
+                .request({
                 ...request,
+                onRetry: (attempt) => options.onEvent?.({
+                    name: "provider_request_retried",
+                    at: new Date(now()).toISOString(),
+                    provider,
+                    attempt
+                }),
                 ...(options.policy.execution.retries === undefined
                     ? {}
                     : {
@@ -278866,6 +280017,15 @@ function createPolicyProviderSession(options) {
                         }
                     }),
                 maximumResponseBytes: Math.min(request.maximumResponseBytes, maximumResponseBytes)
+            })
+                .finally(() => {
+                recordTiming(provider, startedAt);
+                options.onEvent?.({
+                    name: "provider_request_completed",
+                    at: new Date(now()).toISOString(),
+                    provider,
+                    durationMs: Math.max(0, now() - startedAt)
+                });
             });
         }
     };
@@ -279108,38 +280268,8 @@ function createPolicyProviderSession(options) {
             }
             return [combined(raws, gateType, { providers }), ...raws];
         }
-        if (gateType === "telemetry.query_validation") {
-            const definitions = [
-                ...array(options.policy.gates.pre_deployment),
-                ...array(options.policy.gates.post_deployment)
-            ].map(record$1), raws = [], queries = [];
-            for (const gate of definitions) {
-                const s = record$1(gate.source);
-                if (typeof s.query !== "string" || !["metrics", "logs"].includes(String(s.provider)))
-                    continue;
-                const raw = s.provider === "metrics"
-                    ? await metric(base, s.query, context)
-                    : await logRecords(base, s.query, context);
-                raws.push(raw);
-                const vector = record$1(raw.value), samples = array(vector.samples);
-                const mappings = record$1(record$1(options.policy.identity.provider_mappings)[String(s.provider)]);
-                const service = String(mappings["service.name"] ?? "service_name"), environment = String(mappings["deployment.environment.name"] ?? "deployment_environment");
-                const groupBy = [...s.query.matchAll(/(?:by|without)\s*\(([^)]*)\)/gu)].flatMap((match) => String(match[1])
-                    .split(",")
-                    .map((v) => v.trim()));
-                queries.push({
-                    valid: raw.state === "valid",
-                    threshold: gate.type === "metric.threshold",
-                    shape: s.provider === "metrics" && samples.length === 1 ? "scalar" : "records",
-                    production: record$1(options.policy.identity.canonical).environment === "production",
-                    scoped: s.query.includes(`${service}=`) && s.query.includes(`${environment}=`),
-                    groupBy
-                });
-            }
-            if (raws.length === 0)
-                configuration("telemetry.query_validation requires configured telemetry query gates to validate");
-            return [combined(raws, gateType, { queries }), ...raws];
-        }
+        if (gateType === "telemetry.query_validation")
+            return resolveQueryValidation(base, definition, context);
         if (gateType === "http.assertion" || gateType === "asset.url") {
             const providerName = string(source.provider) ?? string(source.adapter) ?? "public-probe", provider = record$1(httpProviders[providerName]), url = field(source, "url", options.environment);
             if (url === undefined)
@@ -279209,6 +280339,22 @@ function createPolicyProviderSession(options) {
         }
         configuration(`${gateType} has no complete evidence acquisition contract; configure a supported adapter and gate-specific source parameters`);
     };
+    const resolveObserved = async (kind, definition, context) => {
+        const startedAt = now();
+        const values = await resolve(kind, definition, context);
+        const localProvider = values[0]?.source.provider;
+        if (localProvider !== undefined &&
+            !["metrics", "logs", "traces", "grafana", "http"].includes(localProvider))
+            recordTiming(localProvider, startedAt);
+        for (const value of values)
+            options.onEvent?.({
+                name: value.state === "valid" ? "evidence_acquired" : "evidence_rejected",
+                at: new Date(now()).toISOString(),
+                provider: value.source.provider,
+                status: value.state
+            });
+        return values;
+    };
     const postGates = (options.plan === undefined
         ? array(options.policy.gates.post_deployment)
         : options.plan.phase === "post_deployment"
@@ -279220,7 +280366,8 @@ function createPolicyProviderSession(options) {
         .filter((g) => g.enabled !== false && g.enforcement !== "advisory");
     let generation = 0;
     return {
-        resolveEvidence: resolve,
+        resolveEvidence: resolveObserved,
+        timings: () => [...timing.values()].sort((left, right) => left.provider.localeCompare(right.provider)),
         ...(postGates.length === 0 || options.plan?.phase === "pre_deployment"
             ? {}
             : {
@@ -279244,7 +280391,7 @@ function createPolicyProviderSession(options) {
                         if ((typeof when.runtime_type === "string" && when.runtime_type !== type) ||
                             (Array.isArray(when.runtime_type) && !when.runtime_type.includes(type)))
                             continue;
-                        const raw = await resolve(String(gate.type), gate, context);
+                        const raw = await resolveObserved(String(gate.type), gate, context);
                         if (raw.length === 0 || raw.some((item) => item.state !== "valid"))
                             successful = false;
                     }
@@ -279299,7 +280446,8 @@ function createActionService(providerOptions = {}) {
                     policy: context.policy,
                     plan: context.plan,
                     workspaceRoot: context.request.workspaceRoot,
-                    environment: context.request.environment
+                    environment: context.request.environment,
+                    ...(context.request.onEvent === undefined ? {} : { onEvent: context.request.onEvent })
                 });
             }
         },
@@ -279355,19 +280503,30 @@ async function runAction(dependencies = {}) {
     const cancel = () => controller.abort();
     process.once("SIGINT", cancel);
     process.once("SIGTERM", cancel);
+    const runtime = dependencies.runtime ?? githubActionsRuntime;
+    let completed;
+    let reportPath = "";
+    let publicationAttempted = false;
+    let reportOptions;
+    let eventWriter;
     try {
-        const runtime = dependencies.runtime ?? githubActionsRuntime;
         const inputs = readInputs(runtime);
+        const workspaceRoot = dependencies.workspaceRoot ?? process.env.GITHUB_WORKSPACE ?? process.cwd();
+        const eventsPath = runtime.getInput("events-path");
+        if (eventsPath !== "")
+            eventWriter = await createEventWriter({ workspaceRoot, path: eventsPath });
         const service = dependencies.service ?? createActionService(dependencies.providerOptions);
         const request = {
-            workspaceRoot: dependencies.workspaceRoot ?? process.env.GITHUB_WORKSPACE ?? process.cwd(),
+            workspaceRoot,
             configPath: inputs.config,
             phase: inputs.phase,
             ...(inputs.target === undefined ? {} : { targetOverride: inputs.target }),
             environment: dependencies.environment ?? process.env,
-            cancellationSignal: controller.signal
+            cancellationSignal: controller.signal,
+            ...(eventWriter === undefined ? {} : { onEvent: eventWriter.write })
         };
         const result = await service.run(request);
+        completed = result;
         const checkCancellation = () => {
             if (controller.signal.aborted)
                 throw new GateError({
@@ -279386,17 +280545,26 @@ async function runAction(dependencies = {}) {
         };
         checkCancellation();
         const maximumTotalBytes = (await service.maximumReportBytes?.(request)) ?? 25 * 1024 * 1024;
-        const publication = await writeReports(result, {
+        reportOptions = {
             directory: runtime.getInput("output-directory") ||
                 publicationSettings?.directory ||
                 inputs.outputDirectory,
             formats: publicationSettings?.formats ?? ["json", "markdown", "junit", "sarif"],
             maximumTotalBytes,
             signal: controller.signal
-        });
-        checkCancellation();
+        };
         if (reporting.stepSummary)
             await writeStepSummary(result, runtime, reporting);
+        checkCancellation();
+        publicationAttempted = true;
+        const publication = await writeReports(result, reportOptions);
+        reportPath = publication.paths.json ?? "";
+        eventWriter?.write({
+            name: "report_written",
+            at: new Date().toISOString(),
+            phase: request.phase,
+            decision: result.decision
+        });
         checkCancellation();
         if (inputs.githubToken !== undefined) {
             try {
@@ -279416,10 +280584,46 @@ async function runAction(dependencies = {}) {
             runtime.setFailed(`Observability Gate decision: ${result.decision}`);
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : "Observability Gate Action failed.";
-        (dependencies.runtime ?? githubActionsRuntime).setFailed(message);
+        const failure = error instanceof GateError
+            ? error
+            : new GateError({
+                code: "REPORTING",
+                safeMessage: "Action execution or report publication failed.",
+                retryable: false,
+                cause: error
+            });
+        if (completed !== undefined) {
+            const terminal = {
+                ...completed,
+                decision: completed.decision === "fail" ? "fail" : "error",
+                diagnostics: [...completed.diagnostics, failure.toDiagnostic()]
+            };
+            if (controller.signal.aborted)
+                reportPath = "";
+            // Once local publication succeeded, keep its decision consistent with terminal outputs.
+            if ((reportPath !== "" || !publicationAttempted) &&
+                reportOptions !== undefined &&
+                !controller.signal.aborted) {
+                try {
+                    const terminalPublication = await writeReports(terminal, reportOptions);
+                    reportPath = terminalPublication.paths.json ?? "";
+                }
+                catch {
+                    reportPath = "";
+                }
+            }
+            setActionOutputs(terminal, reportPath, runtime);
+        }
+        else {
+            runtime.setOutput("decision", "error");
+            runtime.setOutput("report_path", "");
+        }
+        const inputFailure = error instanceof Error &&
+            /^(?:Missing input: (?:config|phase)|Input required and not supplied: (?:config|phase))$/u.test(error.message);
+        runtime.setFailed(inputFailure ? error.message : failure.safeMessage);
     }
     finally {
+        eventWriter?.close();
         process.off("SIGINT", cancel);
         process.off("SIGTERM", cancel);
     }
@@ -279526,7 +280730,7 @@ const wslDrivesMountPoint = (() => {
 
 		let isConfigFileExists = false;
 		try {
-			await fs.access(configFilePath, constants$i.F_OK);
+			await fs.access(configFilePath, constants$j.F_OK);
 			isConfigFileExists = true;
 		} catch {}
 
@@ -279908,7 +281112,7 @@ const baseOpen = async options => {
 			// Check if local `xdg-open` exists and is executable.
 			let exeLocalXdgOpen = false;
 			try {
-				await fs.access(localXdgOpenPath, constants$i.X_OK);
+				await fs.access(localXdgOpenPath, constants$j.X_OK);
 				exeLocalXdgOpen = true;
 			} catch {}
 

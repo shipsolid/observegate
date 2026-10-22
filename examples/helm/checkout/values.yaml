@@ -1,0 +1,5 @@
+image:
+  repository: ""
+  digest: ""
+releaseId: ""
+replicas: 2

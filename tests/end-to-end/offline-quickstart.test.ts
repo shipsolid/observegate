@@ -57,12 +57,30 @@ describe("offline quickstart through shipped compositions", () => {
               "post_deployment",
               "--output-directory",
               directory,
+              "--events",
+              "events.jsonl",
               "--json"
             ],
             dependencies
           )
         ).toBe(failure ? 1 : 0);
         expect(JSON.parse(stdout).decision).toBe(failure ? "fail" : "pass");
+        const events = (await readFile(join(workspace, "events.jsonl"), "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { name: string });
+        for (const name of [
+          "configuration_loaded",
+          "execution_planned",
+          "evidence_acquired",
+          "gate_completed",
+          "decision_completed",
+          "report_written"
+        ])
+          expect(
+            events.some((event) => event.name === name),
+            name
+          ).toBe(true);
         for (const name of [
           "observability-gate.json",
           "observability-gate.md",

@@ -8,9 +8,17 @@ export interface ProviderTiming {
 }
 
 export interface ExecutionEvent {
-  readonly name: "configuration_loaded" | "execution_planned" | "provider_request_started" |
-    "provider_request_completed" | "provider_request_retried" | "evidence_acquired" |
-    "evidence_rejected" | "gate_completed" | "decision_completed" | "report_written";
+  readonly name:
+    | "configuration_loaded"
+    | "execution_planned"
+    | "provider_request_started"
+    | "provider_request_completed"
+    | "provider_request_retried"
+    | "evidence_acquired"
+    | "evidence_rejected"
+    | "gate_completed"
+    | "decision_completed"
+    | "report_written";
   readonly at: string;
   readonly phase?: Phase;
   readonly provider?: string;

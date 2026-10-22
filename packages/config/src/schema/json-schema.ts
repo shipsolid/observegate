@@ -97,7 +97,7 @@ export function policyJsonSchema(): Readonly<Record<string, unknown>> {
     }
     if (type === "synthetic.result")
       fields.assertions = (contractSchema(contract.assertions ?? {}) as z.ZodObject).extend({
-        required_tests: z.array(z.string().min(1)).min(1)
+        required_tests: z.array(z.string().min(1)).min(1).meta({ uniqueItems: true })
       });
     if (type === "telemetry.cardinality_estimate" || type === "telemetry.volume_estimate") {
       const source = contractSchema(contract.source ?? {}) as z.ZodObject;
@@ -106,12 +106,32 @@ export function policyJsonSchema(): Readonly<Record<string, unknown>> {
         queries: source.shape.queries.unwrap()
       });
       const assertions = contractSchema(contract.assertions ?? {}) as z.ZodObject;
+      const dimensions =
+        type === "telemetry.volume_estimate"
+          ? (assertions.shape.estimated_growth_percent.unwrap() as z.ZodObject).shape
+          : assertions.shape;
+      const limits = z
+        .object(
+          Object.fromEntries(
+            Object.keys(dimensions).map((name) => [
+              name,
+              z
+                .object({
+                  less_than_or_equal:
+                    type === "telemetry.cardinality_estimate" && !name.endsWith("_percent")
+                      ? z.number().int().nonnegative()
+                      : z.number().nonnegative()
+                })
+                .strict()
+                .optional()
+            ])
+          )
+        )
+        .strict();
       fields.assertions =
         type === "telemetry.volume_estimate"
-          ? assertions.extend({
-              estimated_growth_percent: assertions.shape.estimated_growth_percent.unwrap()
-            })
-          : assertions;
+          ? z.object({ estimated_growth_percent: limits }).strict()
+          : limits;
     }
     return gateEnvelopeSchema.extend({
       ...fields,

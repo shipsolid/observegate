@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -112,6 +112,65 @@ function harness(
 }
 
 describe("observability-gate CLI", () => {
+  it("exports the policy schema without provider access", async () => {
+    const h = harness();
+    expect(await runCli(["schema", "--json"], h.dependencies)).toBe(0);
+    expect(JSON.parse(h.stdout())).toMatchObject({ type: "object", additionalProperties: false });
+    expect(h.requests).toHaveLength(0);
+  });
+
+  it("writes an opt-in local diagnostic event stream", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "observegate-cli-events-"));
+    const h = harness();
+    try {
+      const service = {
+        ...h.dependencies.service,
+        async run(request: ExecutionRequest) {
+          request.onEvent?.({
+            name: "decision_completed",
+            at: new Date().toISOString(),
+            decision: "pass"
+          });
+          return execution();
+        }
+      };
+      expect(
+        await runCli(
+          [
+            "run",
+            "--config",
+            "policy.yml",
+            "--phase",
+            "pre_deployment",
+            "--events",
+            "events.jsonl"
+          ],
+          { ...h.dependencies, workspaceRoot: directory, service }
+        )
+      ).toBe(0);
+      expect(JSON.parse(await readFile(join(directory, "events.jsonl"), "utf8"))).toMatchObject({
+        name: "decision_completed",
+        decision: "pass"
+      });
+      expect(
+        await runCli(
+          [
+            "run",
+            "--config",
+            "policy.yml",
+            "--phase",
+            "pre_deployment",
+            "--events",
+            "../escape.jsonl"
+          ],
+          { ...h.dependencies, workspaceRoot: directory, service }
+        )
+      ).toBe(3);
+      expect(h.stderr()).toContain("SECURITY_POLICY");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
   it("shows help and handles unknown commands and missing config", async () => {
     const help = harness();
     expect(await runCli(["--help"], help.dependencies)).toBe(0);

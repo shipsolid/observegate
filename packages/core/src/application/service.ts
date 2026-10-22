@@ -269,7 +269,14 @@ export class ObservabilityGateService<TPolicy> {
             { ...context, execution: prepared.execution },
             providers as ProviderSession
           );
-          request.onEvent?.({name: "gate_completed", at: this.clock().toISOString(), phase: request.phase, gateId: gate.id, status: completed.status, durationMs: completed.durationMs});
+          request.onEvent?.({
+            name: "gate_completed",
+            at: this.clock().toISOString(),
+            phase: request.phase,
+            gateId: gate.id,
+            status: completed.status,
+            durationMs: completed.durationMs
+          });
           return completed;
         }
       });
@@ -292,7 +299,7 @@ export class ObservabilityGateService<TPolicy> {
         startedAt: startedAt.toISOString(),
         completedAt: this.clock().toISOString(),
         evidenceCoveragePercent: summary.evidenceCoveragePercent,
-        ...(providers.timings === undefined ? {} : {providerTimings: providers.timings()}),
+        ...(providers.timings === undefined ? {} : { providerTimings: providers.timings() }),
         ...(prepared.execution.artifactRetentionDays === undefined
           ? {}
           : { artifactRetentionDays: prepared.execution.artifactRetentionDays }),
@@ -300,12 +307,16 @@ export class ObservabilityGateService<TPolicy> {
           ? {}
           : { configurationFingerprint: prepared.execution.configurationFingerprint }),
         gates: summary.gates,
-        diagnostics: Object.freeze(summary.blockingReasons.filter((reason) => reason.gateId === "evidence-coverage").map((reason) => ({
-          code: "EVIDENCE_INVALID",
-          message: reason.message,
-          retryable: false,
-          gateId: reason.gateId
-        }))),
+        diagnostics: Object.freeze(
+          summary.blockingReasons
+            .filter((reason) => reason.gateId === "evidence-coverage")
+            .map((reason) => ({
+              code: "EVIDENCE_INVALID",
+              message: reason.message,
+              retryable: false,
+              gateId: reason.gateId
+            }))
+        ),
         links: prepared.execution.links
       });
     } catch (error) {
@@ -353,7 +364,12 @@ export class ObservabilityGateService<TPolicy> {
       initialization?.dispose();
       deadline.dispose();
     }
-    request.onEvent?.({name: "decision_completed", at: this.clock().toISOString(), phase: request.phase, decision: result.decision});
+    request.onEvent?.({
+      name: "decision_completed",
+      at: this.clock().toISOString(),
+      phase: request.phase,
+      decision: result.decision
+    });
     return result;
   }
 
@@ -402,11 +418,19 @@ export class ObservabilityGateService<TPolicy> {
     readonly execution: PreparedExecution;
   }> {
     const loaded = await this.dependencies.policy.load(request);
-    request.onEvent?.({name: "configuration_loaded", at: this.clock().toISOString(), phase: request.phase});
+    request.onEvent?.({
+      name: "configuration_loaded",
+      at: this.clock().toISOString(),
+      phase: request.phase
+    });
     const policy = this.dependencies.policy.interpolate(loaded, request);
     const plan = this.dependencies.policy.createPlan(policy, request);
     const execution = this.dependencies.policy.describeExecution(policy, plan, request);
-    request.onEvent?.({name: "execution_planned", at: this.clock().toISOString(), phase: request.phase});
+    request.onEvent?.({
+      name: "execution_planned",
+      at: this.clock().toISOString(),
+      phase: request.phase
+    });
     return { policy, plan, execution };
   }
 }

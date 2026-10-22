@@ -1,0 +1,171 @@
+metadata:
+  name: checkout-workflow-example
+execution:
+  active_target: aks-checkout
+  phases:
+    pre_deployment: { timeout: 1m, concurrency: 2 }
+    post_deployment: { timeout: 2m, concurrency: 2 }
+  enforcement:
+    default: blocking
+    fail_fast: false
+    minimum_evidence_coverage_percent: 100
+    missing_blocking_evidence: fail
+    provider_unavailable: fail
+    unsupported_gate: fail
+identity:
+  canonical:
+    service_name: checkout
+    service_namespace: example
+    environment: production
+    release_id: "${RELEASE_ID}"
+    deployment_id: "${DEPLOYMENT_ID}"
+release:
+  candidate:
+    id: "${RELEASE_ID}"
+    commit_env: COMMIT_SHA
+    deployed_at: "${DEPLOYED_AT}"
+observation:
+  pre_deployment: {}
+  post_deployment:
+    warmup: 0s
+    evaluation_window: 0s
+    step: 5s
+    settle_between_samples: 5s
+    minimum_successful_samples: 1
+    maximum_evidence_age: 1m
+decision:
+  outcomes:
+    pass: { exit_code: 0, conclusion: success }
+    warn: { exit_code: 0, conclusion: neutral }
+    fail: { exit_code: 1, conclusion: failure }
+    inconclusive: { exit_code: 2, conclusion: failure }
+    error: { exit_code: 3, conclusion: failure }
+targets:
+  definitions:
+    aks-checkout:
+      runtime:
+        type: kubernetes
+        provider: kubernetes-runtime
+        namespace: observegate-example
+        workload:
+          kind: Deployment
+          name: checkout
+          container: checkout
+        expected:
+          image_digest_env: IMAGE_DIGEST
+          minimum_available_replicas: 2
+        artifacts:
+          rendered_manifests: [deploy/rendered.yaml]
+providers:
+  runtime:
+    kubernetes-runtime:
+      type: kubernetes
+      authentication:
+        strategy: ambient_or_kubeconfig
+        kubeconfig_env: KUBECONFIG
+      permissions:
+        mode: read_only
+        required_verbs: [get, list]
+        required_resources: [deployments, replicasets, pods, events]
+  evidence:
+    deployment:
+      type: signed_json
+      files: [deployment-evidence/release.jws]
+      maximum_age: 30m
+      required_in: [post_deployment]
+      signature:
+        required: true
+        trusted_issuer_env: EVIDENCE_ISSUER
+        audience: observegate-example
+        workflow_identity_env: EXPECTED_WORKFLOW_IDENTITY
+        jwks_file: .observegate-trust/jwks.json
+gate_defaults:
+  enforcement: blocking
+gates:
+  pre_deployment:
+    - id: manifest
+      name: Candidate manifest identifies the immutable image
+      type: kubernetes.manifest
+      assertions:
+        workload_exists: true
+        container_exists: true
+        image_is_digest_pinned: true
+        image_digest_env: IMAGE_DIGEST
+        namespace_is_explicit: true
+        forbid_latest_tag: true
+        forbid_privileged: true
+        read_only_root_filesystem: true
+    - id: probes
+      name: Candidate manifest declares bounded health probes
+      type: kubernetes.probes
+      assertions:
+        readiness_probe_required: true
+        liveness_probe_required: true
+        timeout_seconds: { maximum: 5 }
+        failure_threshold: { minimum: 2 }
+    - id: resources
+      name: Candidate workload preserves resources and disruption protection
+      type: kubernetes.resources
+      assertions:
+        requests_required: [cpu, memory]
+        limits_required: [memory]
+        request_must_not_exceed_limit: true
+        production_minimum_replicas: 2
+        disruption_budget_for_multiple_replicas: true
+    - id: strategy
+      name: Candidate rollout preserves availability
+      type: kubernetes.rollout_strategy
+      assertions:
+        allowed_strategies: [RollingUpdate]
+        max_unavailable: { less_than_or_equal: 1 }
+        progress_deadline_required: true
+        minimum_ready_seconds: { greater_than_or_equal: 5 }
+  post_deployment:
+    - id: rollout
+      name: Controller finished the candidate rollout
+      type: kubernetes.rollout_status
+      source: { adapter: active }
+      assertions:
+        observed_generation_matches: true
+        progressing_condition: true
+        available_condition: true
+        updated_replicas_equal_desired: true
+        available_replicas_equal_desired: true
+        unavailable_replicas: { less_than_or_equal: 0 }
+        rollout_completed_within: 10m
+    - id: image
+      name: Ready containers identify the expected image
+      type: kubernetes.image_identity
+      source: { adapter: active }
+      assertions:
+        expected_digest_env: IMAGE_DIGEST
+        all_ready_pods_match: true
+        forbid_mutable_tag_only_identity: true
+    - id: release
+      name: Runtime identity matches the signed deployment
+      type: runtime.release_identity
+      source:
+        adapter: active
+        deployment_evidence: deployment
+      assertions:
+        expected_release_id: "${RELEASE_ID}"
+        expected_image_digest_env: IMAGE_DIGEST
+        require_no_unexpected_release_instances: true
+reporting:
+  github:
+    check_run: { enabled: false }
+    pull_request_comment: { enabled: false }
+  artifacts:
+    formats: [json, markdown, junit, sarif]
+    include_raw_provider_responses: false
+security:
+  read_only: true
+  files:
+    workspace_only: true
+    reject_symlinks_outside_workspace: true
+    reject_world_writable_evidence: true
+    maximum_evidence_file_size: 1MiB
+limits:
+  maximum_gates: 10
+  maximum_queries: 20
+  maximum_total_runtime: 2m

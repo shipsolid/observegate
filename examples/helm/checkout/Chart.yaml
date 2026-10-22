@@ -1,0 +1,5 @@
+apiVersion: v2
+name: checkout
+version: 0.1.0
+description: User-owned sample workload for the ObserveGate deployment journey
+type: application

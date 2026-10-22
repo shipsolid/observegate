@@ -55,7 +55,7 @@ async function stageWrite(
     checkCancellation(signal);
     const handle = await open(temporaryPath, "wx", 0o600);
     let bytes = 0;
-    let pending = "";
+    const pending = Buffer.allocUnsafe(64 * 1024);
     let pendingBytes = 0;
     try {
       for (const raw of chunks) {
@@ -73,18 +73,16 @@ async function stageWrite(
               retryable: false
             });
           }
-          pending += chunk;
-          pendingBytes += chunkBytes;
-          if (pendingBytes >= 64 * 1024) {
-            await handle.writeFile(pending, "utf8");
-            pending = "";
+          if (pendingBytes + chunkBytes > pending.byteLength) {
+            await handle.writeFile(pending.subarray(0, pendingBytes));
             pendingBytes = 0;
             checkCancellation(signal);
           }
+          pendingBytes += pending.write(chunk, pendingBytes, "utf8");
           offset = end;
         }
       }
-      if (pendingBytes > 0) await handle.writeFile(pending, "utf8");
+      if (pendingBytes > 0) await handle.writeFile(pending.subarray(0, pendingBytes));
       await handle.sync();
     } finally {
       await handle.close();

@@ -31,6 +31,11 @@ exec-based kubeconfig authentication and legacy Azure/GCP command authenticators
 credential preparation in the workflow before the gate and supply non-executable credentials;
 the gate never invokes kubelogin, a shell, or a credential command. Select a single kubeconfig file.
 
+For multi-container Pods, configure `workload.container` or `container_env`; an absent or ambiguous
+selection is invalid evidence. Static checks and live image identity use the same selected container.
+Disruption budgets must match the workload Pod labels, including supported match expressions;
+unrelated or overlapping budgets cannot prove protection.
+
 ## Permissions
 
 Grant `get` and `list` only for the selected workload kind, ReplicaSets, Pods, and Events in the
@@ -47,6 +52,14 @@ If organizational policy grants `watch`, ObserveGate does not rely on it.
 
 Run pre-deployment gates against rendered manifests before Helm deploys. Run post-deployment gates
 after the deployment job publishes the release ID and deployment completion time.
+
+Rollout conditions and strategy fields follow each controller. StatefulSets additionally require
+current/update revision agreement; nonzero partitions cannot prove a complete rollout. DaemonSet
+static manifests cannot establish a scheduled replica count, so explicit replica-count/PDB
+requirements and percentage `maxUnavailable` limits fail without that evidence. Use absolute
+availability limits for static DaemonSet checks. Startup-duration and optional downstream-dependency
+semantics cannot be inferred from a probe manifest; unsupported policy assertions reject rather
+than silently certifying those properties.
 
 ## Safe diagnostics
 

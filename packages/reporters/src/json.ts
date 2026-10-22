@@ -95,7 +95,15 @@ export function executionReportDto(result: ExecutionResult): Readonly<Record<str
     startedAt: result.startedAt,
     completedAt: result.completedAt,
     evidenceCoveragePercent: result.evidenceCoveragePercent,
-    ...(result.providerTimings === undefined ? {} : { providerTimings: result.providerTimings.map((timing) => ({provider: timing.provider, calls: timing.calls, durationMs: timing.durationMs})) }),
+    ...(result.providerTimings === undefined
+      ? {}
+      : {
+          providerTimings: result.providerTimings.map((timing) => ({
+            provider: timing.provider,
+            calls: timing.calls,
+            durationMs: timing.durationMs
+          }))
+        }),
     ...(result.artifactRetentionDays === undefined
       ? {}
       : { artifactRetentionDays: result.artifactRetentionDays }),

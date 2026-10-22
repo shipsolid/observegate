@@ -95,17 +95,25 @@ export function parsePublicJwks(value: unknown): ReadonlyMap<string, JsonWebKeyI
   const keys = new Map<string, JsonWebKeyInput["key"]>();
   for (const raw of envelope.keys) {
     const key = record(raw);
-    if (key === undefined || typeof key.kid !== "string" || key.kid.length === 0 ||
-        (key.use !== undefined && key.use !== "sig") ||
-        (key.key_ops !== undefined && (!Array.isArray(key.key_ops) || !key.key_ops.includes("verify"))) ||
-        (key.kty !== "RSA" && key.kty !== "EC") ||
-        (key.kty === "EC" && key.crv !== "P-256") ||
-        (key.alg !== undefined && key.alg !== (key.kty === "RSA" ? "RS256" : "ES256")) ||
-        ["d", "p", "q", "dp", "dq", "qi", "oth", "k"].some((field) => key[field] !== undefined))
+    if (
+      key === undefined ||
+      typeof key.kid !== "string" ||
+      key.kid.length === 0 ||
+      (key.use !== undefined && key.use !== "sig") ||
+      (key.key_ops !== undefined &&
+        (!Array.isArray(key.key_ops) || !key.key_ops.includes("verify"))) ||
+      (key.kty !== "RSA" && key.kty !== "EC") ||
+      (key.kty === "EC" && key.crv !== "P-256") ||
+      (key.alg !== undefined && key.alg !== (key.kty === "RSA" ? "RS256" : "ES256")) ||
+      ["d", "p", "q", "dp", "dq", "qi", "oth", "k"].some((field) => key[field] !== undefined)
+    )
       throw security("JWKS contains an invalid or non-public signing key");
     if (keys.has(key.kid)) throw security("JWKS contains duplicate signing key identifiers");
-    try { createPublicKey({ key: key as JsonWebKeyInput["key"], format: "jwk" }); }
-    catch (cause) { throw security("JWKS contains a malformed public signing key", cause); }
+    try {
+      createPublicKey({ key: key as JsonWebKeyInput["key"], format: "jwk" });
+    } catch (cause) {
+      throw security("JWKS contains a malformed public signing key", cause);
+    }
     keys.set(key.kid, key as JsonWebKeyInput["key"]);
   }
   return keys;

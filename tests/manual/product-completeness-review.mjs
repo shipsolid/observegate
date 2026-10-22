@@ -1,4 +1,4 @@
-// Reproduce review observations without network access or production mutations.
+// Verify closed review findings without network access or production mutations.
 // Run after npm run build: node tests/manual/product-completeness-review.mjs
 /* global AbortController */
 import assert from "node:assert/strict";
@@ -68,14 +68,20 @@ const alertRules = evaluate(
   }
 );
 const budgetAssertions = { new_metric_series: { less_than_or_equal: 500 } };
-const budget = evaluate("telemetry.cardinality_estimate", budgetAssertions, { estimate: 100 });
+const budget = evaluate("telemetry.cardinality_estimate", budgetAssertions, {
+  measurements: { new_metric_series: 100 }
+});
 const base = parsePolicy(await readFile("examples/offline.yml", "utf8"));
+base.providers.telemetry = {
+  metrics: { type: "prometheus", endpoint: "https://metrics.example.test" }
+};
 base.gates.pre_deployment = [
   {
     id: "review.budget",
     name: "Review budget",
     type: "telemetry.cardinality_estimate",
     enforcement: "advisory",
+    source: { provider: "metrics", queries: { new_metric_series: "projected_series" } },
     assertions: budgetAssertions
   }
 ];
@@ -121,14 +127,17 @@ const manifest = parseKubernetesManifest(
       metadata: { name: "unrelated", namespace: "review" },
       spec: { minAvailable: 1, selector: { matchLabels: { app: "another-service" } } }
     }),
-  { kind: "Deployment", name: "checkout", namespace: "review" }
+  { kind: "Deployment", name: "checkout", namespace: "review", container: "checkout" }
 );
 const resources = evaluate("kubernetes.resources", {}, { ...manifest, production: true });
 const rollout = evaluate(
   "kubernetes.rollout_status",
   {},
   {
+    workloadKind: "StatefulSet",
     rollout: {
+      currentRevision: "rev-1",
+      updateRevision: "rev-1",
       generationObserved: true,
       conditions: [],
       replicas: { desired: 2, updated: 2, available: 2, unavailable: 0 },
@@ -158,7 +167,7 @@ const provisioningRules = [
   }
 ];
 
-// A healthy fixture is the control; the other observations expose contract violations.
+// A healthy fixture is the control; policy and evidence violations must fail.
 assert.equal(
   allPassed(
     evaluate(
@@ -173,14 +182,16 @@ assert.equal(
   ),
   true
 );
-assert.equal(allPassed(dashboard), true);
-assert.equal(allPassed(alertRules), true);
-assert.equal(budget[0].status, "failed");
-assert.equal(budget[0].expected, 0);
-assert.match(budgetRejection, /Unknown field budget/);
-assert.equal(manifest.image, "sidecar:good");
-assert.equal(allPassed(resources), true);
-assert.equal(normalizeAlertRules(provisioningRules, {}), undefined);
+assert.equal(allPassed(dashboard), false);
+assert.equal(allPassed(alertRules), false);
+assert.equal(budget[0].status, "passed");
+assert.equal(budget[0].expected, 500);
+assert.match(budgetRejection, /budget/u);
+assert.equal(manifest.image, "checkout:bad");
+assert.equal(manifest.disruptionBudget, undefined);
+assert.equal(allPassed(resources), false);
+assert.equal(allPassed(rollout), true);
+assert.equal(normalizeAlertRules(provisioningRules, {}).length, 1);
 
 process.stdout.write(
   JSON.stringify(
@@ -194,7 +205,7 @@ process.stdout.write(
       healthyReplicaCountsWithoutDeploymentConditions: rollout.filter(
         (item) => item.status !== "passed"
       ),
-      documentedProvisioningRuleRejected: normalizeAlertRules(provisioningRules, {}) === undefined
+      documentedProvisioningRuleAccepted: normalizeAlertRules(provisioningRules, {}).length === 1
     },
     null,
     2

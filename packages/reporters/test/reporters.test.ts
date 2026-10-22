@@ -2,7 +2,13 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExecutionResult } from "@observability-gate/core";
-import { jsonReportChunks, renderJson, renderJunit, renderMarkdown, renderSarif } from "../src/index.js";
+import {
+  jsonReportChunks,
+  renderJson,
+  renderJunit,
+  renderMarkdown,
+  renderSarif
+} from "../src/index.js";
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error("Required report fixture value is missing.");
@@ -20,8 +26,14 @@ describe("report projections", () => {
     const base = await fixture();
     const gate = required(base.gates[0]);
     let laterGateRead = false;
-    const later = {...gate, get assertions() { laterGateRead = true; return gate.assertions; }};
-    const iterator = jsonReportChunks({...base, gates: [gate, later]})[Symbol.iterator]();
+    const later = {
+      ...gate,
+      get assertions() {
+        laterGateRead = true;
+        return gate.assertions;
+      }
+    };
+    const iterator = jsonReportChunks({ ...base, gates: [gate, later] })[Symbol.iterator]();
     let prefix = "";
     while (!prefix.includes('"assertions"')) {
       const chunk = iterator.next();

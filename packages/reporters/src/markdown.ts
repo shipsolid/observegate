@@ -98,6 +98,16 @@ export function* markdownReportChunks(
           ...result.diagnostics.map((diagnostic) => `- ${diagnostic.code}: ${diagnostic.message}`),
           ""
         ]),
+    ...(result.providerTimings === undefined || result.providerTimings.length === 0
+      ? []
+      : [
+          "## Provider acquisition timings",
+          "",
+          ...result.providerTimings.map(
+            (timing) => `- ${timing.provider}: ${timing.durationMs} ms across ${timing.calls} calls`
+          ),
+          ""
+        ]),
     "## Gates",
     ""
   ]);

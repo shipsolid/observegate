@@ -101,12 +101,21 @@ describe("ObservabilityGateService", () => {
     const seen: string[] = [];
     const service = new ObservabilityGateService({
       policy: adapter([]),
-      providers: { initialize: async () => ({timings: () => [{provider: "metrics", calls: 1, durationMs: 12}]}) },
+      providers: {
+        initialize: async () => ({
+          timings: () => [{ provider: "metrics", calls: 1, durationMs: 12 }]
+        })
+      },
       executeGate: async () => passingResult()
     });
-    const result = await service.run({...request(), onEvent: (event) => seen.push(event.name)});
-    expect(seen).toEqual(["configuration_loaded", "execution_planned", "gate_completed", "decision_completed"]);
-    expect(result.providerTimings).toEqual([{provider: "metrics", calls: 1, durationMs: 12}]);
+    const result = await service.run({ ...request(), onEvent: (event) => seen.push(event.name) });
+    expect(seen).toEqual([
+      "configuration_loaded",
+      "execution_planned",
+      "gate_completed",
+      "decision_completed"
+    ]);
+    expect(result.providerTimings).toEqual([{ provider: "metrics", calls: 1, durationMs: 12 }]);
   });
   it("orchestrates load, interpolation, planning, providers, gates, aggregation, then reporting", async () => {
     const events: string[] = [];
@@ -198,11 +207,13 @@ describe("ObservabilityGateService", () => {
       const result = await service.run(request());
       expect(result.evidenceCoveragePercent).toBe(0);
       expect(result.decision).toBe("fail");
-      expect(result.diagnostics).toContainEqual(expect.objectContaining({
-        code: "EVIDENCE_INVALID",
-        gateId: "evidence-coverage",
-        message: "Evidence coverage 0% is below the required 100%."
-      }));
+      expect(result.diagnostics).toContainEqual(
+        expect.objectContaining({
+          code: "EVIDENCE_INVALID",
+          gateId: "evidence-coverage",
+          message: "Evidence coverage 0% is below the required 100%."
+        })
+      );
     }
   );
 

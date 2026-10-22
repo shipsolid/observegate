@@ -69,11 +69,9 @@
     "deployments": [{ "id": "deploy-42", "active": true }]
   },
   "telemetry.cardinality_estimate": {
-    "estimate": 240,
-    "budget": 500
+    "measurements": { "new_metric_series": 240 }
   },
   "telemetry.volume_estimate": {
-    "estimate": 18,
-    "budget": 25
+    "measurements": { "metrics": 18 }
   }
 }

@@ -186,15 +186,19 @@ function definition(kind: string): Record<string, unknown> {
       ...base,
       dependencies: [{ name: "db", query: "db_up", threshold: { greater_than_or_equal: 0 } }]
     };
-  if (
-    [
-      "metric.multi_threshold",
-      "runtime.capacity",
-      "telemetry.collector_health",
-      "telemetry.cardinality_estimate",
-      "telemetry.volume_estimate"
-    ].includes(kind)
-  )
+  if (kind === "telemetry.cardinality_estimate")
+    return {
+      ...base,
+      source: { provider: "metrics", queries: { new_metric_series: "estimate" } },
+      assertions: { new_metric_series: { less_than_or_equal: 100 } }
+    };
+  if (kind === "telemetry.volume_estimate")
+    return {
+      ...base,
+      source: { provider: "metrics", queries: { metrics: "estimate" } },
+      assertions: { estimated_growth_percent: { metrics: { less_than_or_equal: 100 } } }
+    };
+  if (["metric.multi_threshold", "runtime.capacity", "telemetry.collector_health"].includes(kind))
     return {
       ...base,
       source: {

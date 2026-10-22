@@ -173,7 +173,8 @@ describe("GitHub Action adapter", () => {
     await runAction({ service: { run: async () => result("pass") }, runtime });
     expect(mocks.setFailed).toHaveBeenCalledWith("Action publication was cancelled.");
     expect(mocks.outputs.get("decision")).toBe("error");
-    expect(mocks.outputs.get("report_path")).toBe("/tmp/observability-gate.json");
+    expect(mocks.outputs.get("report_path")).toBe("");
+    expect(mocks.writeReports).not.toHaveBeenCalled();
   });
 
   it("publishes terminal error outputs when summary publication fails", async () => {
@@ -182,7 +183,10 @@ describe("GitHub Action adapter", () => {
     expect(mocks.outputs.get("decision")).toBe("error");
     expect(mocks.outputs.get("release_id")).toBe("release-1");
     expect(mocks.writeReports).toHaveBeenLastCalledWith(
-      expect.objectContaining({ decision: "error", diagnostics: [expect.objectContaining({code: "REPORTING"})] }),
+      expect.objectContaining({
+        decision: "error",
+        diagnostics: [expect.objectContaining({ code: "REPORTING" })]
+      }),
       expect.anything()
     );
     expect(mocks.setFailed.mock.calls.flat().join(" ")).not.toContain("secret-provider-value");

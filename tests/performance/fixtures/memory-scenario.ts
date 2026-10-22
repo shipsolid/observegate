@@ -123,7 +123,13 @@ export interface MemoryScenarioMetrics {
 export async function runMemoryScenario(directory: string): Promise<MemoryScenarioMetrics> {
   const memoryCheckpoint = (stage: string) => {
     if (process.env.OBSERVEGATE_MEMORY_DIAGNOSTICS === "1")
-      process.stderr.write(JSON.stringify({stage, ...process.memoryUsage(), maxRss: process.resourceUsage().maxRSS * 1024}) + "\n");
+      process.stderr.write(
+        JSON.stringify({
+          stage,
+          ...process.memoryUsage(),
+          maxRss: process.resourceUsage().maxRSS * 1024
+        }) + "\n"
+      );
   };
   const maximumProviderResponseBytes = parseByteSize(
     configuredLimits.maximum_provider_response_size,

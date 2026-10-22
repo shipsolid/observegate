@@ -490,3 +490,37 @@ describe("bounded text responses", () => {
     await expect(request(empty, { responseType: "text" })).resolves.toMatchObject({ data: "" });
   });
 });
+
+describe("bounded response decoding allocations", () => {
+  it("decodes a fragmented UTF-8 payload once after its byte limit has been enforced", async () => {
+    const encoded = new TextEncoder().encode(JSON.stringify({ value: "€🙂".repeat(20000) }));
+    let offset = 0;
+    const transport = new GuardedTransport({
+      urlPolicy: policy(),
+      fetch: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (offset === encoded.length) {
+                controller.close();
+                return;
+              }
+              const end = Math.min(encoded.length, offset + 4093);
+              controller.enqueue(encoded.subarray(offset, end));
+              offset = end;
+            }
+          })
+        )
+    });
+    const decode = vi.spyOn(TextDecoder.prototype, "decode");
+    try {
+      await expect(
+        request(transport, { maximumResponseBytes: encoded.length })
+      ).resolves.toMatchObject({ data: { value: "€🙂".repeat(20000) } });
+      // A decoded string per network fragment retains a rope plus its flattened JSON input.
+      expect(decode).toHaveBeenCalledTimes(1);
+    } finally {
+      decode.mockRestore();
+    }
+  });
+});

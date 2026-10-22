@@ -1548,16 +1548,18 @@ git commit -m "feat(gates): implement common post-deployment checks"
 - Test: packages/gates/test/post/reliability/*.test.ts
 
 **Interfaces:**
-- Consumes: candidate evidence, explicit or discovered baseline, excluded windows, Grafana reliability, dependency, synthetic, and HTTP evidence.
+- Consumes: candidate evidence, an explicit baseline and author-selected query windows, measured Grafana reliability, dependency, synthetic, and HTTP evidence.
 - Produces: comparison.metric, comparison.multi_metric, comparison.trace_metrics, comparison.telemetry_volume, Grafana reliability types, dependency.health, synthetic.result, and http.assertion.
 
 - [ ] **Step 1: Write baseline-selection tests**
 
-Test explicit baseline, previous healthy baseline, missing baseline, baseline outside lookback, baseline during incident, baseline during deployment, insufficient samples, and candidate/baseline identity collision.
+Test explicit baseline, rejection of unsupported discovery/filtering/extension, missing baseline,
+insufficient samples, and candidate/baseline identity collision.
 
 - [ ] **Step 2: Implement baseline selection**
 
-Prefer explicit release ID. Otherwise choose the most recent previous healthy release from trusted deployment evidence and telemetry. Return insufficient evidence when neither is safe.
+Require an explicit release ID. Reject unsupported discovery/filtering settings rather than
+silently ignoring them. Return insufficient evidence when the requested observations cannot support comparison.
 
 - [ ] **Step 3: Write comparison math tests**
 
@@ -2307,10 +2309,11 @@ git commit -m "build: harden and package observability gate"
 
 Implementation is complete only when:
 
-- Every task commit exists in dependency order.
+- Every implementation deliverable has validation evidence; commits remain user-authorized.
 - npm run ci passes from a clean checkout.
 - All 86 reference gate IDs resolve and their definitions validate.
-- Both reference phases execute through the CLI and checked-in Action bundle.
+- Runnable offline and authenticated workflow examples exercise both phases through CLI and
+  Action composition. The exhaustive reference catalogue requires workload-specific acquisition inputs.
 - Passing scenarios pass and failure-injection scenarios fail safely.
 - Missing evidence never becomes a synthetic healthy value.
 - Runtime, attestation, and telemetry identity disagreement blocks release.

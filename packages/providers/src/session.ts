@@ -23,6 +23,7 @@ import { resolveArtifact } from "./resolvers/artifacts.js";
 import { resolveTelemetry, metric, traceRecords, logRecords } from "./resolvers/telemetry.js";
 import { resolveComparison } from "./resolvers/comparison.js";
 import { resolveGrafana } from "./resolvers/grafana.js";
+import { resolveQueryValidation } from "./resolvers/query-validation.js";
 import { createRuntimeResolver, type RuntimeClients } from "./resolvers/runtime.js";
 import { verifiedDeployment } from "./resolvers/deployment.js";
 import {
@@ -86,7 +87,11 @@ export function createPolicyProviderSession(
   const timing = new Map<string, ProviderTiming>();
   const recordTiming = (provider: string, startedAt: number) => {
     const prior = timing.get(provider);
-    timing.set(provider, {provider, calls: (prior?.calls ?? 0) + 1, durationMs: (prior?.durationMs ?? 0) + Math.max(0, now() - startedAt)});
+    timing.set(provider, {
+      provider,
+      calls: (prior?.calls ?? 0) + 1,
+      durationMs: (prior?.durationMs ?? 0) + Math.max(0, now() - startedAt)
+    });
   };
   const providerGroups = record(options.policy.providers);
   const telemetry = record(providerGroups.telemetry);
@@ -130,44 +135,62 @@ export function createPolicyProviderSession(
           parseByteSize(options.policy.limits.maximum_query_length, 16 * 1024))
       )
         configuration("Provider query exceeds limits.maximum_query_length");
-      const provider = Object.entries(telemetry).find(([, value]) => {
-        const endpoint = endpointFor(record(value), options.environment);
-        return endpoint !== undefined && new URL(endpoint).origin === url.origin;
-      })?.[0] ?? (request.kind === "probe" ? "http" : "jwks");
+      const provider =
+        Object.entries(telemetry).find(([, value]) => {
+          const endpoint = endpointFor(record(value), options.environment);
+          return endpoint !== undefined && new URL(endpoint).origin === url.origin;
+        })?.[0] ?? (request.kind === "probe" ? "http" : "jwks");
       const startedAt = now();
-      options.onEvent?.({name: "provider_request_started", at: new Date(startedAt).toISOString(), provider});
-      return guarded.request({
-        ...request,
-        onRetry: (attempt) => options.onEvent?.({name: "provider_request_retried", at: new Date(now()).toISOString(), provider, attempt}),
-        ...(options.policy.execution.retries === undefined
-          ? {}
-          : {
-              retry: {
-                attempts:
-                  number(record(options.policy.execution.retries).attempts) ??
-                  request.retry.attempts,
-                initialBackoffMs: durationMs(
-                  record(options.policy.execution.retries).initial_backoff,
-                  request.retry.initialBackoffMs
-                ),
-                maximumBackoffMs: durationMs(
-                  record(options.policy.execution.retries).maximum_backoff,
-                  request.retry.maximumBackoffMs
-                ),
-                retryStatuses: array(record(options.policy.execution.retries).retry_on).flatMap(
-                  (item) =>
-                    typeof item === "string" && /^http_\d{3}$/u.test(item)
-                      ? [Number(item.slice(5))]
-                      : []
-                ),
-                retryOn: array(record(options.policy.execution.retries).retry_on).map(String)
-              }
-            }),
-        maximumResponseBytes: Math.min(request.maximumResponseBytes, maximumResponseBytes)
-      }).finally(() => {
-        recordTiming(provider, startedAt);
-        options.onEvent?.({name: "provider_request_completed", at: new Date(now()).toISOString(), provider, durationMs: Math.max(0, now() - startedAt)});
+      options.onEvent?.({
+        name: "provider_request_started",
+        at: new Date(startedAt).toISOString(),
+        provider
       });
+      return guarded
+        .request({
+          ...request,
+          onRetry: (attempt) =>
+            options.onEvent?.({
+              name: "provider_request_retried",
+              at: new Date(now()).toISOString(),
+              provider,
+              attempt
+            }),
+          ...(options.policy.execution.retries === undefined
+            ? {}
+            : {
+                retry: {
+                  attempts:
+                    number(record(options.policy.execution.retries).attempts) ??
+                    request.retry.attempts,
+                  initialBackoffMs: durationMs(
+                    record(options.policy.execution.retries).initial_backoff,
+                    request.retry.initialBackoffMs
+                  ),
+                  maximumBackoffMs: durationMs(
+                    record(options.policy.execution.retries).maximum_backoff,
+                    request.retry.maximumBackoffMs
+                  ),
+                  retryStatuses: array(record(options.policy.execution.retries).retry_on).flatMap(
+                    (item) =>
+                      typeof item === "string" && /^http_\d{3}$/u.test(item)
+                        ? [Number(item.slice(5))]
+                        : []
+                  ),
+                  retryOn: array(record(options.policy.execution.retries).retry_on).map(String)
+                }
+              }),
+          maximumResponseBytes: Math.min(request.maximumResponseBytes, maximumResponseBytes)
+        })
+        .finally(() => {
+          recordTiming(provider, startedAt);
+          options.onEvent?.({
+            name: "provider_request_completed",
+            at: new Date(now()).toISOString(),
+            provider,
+            durationMs: Math.max(0, now() - startedAt)
+          });
+        });
     }
   };
   const maximumFutureSkewMs = Math.min(
@@ -459,49 +482,8 @@ export function createPolicyProviderSession(
       }
       return [combined(raws, gateType, { providers }), ...raws];
     }
-    if (gateType === "telemetry.query_validation") {
-      const definitions = [
-          ...array(options.policy.gates.pre_deployment),
-          ...array(options.policy.gates.post_deployment)
-        ].map(record),
-        raws: Evidence<unknown>[] = [],
-        queries = [];
-      for (const gate of definitions) {
-        const s = record(gate.source);
-        if (typeof s.query !== "string" || !["metrics", "logs"].includes(String(s.provider)))
-          continue;
-        const raw =
-          s.provider === "metrics"
-            ? await metric(base, s.query, context)
-            : await logRecords(base, s.query, context);
-        raws.push(raw);
-        const vector = record(raw.value),
-          samples = array(vector.samples);
-        const mappings = record(
-          record(options.policy.identity.provider_mappings)[String(s.provider)]
-        );
-        const service = String(mappings["service.name"] ?? "service_name"),
-          environment = String(mappings["deployment.environment.name"] ?? "deployment_environment");
-        const groupBy = [...s.query.matchAll(/(?:by|without)\s*\(([^)]*)\)/gu)].flatMap((match) =>
-          String(match[1])
-            .split(",")
-            .map((v) => v.trim())
-        );
-        queries.push({
-          valid: raw.state === "valid",
-          threshold: gate.type === "metric.threshold",
-          shape: s.provider === "metrics" && samples.length === 1 ? "scalar" : "records",
-          production: record(options.policy.identity.canonical).environment === "production",
-          scoped: s.query.includes(`${service}=`) && s.query.includes(`${environment}=`),
-          groupBy
-        });
-      }
-      if (raws.length === 0)
-        configuration(
-          "telemetry.query_validation requires configured telemetry query gates to validate"
-        );
-      return [combined(raws, gateType, { queries }), ...raws];
-    }
+    if (gateType === "telemetry.query_validation")
+      return resolveQueryValidation(base, definition, context);
     if (gateType === "http.assertion" || gateType === "asset.url") {
       const providerName = string(source.provider) ?? string(source.adapter) ?? "public-probe",
         provider = record(httpProviders[providerName]),
@@ -586,12 +568,26 @@ export function createPolicyProviderSession(
       `${gateType} has no complete evidence acquisition contract; configure a supported adapter and gate-specific source parameters`
     );
   };
-  const resolveObserved: NonNullable<ProviderSession["resolveEvidence"]> = async (kind, definition, context) => {
+  const resolveObserved: NonNullable<ProviderSession["resolveEvidence"]> = async (
+    kind,
+    definition,
+    context
+  ) => {
     const startedAt = now();
     const values = await resolve(kind, definition, context);
     const localProvider = values[0]?.source.provider;
-    if (localProvider !== undefined && !["metrics", "logs", "traces", "grafana", "http"].includes(localProvider)) recordTiming(localProvider, startedAt);
-    for (const value of values) options.onEvent?.({name: value.state === "valid" ? "evidence_acquired" : "evidence_rejected", at: new Date(now()).toISOString(), provider: value.source.provider, status: value.state});
+    if (
+      localProvider !== undefined &&
+      !["metrics", "logs", "traces", "grafana", "http"].includes(localProvider)
+    )
+      recordTiming(localProvider, startedAt);
+    for (const value of values)
+      options.onEvent?.({
+        name: value.state === "valid" ? "evidence_acquired" : "evidence_rejected",
+        at: new Date(now()).toISOString(),
+        provider: value.source.provider,
+        status: value.state
+      });
     return values;
   };
   const postGates = (
@@ -610,7 +606,8 @@ export function createPolicyProviderSession(
   let generation = 0;
   return {
     resolveEvidence: resolveObserved,
-    timings: () => [...timing.values()].sort((left, right) => left.provider.localeCompare(right.provider)),
+    timings: () =>
+      [...timing.values()].sort((left, right) => left.provider.localeCompare(right.provider)),
     ...(postGates.length === 0 || options.plan?.phase === "pre_deployment"
       ? {}
       : {

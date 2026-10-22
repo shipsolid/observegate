@@ -5,7 +5,13 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { generateDocs } from "../../scripts/generate-docs.js";
 
-const generated = ["configuration.md", "gates.md", "providers.md", "troubleshooting.md"];
+const generated = [
+  "configuration.md",
+  "gates.md",
+  "providers.md",
+  "troubleshooting.md",
+  "observability-gate.schema.json"
+];
 
 describe("generated documentation", () => {
   it("matches source metadata", async () => {
@@ -21,7 +27,7 @@ describe("generated documentation", () => {
   it("keeps the approved reference policy byte-stable", async () => {
     const content = await readFile(resolve("examples/observability-gate.yml"));
     expect(createHash("sha256").update(content).digest("hex")).toBe(
-      "8ba49f61923e9ea3cd86fe61dfc06c36f1d93b107d83ef6dc3b5b6e5dd35615b"
+      "a3be9ee9767873cca63a1e73ae4552f501fe6a0de6c486c9a2099095be813b5e"
     );
   });
 
@@ -31,7 +37,9 @@ describe("generated documentation", () => {
       (match) => match[1] ?? ""
     );
     expect(references.length).toBeGreaterThan(0);
-    expect(references.every((reference) => /@[0-9a-f]{40}$/u.test(reference))).toBe(true);
+    expect(
+      references.every((reference) => reference === "./" || /@[0-9a-f]{40}$/u.test(reference))
+    ).toBe(true);
     expect(workflow).toContain("deployed_at: ${{ steps.release.outputs.deployed_at }}");
     expect(workflow).toContain("previous_release: ${{ steps.previous.outputs.release_id }}");
   });

@@ -1,153 +1,250 @@
+# Copy to .github/workflows/deploy.yml and configure the production environment.
+# Build/publish docker/e2e-service first; supply its immutable registry digest.
 name: Deploy with ObserveGate
 
 on:
   workflow_dispatch:
     inputs:
       release_id:
-        description: Immutable release or image digest
+        description: Immutable release ID (1–63 Kubernetes label characters)
+        required: true
+        type: string
+      image_digest:
+        description: Published docker/e2e-service image digest (sha256 plus 64 hex digits)
         required: true
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: checkout-production
+  cancel-in-progress: false
+
+env:
+  RELEASE_ID: ${{ inputs.release_id }}
+  IMAGE_DIGEST: ${{ inputs.image_digest }}
+  COMMIT_SHA: ${{ github.sha }}
+  DEPLOYMENT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  TARGET_ID: aks-checkout
+  HELM_VERSION: v3.19.0
+
 jobs:
   pre-deployment:
     runs-on: ubuntu-latest
     environment: production
-    permissions:
-      contents: read
-      id-token: write
+    env:
+      IMAGE_REPOSITORY: ${{ vars.CHECKOUT_IMAGE_REPOSITORY }}
+      EVIDENCE_ISSUER: ${{ vars.DEPLOYMENT_EVIDENCE_ISSUER }}
+      EXPECTED_WORKFLOW_IDENTITY: ${{ vars.DEPLOYMENT_WORKFLOW_IDENTITY }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Evaluate pre-deployment gates
-        uses: shipsolid/observegate@cb515c72d282c13dccb26fc4c7ff32505d3d0a40
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          config: observability-gate.yml
+          node-version: 24
+          cache: npm
+      - name: Validate dispatch inputs
+        run: node examples/deployment-evidence-producer.mjs validate
+      - name: Build the checked-out Action
+        run: |
+          npm ci
+          npm run bundle
+          npm run verify:bundle
+          npm run verify:read-only
+      - name: Install pinned Helm with checksum verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl --fail --location --silent --show-error "https://get.helm.sh/${archive}" -o "$RUNNER_TEMP/$archive"
+          curl --fail --location --silent --show-error "https://get.helm.sh/${archive}.sha256sum" -o "$RUNNER_TEMP/helm.sha256sum"
+          (cd "$RUNNER_TEMP" && sha256sum --check helm.sha256sum)
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          sudo install "$RUNNER_TEMP/linux-amd64/helm" /usr/local/bin/helm
+      - name: Prepare read-only credentials and independent trust
+        run: node examples/deployment-evidence-producer.mjs prepare-readonly
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.OBSERVEGATE_READONLY_KUBECONFIG }}
+          PUBLIC_JWKS_JSON: ${{ secrets.DEPLOYMENT_PUBLIC_JWKS }}
+      - name: Render candidate manifests before pre-gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p deploy
+          helm template checkout examples/helm/checkout \
+            --namespace observegate-example \
+            --set-string image.repository="$IMAGE_REPOSITORY" \
+            --set-string image.digest="$IMAGE_DIGEST" \
+            --set-string releaseId="$RELEASE_ID" > deploy/rendered.yaml
+      - name: Evaluate pre-deployment gates
+        uses: ./
+        with:
+          config: examples/workflow-policy.yml
           phase: pre_deployment
           target: aks-checkout
           output-directory: observability-gate-results/pre
-        env:
-          TARGET_ID: aks-checkout
-          SERVICE_NAME: checkout
-          SERVICE_NAMESPACE: commerce
-          ENVIRONMENT: production
-          RELEASE_ID: ${{ inputs.release_id }}
-          DEPLOYMENT_ID: ${{ github.run_id }}
-          KUBE_CONTEXT: production
-          K8S_NAMESPACE: checkout
-          K8S_WORKLOAD: checkout
-          K8S_CONTAINER: checkout
-          IMAGE_DIGEST: ${{ inputs.release_id }}
-
-      - name: Upload pre-deployment evidence
+      - name: Upload gate reports
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: observability-gate-pre
           path: observability-gate-results/pre
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
+      - name: Remove temporary credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/observegate-readonly-kubeconfig"
 
   deploy:
     needs: pre-deployment
     runs-on: ubuntu-latest
     environment: production
-    permissions:
-      contents: read
-      id-token: write
+    env:
+      IMAGE_REPOSITORY: ${{ vars.CHECKOUT_IMAGE_REPOSITORY }}
+      EVIDENCE_ISSUER: ${{ vars.DEPLOYMENT_EVIDENCE_ISSUER }}
+      EXPECTED_WORKFLOW_IDENTITY: ${{ vars.DEPLOYMENT_WORKFLOW_IDENTITY }}
+    timeout-minutes: 15
     outputs:
       deployed_at: ${{ steps.release.outputs.deployed_at }}
       previous_release: ${{ steps.previous.outputs.release_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Validate dispatch inputs and install dependencies
+        run: |
+          node examples/deployment-evidence-producer.mjs validate
+          npm ci
+      - name: Install pinned Helm with checksum verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl --fail --location --silent --show-error "https://get.helm.sh/${archive}" -o "$RUNNER_TEMP/$archive"
+          curl --fail --location --silent --show-error "https://get.helm.sh/${archive}.sha256sum" -o "$RUNNER_TEMP/helm.sha256sum"
+          (cd "$RUNNER_TEMP" && sha256sum --check helm.sha256sum)
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          sudo install "$RUNNER_TEMP/linux-amd64/helm" /usr/local/bin/helm
+      - name: Prepare deployment credentials and independent trust
+        run: node examples/deployment-evidence-producer.mjs prepare-deploy
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.CHECKOUT_DEPLOY_KUBECONFIG }}
+          PUBLIC_JWKS_JSON: ${{ secrets.DEPLOYMENT_PUBLIC_JWKS }}
       - name: Read previous release
         id: previous
         shell: bash
         run: |
-          if helm status checkout --namespace checkout >/dev/null 2>&1; then
-            release_id="$(helm get values checkout --namespace checkout --output json | jq -r '.image.digest // "unknown"')"
+          set -euo pipefail
+          helm list --namespace observegate-example --filter '^checkout$' --output json > "$RUNNER_TEMP/releases.json"
+          if [ "$(jq 'length' "$RUNNER_TEMP/releases.json")" -gt 0 ]; then
+            helm get values checkout --namespace observegate-example --output json > "$RUNNER_TEMP/previous-values.json"
           else
-            release_id="none"
+            printf '{"releaseId":"none"}\n' > "$RUNNER_TEMP/previous-values.json"
           fi
-          echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
-
+          node --input-type=module <<'NODE'
+          import { appendFile, readFile } from 'node:fs/promises';
+          import { validateReleaseInputs } from './examples/deployment-evidence-producer.mjs';
+          const values = JSON.parse(await readFile(`${process.env.RUNNER_TEMP}/previous-values.json`, 'utf8'));
+          validateReleaseInputs(values.releaseId, process.env.IMAGE_DIGEST);
+          await appendFile(process.env.GITHUB_OUTPUT, `release_id=${values.releaseId}\n`);
+          NODE
       - name: Deploy the user-owned Helm release
         shell: bash
         run: |
-          helm upgrade --install checkout deploy/chart \
-            --namespace checkout \
-            --create-namespace \
-            --atomic \
-            --wait \
-            --set-string image.digest="${{ inputs.release_id }}"
-
-      - name: Publish deployment outputs
+          set -euo pipefail
+          helm upgrade --install checkout examples/helm/checkout \
+            --namespace observegate-example --create-namespace \
+            --atomic --wait --timeout 5m \
+            --set-string image.repository="$IMAGE_REPOSITORY" \
+            --set-string image.digest="$IMAGE_DIGEST" \
+            --set-string releaseId="$RELEASE_ID"
+      - name: Publish successful deployment completion time
         id: release
         shell: bash
         run: echo "deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      - name: Capture read-only deployment evidence
+      - name: Capture rendered deployment evidence
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p deployment-evidence
-          helm get manifest checkout --namespace checkout > deployment-evidence/rendered.yaml
-
-      - name: Upload deployment evidence
+          helm get manifest checkout --namespace observegate-example > deployment-evidence/rendered.yaml
+      - name: Sign completed deployment with the protected private key
+        run: node examples/deployment-evidence-producer.mjs sign
+        env:
+          SIGNING_PRIVATE_KEY_PEM: ${{ secrets.DEPLOYMENT_SIGNING_PRIVATE_KEY_PEM }}
+          SIGNING_KEY_ID: ${{ vars.DEPLOYMENT_SIGNING_KEY_ID }}
+          PUBLIC_JWKS_FILE: .observegate-trust/jwks.json
+          EVIDENCE_OUTPUT: deployment-evidence/release.jws
+          EVIDENCE_SUBJECT: repo:${{ github.repository }}:environment:production
+          WORKFLOW_IDENTITY: ${{ github.workflow_ref }}
+          DEPLOYED_AT: ${{ steps.release.outputs.deployed_at }}
+          PREVIOUS_RELEASE_ID: ${{ steps.previous.outputs.release_id }}
+      - name: Transfer signed deployment evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: checkout-deployment-evidence
           path: deployment-evidence
           if-no-files-found: error
           retention-days: 14
+      - name: Remove temporary credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/observegate-deploy-kubeconfig"
 
   post-deployment:
     needs: deploy
     runs-on: ubuntu-latest
     environment: production
-    permissions:
-      contents: read
-      id-token: write
-      checks: write
-      pull-requests: write
+    env:
+      IMAGE_REPOSITORY: ${{ vars.CHECKOUT_IMAGE_REPOSITORY }}
+      EVIDENCE_ISSUER: ${{ vars.DEPLOYMENT_EVIDENCE_ISSUER }}
+      EXPECTED_WORKFLOW_IDENTITY: ${{ vars.DEPLOYMENT_WORKFLOW_IDENTITY }}
+      DEPLOYED_AT: ${{ needs.deploy.outputs.deployed_at }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download deployment evidence
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Validate dispatch inputs
+        run: node examples/deployment-evidence-producer.mjs validate
+      - name: Build the checked-out Action
+        run: |
+          npm ci
+          npm run bundle
+          npm run verify:bundle
+          npm run verify:read-only
+      - name: Prepare read-only credentials and independent trust
+        run: node examples/deployment-evidence-producer.mjs prepare-readonly
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.OBSERVEGATE_READONLY_KUBECONFIG }}
+          PUBLIC_JWKS_JSON: ${{ secrets.DEPLOYMENT_PUBLIC_JWKS }}
+      - name: Download signed evidence from this run
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: checkout-deployment-evidence
           path: deployment-evidence
-
       - name: Evaluate post-deployment gates
-        uses: shipsolid/observegate@cb515c72d282c13dccb26fc4c7ff32505d3d0a40
+        uses: ./
         with:
-          config: observability-gate.yml
+          config: examples/workflow-policy.yml
           phase: post_deployment
           target: aks-checkout
           output-directory: observability-gate-results/post
-          github-token: ${{ github.token }}
-        env:
-          TARGET_ID: aks-checkout
-          SERVICE_NAME: checkout
-          SERVICE_NAMESPACE: commerce
-          ENVIRONMENT: production
-          RELEASE_ID: ${{ inputs.release_id }}
-          DEPLOYMENT_ID: ${{ github.run_id }}
-          DEPLOYED_AT: ${{ needs.deploy.outputs.deployed_at }}
-          BASELINE_RELEASE_ID: ${{ needs.deploy.outputs.previous_release }}
-          KUBE_CONTEXT: production
-          K8S_NAMESPACE: checkout
-          K8S_WORKLOAD: checkout
-          K8S_CONTAINER: checkout
-          IMAGE_DIGEST: ${{ inputs.release_id }}
-
-      - name: Upload post-deployment reports
+      - name: Upload gate reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: observability-gate-post
           path: observability-gate-results/post
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
+      - name: Remove temporary credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/observegate-readonly-kubeconfig"

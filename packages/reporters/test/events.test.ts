@@ -10,29 +10,54 @@ async function workspace() {
   directories.push(path);
   return path;
 }
-afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, {recursive: true, force: true}))); });
+afterEach(async () => {
+  await Promise.all(
+    directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))
+  );
+});
 
 describe("local diagnostic events", () => {
   it("writes only safe event fields with private file permissions", async () => {
     const root = await workspace();
-    const writer = await createEventWriter({workspaceRoot: root, path: "reports/events.jsonl"});
-    writer.write({name: "provider_request_completed", at: new Date().toISOString(), provider: "metrics", durationMs: 12, ...{query: "secret-provider-query", headers: {authorization: "secret-token"}}});
+    const writer = await createEventWriter({ workspaceRoot: root, path: "reports/events.jsonl" });
+    writer.write({
+      name: "provider_request_completed",
+      at: new Date().toISOString(),
+      provider: "metrics",
+      durationMs: 12,
+      ...{ query: "secret-provider-query", headers: { authorization: "secret-token" } }
+    });
     writer.close();
     const content = await readFile(join(root, "reports/events.jsonl"), "utf8");
-    expect(JSON.parse(content)).toMatchObject({name: "provider_request_completed", provider: "metrics", durationMs: 12});
+    expect(JSON.parse(content)).toMatchObject({
+      name: "provider_request_completed",
+      provider: "metrics",
+      durationMs: 12
+    });
     expect(content).not.toContain("secret");
     expect((await stat(join(root, "reports/events.jsonl"))).mode & 0o777).toBe(0o600);
   });
   it("rejects directory traversal and symlink escapes", async () => {
-    const root = await workspace(), outside = await workspace();
+    const root = await workspace(),
+      outside = await workspace();
     await symlink(outside, join(root, "escape"));
-    await expect(createEventWriter({workspaceRoot: root, path: "../escape.jsonl"})).rejects.toMatchObject({code: "SECURITY_POLICY"});
-    await expect(createEventWriter({workspaceRoot: root, path: "escape/events.jsonl"})).rejects.toMatchObject({code: "SECURITY_POLICY"});
+    await expect(
+      createEventWriter({ workspaceRoot: root, path: "../escape.jsonl" })
+    ).rejects.toMatchObject({ code: "SECURITY_POLICY" });
+    await expect(
+      createEventWriter({ workspaceRoot: root, path: "escape/events.jsonl" })
+    ).rejects.toMatchObject({ code: "SECURITY_POLICY" });
   });
   it("enforces the event stream size limit without writing a partial event", async () => {
     const root = await workspace();
-    const writer = await createEventWriter({workspaceRoot: root, path: "events.jsonl", maximumBytes: 1});
-    expect(() => writer.write({name: "decision_completed", at: new Date().toISOString(), decision: "pass"})).toThrow("Diagnostic event stream exceeds its size limit.");
+    const writer = await createEventWriter({
+      workspaceRoot: root,
+      path: "events.jsonl",
+      maximumBytes: 1
+    });
+    expect(() =>
+      writer.write({ name: "decision_completed", at: new Date().toISOString(), decision: "pass" })
+    ).toThrow("Diagnostic event stream exceeds its size limit.");
     writer.close();
     expect(await readFile(join(root, "events.jsonl"), "utf8")).toBe("");
   });

@@ -133,6 +133,10 @@ export async function traceRecords(
 ): Promise<Evidence<TraceSearchEvidence>> {
   if (base.traces === undefined)
     configuration("Trace acquisition requires a configured traces provider");
+  if (typeof source.query === "string")
+    configuration(
+      "Raw TraceQL is unsupported; use an identity-object trace selector or canonical identity defaults"
+    );
   const query = record(source.query),
     expected = identity(base.policy),
     range = windowFor(base, context);

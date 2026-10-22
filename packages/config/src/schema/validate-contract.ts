@@ -677,6 +677,26 @@ function validateReporting(value: Data): void {
 function validateGate(gate: Data, path: string): void {
   const assertions = data(gate.assertions),
     source = data(gate.source);
+  if (source.provider === "traces" && typeof source.query === "string")
+    invalid(
+      `${path}.source.query`,
+      "Raw TraceQL is unsupported; use an identity-object trace selector."
+    );
+  if (gate.type === "telemetry.query_validation") {
+    choices(
+      assertions.validate_queries_from,
+      ["gates.pre_deployment", "gates.post_deployment"],
+      `${path}.assertions.validate_queries_from`
+    );
+    if (assertions.maximum_query_range !== undefined)
+      duration(assertions.maximum_query_range, `${path}.assertions.maximum_query_range`, true);
+    for (const [name, provider] of Object.entries(data(gate.sources)))
+      if (!["metrics", "logs", "traces"].includes(name) || provider !== name)
+        invalid(
+          `${path}.sources.${name}`,
+          "Use the canonical metrics, logs, or traces provider name."
+        );
+  }
   if (gate.type === "policy.self_check") {
     const sections = [
       "identity",

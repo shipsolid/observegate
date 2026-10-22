@@ -1,6 +1,6 @@
 import { GateError, type ExecutionRequest, type ExecutionResult } from "@observability-gate/core";
 import type { GithubReportingOptions, PublicationOptions } from "@observability-gate/config";
-import { writeReports } from "@observability-gate/reporters";
+import { createEventWriter, writeReports, type EventWriter } from "@observability-gate/reporters";
 import { publishCheck, updatePullRequestComment, writeStepSummary } from "./github-reporter.js";
 import { readInputs } from "./inputs.js";
 import { setActionOutputs } from "./outputs.js";
@@ -36,17 +36,25 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
   const runtime = dependencies.runtime ?? githubActionsRuntime;
   let completed: ExecutionResult | undefined;
   let reportPath = "";
+  let publicationAttempted = false;
   let reportOptions: Parameters<typeof writeReports>[1] | undefined;
+  let eventWriter: EventWriter | undefined;
   try {
     const inputs = readInputs(runtime);
+    const workspaceRoot =
+      dependencies.workspaceRoot ?? process.env.GITHUB_WORKSPACE ?? process.cwd();
+    const eventsPath = runtime.getInput("events-path");
+    if (eventsPath !== "")
+      eventWriter = await createEventWriter({ workspaceRoot, path: eventsPath });
     const service = dependencies.service ?? createActionService(dependencies.providerOptions);
     const request: ExecutionRequest = {
-      workspaceRoot: dependencies.workspaceRoot ?? process.env.GITHUB_WORKSPACE ?? process.cwd(),
+      workspaceRoot,
       configPath: inputs.config,
       phase: inputs.phase,
       ...(inputs.target === undefined ? {} : { targetOverride: inputs.target }),
       environment: dependencies.environment ?? process.env,
-      cancellationSignal: controller.signal
+      cancellationSignal: controller.signal,
+      ...(eventWriter === undefined ? {} : { onEvent: eventWriter.write })
     };
     const result = await service.run(request);
     completed = result;
@@ -77,10 +85,17 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
       maximumTotalBytes,
       signal: controller.signal
     };
+    if (reporting.stepSummary) await writeStepSummary(result, runtime, reporting);
+    checkCancellation();
+    publicationAttempted = true;
     const publication = await writeReports(result, reportOptions);
     reportPath = publication.paths.json ?? "";
-    checkCancellation();
-    if (reporting.stepSummary) await writeStepSummary(result, runtime, reporting);
+    eventWriter?.write({
+      name: "report_written",
+      at: new Date().toISOString(),
+      phase: request.phase,
+      decision: result.decision
+    });
     checkCancellation();
     if (inputs.githubToken !== undefined) {
       try {
@@ -99,31 +114,48 @@ export async function runAction(dependencies: RunActionDependencies = {}): Promi
     setActionOutputs(result, publication.paths.json ?? "", runtime);
     if (shouldFail(result)) runtime.setFailed(`Observability Gate decision: ${result.decision}`);
   } catch (error) {
-    const failure = error instanceof GateError ? error : new GateError({
-      code: "REPORTING",
-      safeMessage: "Action execution or report publication failed.",
-      retryable: false,
-      cause: error
-    });
+    const failure =
+      error instanceof GateError
+        ? error
+        : new GateError({
+            code: "REPORTING",
+            safeMessage: "Action execution or report publication failed.",
+            retryable: false,
+            cause: error
+          });
     if (completed !== undefined) {
       const terminal: ExecutionResult = {
         ...completed,
         decision: completed.decision === "fail" ? "fail" : "error",
         diagnostics: [...completed.diagnostics, failure.toDiagnostic()]
       };
+      if (controller.signal.aborted) reportPath = "";
       // Once local publication succeeded, keep its decision consistent with terminal outputs.
-      if (reportPath !== "" && reportOptions !== undefined && !controller.signal.aborted) {
-        try { await writeReports(terminal, reportOptions); }
-        catch { reportPath = ""; }
+      if (
+        (reportPath !== "" || !publicationAttempted) &&
+        reportOptions !== undefined &&
+        !controller.signal.aborted
+      ) {
+        try {
+          const terminalPublication = await writeReports(terminal, reportOptions);
+          reportPath = terminalPublication.paths.json ?? "";
+        } catch {
+          reportPath = "";
+        }
       }
       setActionOutputs(terminal, reportPath, runtime);
     } else {
       runtime.setOutput("decision", "error");
       runtime.setOutput("report_path", "");
     }
-    const inputFailure = error instanceof Error && /^(?:Missing input: (?:config|phase)|Input required and not supplied: (?:config|phase))$/u.test(error.message);
+    const inputFailure =
+      error instanceof Error &&
+      /^(?:Missing input: (?:config|phase)|Input required and not supplied: (?:config|phase))$/u.test(
+        error.message
+      );
     runtime.setFailed(inputFailure ? error.message : failure.safeMessage);
   } finally {
+    eventWriter?.close();
     process.off("SIGINT", cancel);
     process.off("SIGTERM", cancel);
   }

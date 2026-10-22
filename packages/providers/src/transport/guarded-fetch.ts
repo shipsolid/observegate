@@ -1,3 +1,4 @@
+/// <reference lib="es2024.arraybuffer" />
 import { pinnedFetch } from "./pinned-fetch.js";
 import { GateError } from "@observability-gate/core";
 import {
@@ -127,17 +128,19 @@ async function readBoundedBody(
     });
   }
 
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let text = "";
+  // Keep network fragments outside the JS string heap; JSON.parse otherwise flattens a
+  // retained decoded rope into a second complete response string.
+  const bytes = new ArrayBuffer(Math.min(limit, 64 * 1024), { maxByteLength: limit });
   let size = 0;
+  let text: string;
   try {
     while (true) {
       const { done, value } = await withCancellation(() => reader.read(), signal);
       if (done) {
         break;
       }
-      size += value.byteLength;
-      if (size > limit) {
+      const nextSize = size + value.byteLength;
+      if (nextSize > limit) {
         await withCancellation(() => reader.cancel(), signal);
         throw new GateError({
           code: "PROVIDER_PROTOCOL",
@@ -145,9 +148,12 @@ async function readBoundedBody(
           retryable: false
         });
       }
-      text += decoder.decode(value, { stream: true });
+      if (nextSize > bytes.byteLength)
+        bytes.resize(Math.min(limit, Math.max(nextSize, bytes.byteLength * 2)));
+      new Uint8Array(bytes).set(value, size);
+      size = nextSize;
     }
-    text += decoder.decode();
+    text = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes, 0, size));
   } catch (cause) {
     void reader.cancel().catch(() => undefined);
     if (signal.aborted) {
@@ -161,6 +167,7 @@ async function readBoundedBody(
       cause
     });
   } finally {
+    bytes.resize(0);
     reader.releaseLock();
   }
 

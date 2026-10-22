@@ -10,6 +10,7 @@ function manifest(budgets: unknown[] = [], kind = "Deployment") {
       metadata: { name: "app", namespace: "shop" },
       spec: {
         replicas: 3,
+        selector: { matchLabels: { app: "checkout" } },
         updateStrategy: { type: "RollingUpdate", rollingUpdate: { partition: 0 } },
         template: {
           metadata: { labels: { app: "checkout", tier: "api" } },
@@ -71,11 +72,10 @@ describe("Kubernetes workload evidence selection", () => {
       }).disruptionBudget
     ).toBeUndefined();
   });
-  it("preserves policy/v1 empty-selector semantics and rejects malformed expressions", () => {
-    expect(
+  it("rejects namespace-wide policy/v1 selectors and malformed expressions", () => {
+    expect(() =>
       parseKubernetesManifest(manifest([pdb({})]), { ...selector, container: "checkout" })
-        .disruptionBudget
-    ).toMatchObject({ minAvailable: 2 });
+    ).toThrow(/selector/i);
     expect(() =>
       parseKubernetesManifest(
         manifest([pdb({ matchExpressions: [{ key: "app", operator: "NotIn", values: [] }] })]),
@@ -90,6 +90,68 @@ describe("Kubernetes workload evidence selection", () => {
         container: "checkout"
       })
     ).toThrow(/disruption/i);
+  });
+  it("rejects a shared PDB that could protect only another workload", () => {
+    const worker = {
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: { name: "worker", namespace: "shop" },
+      spec: {
+        replicas: 2,
+        selector: { matchLabels: { app: "worker" } },
+        template: {
+          metadata: { labels: { app: "worker", tier: "api" } },
+          spec: { containers: [{ name: "worker", image: "worker:v1" }] }
+        }
+      }
+    };
+    expect(() =>
+      parseKubernetesManifest(
+        `${manifest([pdb({ matchLabels: { tier: "api" } }, 1)])}\n---\n${JSON.stringify(worker)}`,
+        { ...selector, container: "checkout" }
+      )
+    ).toThrow(/disruption|selector/i);
+  });
+  it("rejects PDBs broader than the workload selector even when peers are not rendered", () => {
+    expect(() =>
+      parseKubernetesManifest(manifest([pdb({ matchLabels: { tier: "api" } }, 1)]), {
+        ...selector,
+        container: "checkout"
+      })
+    ).toThrow(/selector/i);
+  });
+  it("rejects PDBs matching another rendered controller even with the target selector", () => {
+    const peer = {
+      apiVersion: "apps/v1",
+      kind: "StatefulSet",
+      metadata: { name: "peer", namespace: "shop" },
+      spec: { template: { metadata: { labels: { app: "checkout", component: "worker" } } } }
+    };
+    expect(() =>
+      parseKubernetesManifest(
+        `${manifest([pdb({ matchLabels: { app: "checkout" } }, 1)])}\n---\n${JSON.stringify(peer)}`,
+        { ...selector, container: "checkout" }
+      )
+    ).toThrow(/shared|disruption/i);
+  });
+  it("proves expression constraints without accepting broader In cohorts", () => {
+    expect(() =>
+      parseKubernetesManifest(
+        manifest([
+          pdb({
+            matchExpressions: [{ key: "app", operator: "In", values: ["checkout", "worker"] }]
+          })
+        ]),
+        { ...selector, container: "checkout" }
+      )
+    ).toThrow(/selector/i);
+    const narrowed = manifest([pdb({ matchLabels: { app: "checkout" } })]).replace(
+      '"selector":{"matchLabels":{"app":"checkout"}}',
+      '"selector":{"matchExpressions":[{"key":"app","operator":"In","values":["checkout","worker"]}]}'
+    );
+    expect(
+      parseKubernetesManifest(narrowed, { ...selector, container: "checkout" }).disruptionBudget
+    ).toMatchObject({ minAvailable: 2 });
   });
   it("preserves StatefulSet updateStrategy and implicit replicas", () => {
     expect(

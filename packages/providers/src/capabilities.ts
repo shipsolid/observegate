@@ -11,21 +11,21 @@ export const providerCapabilities: readonly ProviderCapabilityMetadata[] = Objec
     family: "metrics",
     implementations: ["Prometheus", "Mimir"],
     capabilities: ["instant query", "range query"],
-    authentication: "bearer/basic headers from environment",
+    authentication: "bearer token from environment",
     readOnly: true
   },
   {
     family: "logs",
     implementations: ["Loki"],
     capabilities: ["range query", "correlation search"],
-    authentication: "bearer/basic headers from environment",
+    authentication: "bearer token from environment",
     readOnly: true
   },
   {
     family: "traces",
     implementations: ["Tempo"],
     capabilities: ["trace search", "service identity"],
-    authentication: "bearer/basic headers from environment",
+    authentication: "bearer token from environment",
     readOnly: true
   },
   {

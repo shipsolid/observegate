@@ -321,7 +321,7 @@ exports[`reference policy gate coverage > publishes a stable, complete catalogue
       "operating_system",
       "provider_available",
     ],
-    "description": "Validate actionable alert rules.",
+    "description": "Validate actionable alert rule configuration.",
     "providerRequirements": [
       {
         "capability": "read",
@@ -389,7 +389,7 @@ exports[`reference policy gate coverage > publishes a stable, complete catalogue
       "operating_system",
       "provider_available",
     ],
-    "description": "Validate service dashboard metadata.",
+    "description": "Validate configured service dashboard metadata and panel coverage.",
     "providerRequirements": [
       {
         "capability": "read",
@@ -456,7 +456,7 @@ exports[`reference policy gate coverage > publishes a stable, complete catalogue
       "operating_system",
       "provider_available",
     ],
-    "description": "Validate the service SLO definition.",
+    "description": "Validate the configured service SLO definition.",
     "providerRequirements": [
       {
         "capability": "read",
@@ -883,7 +883,13 @@ exports[`reference policy gate coverage > publishes a stable, complete catalogue
       "provider_available",
     ],
     "description": "Evaluate a pre-deployment telemetry FinOps estimate.",
-    "providerRequirements": [],
+    "providerRequirements": [
+      {
+        "capability": "metrics.query.instant",
+        "provider": "metrics",
+        "required": true,
+      },
+    ],
     "supportedPhases": [
       "pre_deployment",
     ],
@@ -1044,7 +1050,13 @@ exports[`reference policy gate coverage > publishes a stable, complete catalogue
       "provider_available",
     ],
     "description": "Evaluate a pre-deployment telemetry FinOps estimate.",
-    "providerRequirements": [],
+    "providerRequirements": [
+      {
+        "capability": "metrics.query.instant",
+        "provider": "metrics",
+        "required": true,
+      },
+    ],
     "supportedPhases": [
       "pre_deployment",
     ],

@@ -47,7 +47,27 @@ Pin the Action to a full commit SHA in production:
     DEPLOYMENT_ID: ${{ github.run_id }}
 ```
 
-See the complete [pre/deploy/post workflow](examples/workflows/pre-and-post.yml).
+The [pre/deploy/post workflow](examples/workflows/pre-and-post.yml) uses the checked-out Action,
+the included [Helm chart](examples/helm/checkout), and [workflow policy](examples/workflow-policy.yml).
+It renders before pre-gates, deploys through user-owned Helm, signs deployment identity, transfers
+evidence, and preserves gate reports on failure. Copy the workflow to `.github/workflows/deploy.yml`
+and configure a protected `production` environment before dispatching it.
+
+Required environment secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `OBSERVEGATE_READONLY_KUBECONFIG` | Namespace-scoped get/list credentials for gates, with token or client certificate and CA. |
+| `CHECKOUT_DEPLOY_KUBECONFIG` | Separate credentials authorized to deploy the sample Helm release. |
+| `DEPLOYMENT_PUBLIC_JWKS` | Independently trusted public-only key set for verification. |
+| `DEPLOYMENT_SIGNING_PRIVATE_KEY_PEM` | Matching asymmetric signing key; exposed only to the user-owned signing step. |
+
+Required variables are `CHECKOUT_IMAGE_REPOSITORY`, `DEPLOYMENT_EVIDENCE_ISSUER`,
+`DEPLOYMENT_WORKFLOW_IDENTITY`, and `DEPLOYMENT_SIGNING_KEY_ID`. Publish the included
+`docker/e2e-service` image, supply its digest and a release ID when dispatching, bootstrap the
+`observegate-example` namespace/RBAC, and allow the runner and cluster to reach the API/registry.
+Kubeconfigs with exec/auth-provider plugins or disabled TLS verification are rejected. Trust keys
+must come from the protected environment rather than the transferred deployment evidence.
 
 ## CLI
 
@@ -61,6 +81,7 @@ node packages/cli/dist/main.js plan --config examples/offline.yml --phase pre_de
 node packages/cli/dist/main.js run --config examples/offline.yml --phase post_deployment --output-directory observability-gate-results
 node packages/cli/dist/main.js explain runtime.release_identity
 node packages/cli/dist/main.js catalog --json
+node packages/cli/dist/main.js schema --json
 ```
 
 The offline sample requires no credentials or provider access. It checks a local synthetic result
@@ -79,6 +100,15 @@ requires compatible sources and assertions; unknown facts cannot substitute for 
 
 `validate` and `plan` do not contact providers. Standard output is user-facing; diagnostics go to
 standard error. Plans omit credentials, gate definitions, and raw queries.
+
+Use `run --events reports/events.jsonl` or the Action's `events-path` input to opt into a bounded,
+workspace-local JSONL event stream. Only safe milestone metadata is included; no queries,
+credentials, URLs, headers, or provider payloads are recorded. JSON and Markdown reports include
+provider acquisition timings. Events are disabled by default and are never uploaded by ObserveGate.
+
+The generated [policy JSON Schema](docs/observability-gate.schema.json) supports editor validation.
+The [provider reference](docs/providers.md) lists measured budget query contracts, explicit baseline
+requirements, and the boundary between local contract tests and live-provider certification.
 
 The release workflow produces a self-contained CLI archive, CycloneDX SBOM, checksums, and GitHub
 attestations. For a published release, download its three assets and verify them:
@@ -163,4 +193,4 @@ backend or persistent evidence database.
 
 ## License
 
-[Apache License 2.0](LICENSE).
+[MIT License](LICENSE).

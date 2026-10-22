@@ -59,16 +59,19 @@ describe("decision properties", () => {
 
   it("never passes when a blocking gate is non-pass", () => {
     fc.assert(
-      fc.property(fc.constantFrom("failed", "inconclusive", "error" as const), (status) => {
-        const result = aggregateDecision({
-          gates: [gate(0, status, true)],
-          policy: { minimumEvidenceCoveragePercent: 0, warnOnSkipped: false },
-          evidenceRequirements: []
-        });
-        expect(result.decision).toBe(
-          status === "failed" ? "fail" : status === "error" ? "error" : "inconclusive"
-        );
-      })
+      fc.property(
+        fc.constantFrom("failed", "warned", "inconclusive", "error" as const),
+        (status) => {
+          const result = aggregateDecision({
+            gates: [gate(0, status, true)],
+            policy: { minimumEvidenceCoveragePercent: 0, warnOnSkipped: false },
+            evidenceRequirements: []
+          });
+          expect(result.decision).toBe(
+            status === "failed" ? "fail" : status === "error" ? "error" : "inconclusive"
+          );
+        }
+      )
     );
   });
 });

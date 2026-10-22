@@ -111,7 +111,7 @@ describe("supported public policy contracts", () => {
         name: "Budget",
         type: "telemetry.cardinality_estimate",
         enforcement: "advisory",
-        source: { queries: { estimate: "estimate" } },
+        source: { provider: "metrics", queries: { estimate: "estimate" } },
         assertions: { new_metric_series: { less_than_or_equal: 500 } }
       }
     ];
@@ -264,4 +264,66 @@ it.each([
   const input = await minimal();
   mutate(input);
   expect(() => config.parsePolicy(stringify(input))).toThrow();
+});
+
+it("publishes exact nested field types and mandatory structural fields", () => {
+  type Schema = {
+    [key: string]: unknown;
+    properties?: Record<string, Schema>;
+    items?: Schema;
+    anyOf?: Schema[];
+    required?: string[];
+    additionalProperties?: boolean | Schema;
+  };
+  const schema = config.policyJsonSchema() as Schema;
+  const root = schema.properties ?? {};
+  expect(schema.required).toContain("targets");
+  expect(root.metadata?.required).toEqual(["name"]);
+  const runtime = (root.targets?.properties?.definitions?.additionalProperties as Schema)
+    ?.properties?.runtime;
+  expect(runtime?.required).toEqual(["type", "provider"]);
+  expect(runtime?.additionalProperties).toBe(false);
+  expect(runtime?.properties?.workload?.additionalProperties).toBe(false);
+  expect(runtime?.properties?.workload?.properties?.container?.type).toBe("string");
+  const metricProvider = root.providers?.properties?.telemetry?.additionalProperties as Schema;
+  expect(metricProvider.required).toEqual(["type"]);
+  expect(metricProvider.additionalProperties).toBe(false);
+  expect(metricProvider.properties?.signature?.additionalProperties).toBe(false);
+  expect(metricProvider.properties?.signature?.properties?.jwks_file?.type).toBe("string");
+  const variants = root.gates?.properties?.pre_deployment?.items?.anyOf ?? [];
+  const metric = variants.find((variant) => variant.properties?.type?.const === "metric.threshold");
+  expect(metric?.required).toEqual(
+    expect.arrayContaining(["id", "name", "type", "source", "assertions"])
+  );
+  expect(metric?.properties?.assertions?.required).toEqual(["operator", "threshold"]);
+  expect(metric?.properties?.assertions?.properties?.threshold?.type).toBe("number");
+  expect(metric?.properties?.assertions?.additionalProperties).toBe(false);
+  const budget = variants.find(
+    (variant) => variant.properties?.type?.const === "telemetry.cardinality_estimate"
+  );
+  expect(budget?.properties?.source?.required).toEqual(["provider", "queries"]);
+  expect(budget?.properties?.source?.properties?.queries?.additionalProperties).toBe(false);
+  expect(budget?.properties?.source?.properties?.queries?.properties?.new_metric_series?.type).toBe(
+    "string"
+  );
+  expect(budget?.properties?.assertions?.minProperties).toBe(1);
+  expect(budget?.properties?.assertions?.properties?.new_metric_series?.additionalProperties).toBe(
+    false
+  );
+  expect(budget?.properties?.assertions?.properties?.new_metric_series?.required).toEqual([
+    "less_than_or_equal"
+  ]);
+  expect(
+    budget?.properties?.assertions?.properties?.new_metric_series?.properties?.less_than_or_equal
+      ?.minimum
+  ).toBe(0);
+  expect(root.release?.properties?.baseline?.required).toEqual([
+    "strategy",
+    "explicit_release_id",
+    "minimum_samples"
+  ]);
+  expect(root.release?.properties?.baseline?.properties?.strategy?.const).toBe("explicit");
+  expect(schema["x-semantic-validation"]).toEqual(
+    expect.arrayContaining([expect.stringContaining("Budget dimensions")])
+  );
 });

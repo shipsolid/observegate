@@ -7,3 +7,4 @@ README.md
 docs/observegate-impl.md
 docs/observegate-spec.md
 examples/observability-gate.yml
+examples/helm/**/templates/**

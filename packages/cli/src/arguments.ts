@@ -11,6 +11,7 @@ export type ParsedCommand =
       readonly options: Partial<CommonOptions>;
     }
   | { readonly name: "catalog"; readonly json: boolean }
+  | { readonly name: "schema" }
   | { readonly name: "help" };
 
 export class CliUsageError extends Error {
@@ -27,12 +28,13 @@ Evidence-driven deployment gates for observability and reliability
 Commands:
   validate --config <path> [--phase <phase>] [--target <id>] [--json]
   plan --config <path> --phase <phase> [--target <id>] [--json]
-  run --config <path> --phase <phase> [--target <id>] [--output-directory <path>] [--json]
+  run --config <path> --phase <phase> [--target <id>] [--output-directory <path>] [--events <workspace-path>] [--json]
   explain <gate> [--config <path>] [--phase <phase>] [--target <id>] [--json]
   catalog [--json]
+  schema [--json]
 `;
 
-type OptionName = "config" | "phase" | "target" | "outputDirectory";
+type OptionName = "config" | "phase" | "target" | "outputDirectory" | "eventsPath";
 
 interface ParsedOptions {
   readonly values: Partial<Record<OptionName, string>>;
@@ -121,6 +123,7 @@ export function parseCliArguments(argv: readonly string[]): ParsedCommand {
     case "run": {
       const allowed = new Map(commonOptions);
       if (command === "run") allowed.set("--output-directory", "outputDirectory");
+      if (command === "run") allowed.set("--events", "eventsPath");
       const parsed = parseOptions(args, allowed, true);
       noPositionals(command, parsed.positional);
       const config = requireOption(parsed.values, "config", "--config");
@@ -135,6 +138,7 @@ export function parseCliArguments(argv: readonly string[]): ParsedCommand {
         ...(parsed.values.outputDirectory === undefined
           ? {}
           : { outputDirectory: parsed.values.outputDirectory }),
+        ...(parsed.values.eventsPath === undefined ? {} : { eventsPath: parsed.values.eventsPath }),
         ...(parsed.json ? { json: true } : {})
       };
       return { name: command, options };
@@ -159,6 +163,11 @@ export function parseCliArguments(argv: readonly string[]): ParsedCommand {
       const parsed = parseOptions(args, new Map(), true);
       noPositionals(command, parsed.positional);
       return { name: command, json: parsed.json };
+    }
+    case "schema": {
+      const parsed = parseOptions(args, new Map(), true);
+      noPositionals(command, parsed.positional);
+      return { name: "schema" };
     }
     default:
       throw new CliUsageError(`error: unknown command '${command}'`);

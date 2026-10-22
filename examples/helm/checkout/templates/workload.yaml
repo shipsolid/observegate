@@ -1,0 +1,92 @@
+{{- $repository := required "image.repository is required" .Values.image.repository -}}
+{{- $digest := required "image.digest is required" .Values.image.digest -}}
+{{- $releaseId := required "releaseId is required" .Values.releaseId -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" $digest) -}}
+{{- fail "image.digest must be an immutable sha256 digest" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app.kubernetes.io/name: checkout
+    app.kubernetes.io/version: {{ $releaseId | quote }}
+spec:
+  replicas: {{ .Values.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  progressDeadlineSeconds: 300
+  minReadySeconds: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: checkout
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: checkout
+        app.kubernetes.io/version: {{ $releaseId | quote }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: checkout
+          image: {{ printf "%s@%s" $repository $digest | quote }}
+          env:
+            - name: RELEASE_ID
+              value: {{ $releaseId | quote }}
+            - name: ENVIRONMENT
+              value: production
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: checkout
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: checkout
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  selector:
+    app.kubernetes.io/name: checkout
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -23,11 +23,13 @@ The verifier defaults to a one-hour maximum completion age and five seconds of c
 provider policy may choose a shorter maximum age. Tokens issued before the deployment completes
 beyond the allowed skew cannot attest that deployment.
 
-Configure `providers.evidence.deployment.signature` with `trusted_issuer`, `jwks_url`,
+Configure `providers.evidence.deployment.signature` with `trusted_issuer`, exactly one of `jwks_url`
+or workspace-relative `jwks_file`,
 `workflow_identity` (or their `_env` references), and `audience`. Set its `files` to the transferred
 compact JWS. The active runtime supplies the expected image/artifact digest; the candidate supplies
 `commit`/`commit_env` when the commit differs from the release ID. The key resolver uses guarded
-HTTPS and never accepts a symmetric signing secret from policy.
+HTTPS or confined public-only workspace keys and never accepts a private or symmetric signing key
+from policy. Verification also binds the attestation deployment ID to canonical deployment identity.
 
 ## Producer responsibilities
 
@@ -35,6 +37,11 @@ The deployment job owns mutation and creates the attestation only after deployme
 the compact JWS as a workflow artifact, transfer it to the post-deployment job, and configure its
 workspace-local path. Rotate asymmetric signing keys through the organization identity system; do
 not place private keys in the policy or reports.
+
+The user-owned [example producer](../examples/deployment-evidence-producer.mjs) creates a compact
+RS256 attestation after successful Helm deployment. It checks private/public key agreement and
+validates release/digest/time inputs. The protected public JWKS is provisioned independently in the
+post job; accepting a key transferred alongside its own untrusted attestation would erase the trust boundary.
 
 ## Failure behavior
 

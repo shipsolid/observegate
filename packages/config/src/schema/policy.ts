@@ -162,7 +162,8 @@ function fixedDeclarations(values: [string, ...string[]]) {
     .refine(
       (items) => new Set(items).size === values.length,
       "Expected the complete canonical declaration set."
-    );
+    )
+    .meta({ uniqueItems: true });
 }
 
 const decisionSchema = z

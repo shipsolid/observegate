@@ -6,6 +6,8 @@ import type { ExecutionResult } from "@observability-gate/core";
 import { renderJson, writeReports } from "../src/index.js";
 
 const fileSystem = vi.hoisted(() => ({
+  inspectWrites: false,
+  writes: [] as { readonly binary: boolean; readonly bytes: number; readonly buffer: unknown }[],
   failMarkdownInstall: false,
   failMarkdownRestore: false,
   failBackupCleanup: false,
@@ -16,6 +18,26 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...original,
+    async open(...args: Parameters<typeof original.open>) {
+      const handle = await original.open(...args);
+      const write = handle.writeFile.bind(handle);
+      handle.writeFile = async (...writeArgs: Parameters<typeof handle.writeFile>) => {
+        const data = writeArgs[0];
+        if (fileSystem.inspectWrites)
+          fileSystem.writes.push({
+            binary: Buffer.isBuffer(data),
+            bytes:
+              typeof data === "string"
+                ? Buffer.byteLength(data)
+                : data instanceof Uint8Array
+                  ? data.byteLength
+                  : -1,
+            buffer: data instanceof Uint8Array ? data.buffer : undefined
+          });
+        return write(...writeArgs);
+      };
+      return handle;
+    },
     async rename(
       oldPath: Parameters<typeof original.rename>[0],
       newPath: Parameters<typeof original.rename>[1]
@@ -59,6 +81,8 @@ async function fixture(): Promise<ExecutionResult> {
 
 describe("writeReports", () => {
   beforeEach(() => {
+    fileSystem.inspectWrites = false;
+    fileSystem.writes = [];
     fileSystem.failMarkdownInstall = false;
     fileSystem.failMarkdownRestore = false;
     fileSystem.failBackupCleanup = false;
@@ -197,4 +221,26 @@ describe("writeReports", () => {
       (await readdir(directory)).some((name) => name.startsWith("observability-gate.json.backup-"))
     ).toBe(true);
   });
+});
+
+it("stages UTF-8 report bytes in one reusable bounded buffer", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "observegate-buffer-"));
+  const result = { ...(await fixture()), links: { unicode: "€🙂".repeat(40000) } };
+  const expected = renderJson(result);
+  fileSystem.inspectWrites = true;
+  try {
+    const publication = await writeReports(result, {
+      directory,
+      formats: ["json"],
+      maximumTotalBytes: Buffer.byteLength(expected),
+      signal: new AbortController().signal
+    });
+    expect(await readFile(join(directory, "observability-gate.json"), "utf8")).toBe(expected);
+    expect(publication.totalBytes).toBe(Buffer.byteLength(expected));
+    expect(fileSystem.writes.length).toBeGreaterThan(2);
+    expect(fileSystem.writes.every((write) => write.binary && write.bytes <= 64 * 1024)).toBe(true);
+    expect(new Set(fileSystem.writes.map((write) => write.buffer)).size).toBe(1);
+  } finally {
+    fileSystem.inspectWrites = false;
+  }
 });

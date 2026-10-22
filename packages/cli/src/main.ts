@@ -12,6 +12,7 @@ import {
   publicationOptions,
   interpolatePolicy,
   loadPolicy,
+  policyJsonSchema,
   type RawPolicy
 } from "@observability-gate/config";
 import {
@@ -30,7 +31,7 @@ import { planCommand } from "./commands/plan.js";
 import { runCommand } from "./commands/run.js";
 import type { CliService, CommandContext } from "./commands/types.js";
 import { validateCommand } from "./commands/validate.js";
-import type { OutputWriter } from "./output.js";
+import { writeDiagnostics, type OutputWriter } from "./output.js";
 import { CliUsageError, helpText, parseCliArguments } from "./arguments.js";
 
 export interface CliDependencies {
@@ -94,7 +95,8 @@ function createDefaultService(
           policy: context.policy,
           plan: context.plan,
           workspaceRoot: context.request.workspaceRoot,
-          environment: context.request.environment
+          environment: context.request.environment,
+          ...(context.request.onEvent === undefined ? {} : { onEvent: context.request.onEvent })
         });
       }
     },
@@ -197,9 +199,17 @@ export async function runCli(
       case "catalog":
         exitCode = catalogCommand(command.json, context);
         break;
+      case "schema":
+        output.stdout(`${JSON.stringify(policyJsonSchema(), null, 2)}\n`);
+        exitCode = 0;
+        break;
     }
     return signal.aborted ? 3 : exitCode;
   } catch (error) {
+    if (error instanceof GateError) {
+      writeDiagnostics([error.toDiagnostic()], output, argv.includes("--json"));
+      return 3;
+    }
     if (error instanceof CliUsageError) {
       output.stderr(`${error.message}\n${helpText}`);
       return 1;

@@ -925,7 +925,7 @@ The engine distinguishes:
 - Evidence acquisition time.
 - Candidate warmup.
 - Evaluation window.
-- Baseline lookback.
+- Explicit baseline identity and the query window supplied by the policy author.
 - Provider evaluation time.
 
 Post-deployment evaluation begins after warmup. It samples until it reaches the
@@ -936,19 +936,15 @@ A future timestamp cannot silently appear fresh.
 
 ## 26. Baseline comparison model
 
-The baseline is selected by:
+Baseline selection uses `strategy: explicit` and an explicit release ID. Automatic
+previous-release discovery, baseline lookback filtering, and automatic incident/deployment
+window exclusions are unsupported; configuration requesting them is rejected.
 
-1. An explicit BASELINE_RELEASE_ID when supplied.
-2. Otherwise the previous healthy release discoverable from deployment evidence and
-   telemetry.
-3. If neither can be established, comparison gates become inconclusive.
-
-The baseline window:
-
-- Excludes known incident windows when evidence is available.
-- Excludes deployment windows.
-- Requires the configured minimum samples.
-- Uses the same identity mapping and metric definition as the candidate.
+Baseline queries must select the intended healthy interval and use the same identity mapping
+and metric definition as the candidate. The engine enforces configured candidate/baseline
+sample minima. Instant scalar comparisons contribute one sample; traffic volumes require
+independent request-count queries. Low-traffic behavior is `inconclusive`, with
+`maximum_extension: 0s`; acquisition success does not prove adequate traffic.
 
 Regression gates apply both absolute and relative limits. This prevents a tiny
 baseline value from making a harmless absolute increase appear catastrophic and
@@ -1394,10 +1390,14 @@ Structured internal events include:
 - report_written
 
 The local JSON event stream is disabled by default and can be enabled for debugging.
-It uses the same redaction policy.
+Use CLI `run --events <workspace-relative-path>` or Action input `events-path`.
+Only whitelisted event metadata is serialized; queries, URLs, credentials, headers,
+and provider bodies are excluded. Files have mode 0600 and a two-MiB size limit.
 
 The final report includes duration by provider and gate so users can find slow policy
 checks.
+Network timing totals include retries; local/runtime resolution totals include cache hits.
+These totals describe acquisition work and need not equal phase wall time when calls overlap.
 
 The Action does not phone home and does not emit product analytics unless a future
 explicit opt-in design is separately approved.
@@ -1575,7 +1575,9 @@ metadata to prevent drift.
 
 The implementation conforms to this design when all of the following are true:
 
-1. The supplied observability-gate.yml validates without modification.
+1. The exhaustive reference policy parses structurally; workload-specific acquisition queries,
+   credentials, artifacts, and identities are supplied before execution. `examples/offline.yml`
+   validates and runs without customization; the Helm workflow example documents every prerequisite.
 2. The same core engine runs through both the Action and CLI.
 3. Both phases execute independently from the same file.
 4. Every gate ID in the reference policy resolves to a registered evaluator.
