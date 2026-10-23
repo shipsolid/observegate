@@ -202,6 +202,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           gh release upload "${RELEASE_TAG}" --clobber \
