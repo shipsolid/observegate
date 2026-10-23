@@ -114,14 +114,14 @@ The release workflow produces a self-contained CLI archive, CycloneDX SBOM, chec
 attestations. For a published release, download its three assets and verify them:
 
 ```bash
-sha256sum --check observegate-v0.1.0.sha256
-gh attestation verify observegate-cli-v0.1.0.tar.gz --repo shipsolid/observegate
+sha256sum --check observegate-v0.1.1.sha256
+gh attestation verify observegate-cli-v0.1.1.tar.gz --repo shipsolid/observegate
 mkdir observegate-cli
-tar -xzf observegate-cli-v0.1.0.tar.gz -C observegate-cli
+tar -xzf observegate-cli-v0.1.1.tar.gz -C observegate-cli
 node observegate-cli/observegate.js catalog
 ```
 
-Replace `v0.1.0` with the published release tag. The archive has no production npm dependencies; Node.js 24
+Replace `v0.1.1` with the published release tag. The archive has no production npm dependencies; Node.js 24
 is the only runtime requirement.
 
 ## Configuration and operations

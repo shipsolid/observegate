@@ -1,6 +1,6 @@
 {
   "name": "@observability-gate/action",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,10 +9,10 @@
   },
   "dependencies": {
     "@actions/github": "9.1.1",
-    "@observability-gate/config": "0.1.0",
-    "@observability-gate/core": "0.1.0",
-    "@observability-gate/gates": "0.1.0",
-    "@observability-gate/providers": "0.1.0",
-    "@observability-gate/reporters": "0.1.0"
+    "@observability-gate/config": "0.1.1",
+    "@observability-gate/core": "0.1.1",
+    "@observability-gate/gates": "0.1.1",
+    "@observability-gate/providers": "0.1.1",
+    "@observability-gate/reporters": "0.1.1"
   }
 }
