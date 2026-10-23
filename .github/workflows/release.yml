@@ -33,17 +33,15 @@ jobs:
           persist-credentials: false
           ref: refs/tags/${{ inputs.release_tag }}
 
-      - name: Verify annotated release tag and draft
+      - name: Verify annotated release tag and version
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
           test "$(git cat-file -t "refs/tags/${RELEASE_TAG}")" = "tag"
           test "${RELEASE_TAG}" = "v$(node --print "require('./package.json').version")"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.draft')" = "true"
           echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "${GITHUB_ENV}"
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "${GITHUB_ENV}"
 
@@ -185,7 +183,8 @@ jobs:
             --header 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/${GITHUB_REPOSITORY}/immutable-releases" \
             --jq '.enabled')" = "true"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.draft')" = "true"
+          test "$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"${RELEASE_TAG}\") | .draft")" = "true"
 
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
