@@ -1,7 +1,11 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SourceMap } from "node:module";
+import { rollup } from "rollup";
 import { afterEach, describe, expect, it } from "vitest";
+import bundleConfigurations from "../../rollup.config.js";
 import { compareBuildArtifacts } from "../../scripts/verify-reproducible-build.js";
 
 const directories: string[] = [];
@@ -26,6 +30,37 @@ afterEach(async () => {
 });
 
 describe("independent release build comparison", () => {
+  it.each(bundleConfigurations)(
+    "emits LF JavaScript with accurate source maps for $input",
+    async (configuration) => {
+      const root = await fixture();
+      const input = join(root, "crlf.js");
+      const source = "export function answer() {\r\n  return 42;\r\n}\r\n";
+      await writeFile(input, source);
+      const bundle = await rollup({ input, plugins: configuration.plugins });
+      try {
+        const { output } = await bundle.generate({
+          ...configuration.output,
+          file: join(root, "bundle.js")
+        });
+        const chunk = output.find((item) => item.type === "chunk");
+        assert(chunk?.map, "Expected a JavaScript chunk with a source map");
+        expect(chunk.code).not.toContain("\r");
+        const module = await import(`data:text/javascript,${encodeURIComponent(chunk.code)}`);
+        expect(module.answer()).toBe(42);
+        expect(chunk.map?.sourcesContent).toContain(source);
+        const generatedLine = chunk.code
+          .split("\n")
+          .findIndex((line) => line.includes("return 42"));
+        const mapping = new SourceMap(chunk.map).findEntry(generatedLine, 2);
+        expect(mapping.originalLine).toBe(1);
+        expect(mapping.originalColumn).toBe(2);
+      } finally {
+        await bundle.close();
+      }
+    }
+  );
+
   it("accepts matching artifacts from independent directories", async () => {
     expect(await compareBuildArtifacts(await fixture(), await fixture())).toBe(5);
   });

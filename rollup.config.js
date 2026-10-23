@@ -33,7 +33,15 @@ const plugins = () => [
   },
   nodeResolve({ preferBuiltins: true }),
   json(),
-  commonjs()
+  commonjs(),
+  {
+    name: "normalize-bundle-line-endings",
+    renderChunk(code) {
+      // Dependencies can retain CRLF; emit LF regardless of the builder's Git settings.
+      // Changing line delimiters preserves source-map line and column coordinates.
+      return { code: code.replaceAll("\r\n", "\n"), map: null };
+    }
+  }
 ];
 
 export default [
