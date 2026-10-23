@@ -34,6 +34,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run build
       - run: npm run test:e2e
       - run: npm run test:security
 
@@ -46,14 +47,15 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run build
       - name: Install kind with checksum verification
         shell: bash
         run: |
-          curl --fail --location --silent --show-error --output kind https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          curl --fail --location --silent --show-error --output kind-linux-amd64 https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
           curl --fail --location --silent --show-error --output kind.sha256sum https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64.sha256sum
           sha256sum --check kind.sha256sum
-          chmod +x kind
-          sudo install kind /usr/local/bin/kind
+          chmod +x kind-linux-amd64
+          sudo install kind-linux-amd64 /usr/local/bin/kind
       - name: Create cluster and load sample image
         shell: bash
         run: |
@@ -84,6 +86,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run build
       - name: Run Azure live read-only compatibility
         run: npm test -- tests/integration/azure-live.test.ts
         env:
